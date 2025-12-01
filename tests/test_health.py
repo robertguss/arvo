@@ -24,6 +24,7 @@ async def test_readiness_endpoint(client: AsyncClient):
     assert data["status"] == "ready"
     assert "checks" in data
     assert data["checks"]["database"] == "ok"
+    assert data["checks"]["redis"] == "ok"
 
 
 @pytest.mark.asyncio

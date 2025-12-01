@@ -10,13 +10,14 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.config import settings
+from app.core.audit.models import AuditLog  # noqa: F401
 from app.core.database import Base, get_db
+from app.core.permissions.models import Permission, Role, UserRole  # noqa: F401
 from app.main import create_app
 
 # Import all models to ensure they're registered with Base.metadata
 from app.modules.tenants.models import Tenant  # noqa: F401
-from app.modules.users.models import RefreshToken, User  # noqa: F401
-from app.core.permissions.models import Permission, Role, UserRole  # noqa: F401
+from app.modules.users.models import RefreshToken, RevokedToken, User  # noqa: F401
 
 
 # Test database URL - uses same DB with _test suffix

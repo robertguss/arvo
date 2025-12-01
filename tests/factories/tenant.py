@@ -2,22 +2,15 @@
 
 from uuid import uuid4
 
-from polyfactory.factories.pydantic_factory import ModelFactory
-from pydantic import BaseModel
+from polyfactory.factories.sqlalchemy_factory import SQLAlchemyFactory
+
+from app.modules.tenants.models import Tenant
 
 
-class TenantCreate(BaseModel):
-    """Schema for creating a tenant (for factory use)."""
-
-    name: str
-    slug: str
-    is_active: bool = True
-
-
-class TenantFactory(ModelFactory[TenantCreate]):
+class TenantFactory(SQLAlchemyFactory):
     """Factory for generating Tenant test data."""
 
-    __model__ = TenantCreate
+    __model__ = Tenant
 
     @classmethod
     def name(cls) -> str:

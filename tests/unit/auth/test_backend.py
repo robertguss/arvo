@@ -3,8 +3,6 @@
 from datetime import timedelta
 from uuid import uuid4
 
-import pytest
-
 from app.core.auth.backend import (
     create_access_token,
     create_refresh_token,

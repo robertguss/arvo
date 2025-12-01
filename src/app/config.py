@@ -40,12 +40,11 @@ class Settings(BaseSettings):
 
     @field_validator("secret_key")
     @classmethod
-    def validate_secret_key(cls, v: str, info) -> str:
+    def validate_secret_key(cls, v: str) -> str:
         """Validate that secret_key is secure in production.
 
         Args:
             v: The secret key value
-            info: Validation info containing other field values
 
         Returns:
             The validated secret key

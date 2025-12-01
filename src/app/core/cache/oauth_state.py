@@ -6,7 +6,6 @@ Provides secure storage for OAuth CSRF state parameters with:
 - Thread-safe for horizontal scaling
 """
 
-import json
 from typing import TypedDict
 
 import structlog

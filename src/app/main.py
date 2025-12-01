@@ -11,7 +11,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import api_router
 from app.config import settings
 from app.core.auth import RequestIdMiddleware, TenantContextMiddleware
+from app.core.cache.redis import close_redis_pool
 from app.core.errors import register_exception_handlers
+from app.core.jobs.registry import close_arq_pool, init_arq_pool
 from app.core.logging import RequestLoggingMiddleware
 
 
@@ -53,14 +55,23 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         environment=settings.environment,
     )
 
+    # Initialize ARQ pool for background jobs
+    try:
+        await init_arq_pool()
+        logger.info("arq_pool_initialized")
+    except Exception as e:
+        logger.warning("arq_pool_init_failed", error=str(e))
+
     yield
 
     # Shutdown
     logger.info("application_shutdown")
 
-    # Close Redis connection pool
-    from app.core.cache.redis import close_redis_pool
+    # Close ARQ connection pool
+    await close_arq_pool()
+    logger.info("arq_pool_closed")
 
+    # Close Redis connection pool
     await close_redis_pool()
     logger.info("redis_pool_closed")
 

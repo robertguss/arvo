@@ -1,14 +1,16 @@
 """User factory for tests."""
 
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from polyfactory.factories.pydantic_factory import ModelFactory
+from polyfactory.factories.sqlalchemy_factory import SQLAlchemyFactory
 
 from app.modules.users.models import RefreshToken, User
 from app.modules.users.schemas import UserCreate
 
 
-class UserFactory(ModelFactory):
+class UserFactory(SQLAlchemyFactory):
     """Factory for creating test User instances."""
 
     __model__ = User
@@ -66,7 +68,7 @@ class UserCreateFactory(ModelFactory):
         return "testpassword123"
 
 
-class RefreshTokenFactory(ModelFactory):
+class RefreshTokenFactory(SQLAlchemyFactory):
     """Factory for creating test RefreshToken instances."""
 
     __model__ = RefreshToken
@@ -84,9 +86,7 @@ class RefreshTokenFactory(ModelFactory):
     @classmethod
     def expires_at(cls) -> str:
         """Generate expiration time."""
-        from datetime import datetime, timedelta, timezone
-
-        return (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+        return (datetime.now(UTC) + timedelta(days=7)).isoformat()
 
     @classmethod
     def revoked(cls) -> bool:

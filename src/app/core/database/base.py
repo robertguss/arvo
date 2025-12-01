@@ -51,3 +51,24 @@ class TenantMixin:
         index=True,
         nullable=False,
     )
+
+
+class AuditMixin:
+    """Marker mixin to enable automatic audit logging.
+
+    Models that inherit from this mixin will have their changes
+    automatically captured in the audit log when they are created,
+    updated, or deleted.
+
+    The SQLAlchemy event listeners in app.core.audit.middleware
+    check for the __audit__ attribute to determine if a model
+    should be audited.
+
+    Example:
+        class Project(Base, UUIDMixin, TimestampMixin, TenantMixin, AuditMixin):
+            __tablename__ = "projects"
+            name: Mapped[str] = mapped_column(String(255))
+    """
+
+    # Marker attribute checked by audit middleware
+    __audit__: bool = True

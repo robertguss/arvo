@@ -9,7 +9,6 @@ These tests verify the OAuth2 authentication flow including:
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
@@ -337,25 +336,21 @@ class TestOAuthStateSecurity:
         """OAuth state should be deleted after use (prevent replay)."""
         # This is tested by verifying verify_oauth_state returns None on second call
         # The actual implementation deletes the state from Redis
-        with (
-            patch(
-                "app.core.auth.oauth_routes.verify_oauth_state",
-                new_callable=AsyncMock,
-                side_effect=[
-                    {"provider": "google", "redirect_uri": "http://test"},
-                    None,  # Second call returns None (state was deleted)
-                ],
-            ),
-            patch(
-                "app.core.auth.oauth_routes._get_oauth_provider",
-                side_effect=Exception("Should not reach provider"),
-            ),
+        with patch(
+            "app.core.auth.oauth_routes.verify_oauth_state",
+            new_callable=AsyncMock,
+            side_effect=[
+                {"provider": "google", "redirect_uri": "http://test"},
+                None,  # Second call returns None (state was deleted)
+            ],
         ):
-            # First call - should proceed (but fail at provider for this test)
+            # First call with valid state - will fail at provider lookup but state is consumed
             response1 = await client.get(
                 "/api/v1/auth/oauth/google/callback",
                 params={"code": "code", "state": "state"},
             )
+            # First call fails because no provider is configured, but state was consumed
+            assert response1.status_code in (404, 500)
 
             # Second call with same state - should fail at state verification
             response2 = await client.get(
@@ -363,7 +358,7 @@ class TestOAuthStateSecurity:
                 params={"code": "code", "state": "state"},
             )
 
-        # First might fail at provider, second should fail at state
+        # Second call should fail at state (state was deleted after first use)
         assert response2.status_code == 400
         assert "invalid_state" in response2.json().get("type", "")
 

@@ -102,7 +102,8 @@ class OAuthProvider:
                 headers={"Accept": "application/json"},
             )
             response.raise_for_status()
-            return response.json()
+            result: dict[str, Any] = response.json()
+            return result
 
     async def get_user_info(self, access_token: str) -> OAuthUserInfo:
         """Get user information from the provider.
