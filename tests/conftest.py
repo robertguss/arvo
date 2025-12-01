@@ -16,8 +16,10 @@ from app.core.permissions.models import Permission, Role, UserRole  # noqa: F401
 from app.main import create_app
 
 # Import all models to ensure they're registered with Base.metadata
-from app.modules.tenants.models import Tenant  # noqa: F401
+from app.modules.tenants.models import Tenant
 from app.modules.users.models import RefreshToken, RevokedToken, User  # noqa: F401
+from tests.factories.tenant import TenantFactory
+from tests.factories.user import UserFactory
 
 
 # Test database URL - uses same DB with _test suffix
@@ -107,3 +109,79 @@ async def client(app) -> AsyncGenerator[AsyncClient, None]:
 def anyio_backend() -> str:
     """Specify the async backend for anyio."""
     return "asyncio"
+
+
+# ============================================================
+# Tenant and User Fixtures
+# ============================================================
+
+
+@pytest.fixture
+async def tenant(db: AsyncSession) -> Tenant:
+    """Create a test tenant.
+
+    Returns:
+        A persisted Tenant instance
+    """
+    tenant = TenantFactory.build()
+    db.add(tenant)
+    await db.flush()
+    return tenant
+
+
+@pytest.fixture
+async def user(db: AsyncSession, tenant: Tenant) -> User:
+    """Create a test user linked to a tenant.
+
+    Args:
+        db: Database session
+        tenant: The test tenant
+
+    Returns:
+        A persisted User instance
+    """
+    user = UserFactory.build(tenant_id=tenant.id)
+    db.add(user)
+    await db.flush()
+    return user
+
+
+@pytest.fixture
+def auth_headers(user: User, tenant: Tenant) -> dict[str, str]:
+    """Generate authorization headers with a valid JWT token.
+
+    Args:
+        user: The test user
+        tenant: The test tenant
+
+    Returns:
+        Dictionary with Authorization header
+    """
+    # Import here to avoid circular import at module load time
+    from app.core.auth.backend import create_access_token  # noqa: PLC0415
+
+    token = create_access_token(user_id=user.id, tenant_id=tenant.id)
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+async def authenticated_client(
+    app, auth_headers: dict[str, str]
+) -> AsyncGenerator[AsyncClient, None]:
+    """Provide an authenticated async HTTP client for API testing.
+
+    This client includes a valid JWT token for the test user.
+
+    Args:
+        app: The FastAPI application
+        auth_headers: Authorization headers with JWT token
+
+    Yields:
+        AsyncClient with authentication headers
+    """
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers=auth_headers,
+    ) as client:
+        yield client

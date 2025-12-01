@@ -2037,19 +2037,19 @@ def discover_modules():
 
 ### Phase 3: Infrastructure (Week 5-6)
 
-- [ ] Rate limiting
-- [ ] Caching layer
-- [ ] Background jobs (ARQ)
-- [ ] Audit logging
-- [ ] Health checks
+- [x] Rate limiting
+- [x] Caching layer
+- [x] Background jobs (ARQ)
+- [x] Audit logging
+- [x] Health checks
 
 ### Phase 4: Quality & Observability (Week 7)
 
-- [ ] Testing infrastructure
-- [ ] CI/CD pipeline
-- [ ] OpenTelemetry tracing
-- [ ] Structured logging
-- [ ] Architecture enforcement (tach)
+- [x] Testing infrastructure
+- [x] CI/CD pipeline
+- [x] OpenTelemetry tracing
+- [x] Structured logging
+- [x] Architecture enforcement (tach)
 
 ### Phase 5: AI Layer & Docs (Week 8)
 

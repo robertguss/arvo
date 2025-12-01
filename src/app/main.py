@@ -15,6 +15,8 @@ from app.core.cache.redis import close_redis_pool
 from app.core.errors import register_exception_handlers
 from app.core.jobs.registry import close_arq_pool, init_arq_pool
 from app.core.logging import RequestLoggingMiddleware
+from app.core.observability import setup_tracing
+from app.core.observability.tracing import shutdown_tracing
 
 
 # Configure structlog
@@ -66,6 +68,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Shutdown
     logger.info("application_shutdown")
+
+    # Shutdown tracing (flush pending spans)
+    shutdown_tracing()
+    logger.info("tracing_shutdown")
 
     # Close ARQ connection pool
     await close_arq_pool()
@@ -121,5 +127,8 @@ def create_app() -> FastAPI:
 
     # Include API router
     app.include_router(api_router)
+
+    # Setup OpenTelemetry tracing
+    setup_tracing(app)
 
     return app
