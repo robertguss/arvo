@@ -13,6 +13,14 @@ from app.core.constants import MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH
 # Password Validation
 # ============================================================
 
+# Password complexity rules: (regex pattern, human-readable name)
+PASSWORD_COMPLEXITY_RULES: list[tuple[str, str]] = [
+    (r"[A-Z]", "uppercase letter"),
+    (r"[a-z]", "lowercase letter"),
+    (r"\d", "digit"),
+    (r"[!@#$%^&*(),.?\":{}|<>\[\]\\;'`~_+\-=/]", "special character"),
+]
+
 
 def validate_password_complexity(password: str) -> str:
     """Validate password meets complexity requirements.
@@ -32,14 +40,17 @@ def validate_password_complexity(password: str) -> str:
     Raises:
         ValueError: If password doesn't meet requirements
     """
-    if not re.search(r"[A-Z]", password):
-        raise ValueError("Password must contain at least one uppercase letter")
-    if not re.search(r"[a-z]", password):
-        raise ValueError("Password must contain at least one lowercase letter")
-    if not re.search(r"\d", password):
-        raise ValueError("Password must contain at least one digit")
-    if not re.search(r"[!@#$%^&*(),.?\":{}|<>\[\]\\;'`~_+\-=/]", password):
-        raise ValueError("Password must contain at least one special character")
+    missing = [
+        name
+        for pattern, name in PASSWORD_COMPLEXITY_RULES
+        if not re.search(pattern, password)
+    ]
+
+    if missing:
+        if len(missing) == 1:
+            raise ValueError(f"Password must contain at least one {missing[0]}")
+        raise ValueError(f"Password must contain at least one: {', '.join(missing)}")
+
     return password
 
 

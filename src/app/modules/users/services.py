@@ -195,10 +195,10 @@ class UserService:
         if data.email and data.email != user.email:
             existing = await self.repo.get_by_email(data.email, tenant_id)
             if existing:
+                # Use generic message to prevent email enumeration
                 raise ConflictError(
-                    "Email already in use",
-                    error_code="email_exists",
-                    details={"email": data.email},
+                    "Update failed. Please verify your input and try again.",
+                    error_code="update_failed",
                 )
             user.email = data.email
 

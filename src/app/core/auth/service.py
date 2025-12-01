@@ -112,7 +112,13 @@ class AuthService:
         """
         # Find user by email (system-level: tenant not known during login)
         user = await self.user_repo.get_by_email_system(email)
+
+        # Constant-time comparison: always verify password to prevent timing attacks
+        # This ensures the response time is similar whether the user exists or not
         if not user:
+            # Perform dummy hash verification to normalize timing
+            # This prevents attackers from enumerating valid emails via timing
+            verify_password(password, hash_password("dummy_constant_time_check"))
             raise UnauthorizedError(
                 "Invalid email or password",
                 error_code="invalid_credentials",

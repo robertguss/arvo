@@ -90,6 +90,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         Uses user_id from request state if authenticated,
         otherwise falls back to client IP address.
 
+        Security: X-Forwarded-For is only trusted when the request
+        comes from a configured trusted proxy to prevent IP spoofing.
+
         Args:
             request: HTTP request
 
@@ -101,13 +104,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if user_id:
             return f"user:{user_id}"
 
-        # Fall back to IP address
-        # Check X-Forwarded-For for proxied requests
-        forwarded_for = request.headers.get("X-Forwarded-For")
-        if forwarded_for:
-            # Take the first IP in the chain (original client)
-            client_ip = forwarded_for.split(",")[0].strip()
-        else:
-            client_ip = request.client.host if request.client else "unknown"
+        # Get direct client IP
+        direct_client_ip = request.client.host if request.client else "unknown"
 
-        return f"ip:{client_ip}"
+        # Only trust X-Forwarded-For when request comes from a trusted proxy
+        # This prevents attackers from spoofing their IP address
+        if settings.trusted_proxies and direct_client_ip in settings.trusted_proxies:
+            forwarded_for = request.headers.get("X-Forwarded-For")
+            if forwarded_for:
+                # Take the first IP in the chain (original client)
+                client_ip = forwarded_for.split(",")[0].strip()
+                return f"ip:{client_ip}"
+
+        return f"ip:{direct_client_ip}"

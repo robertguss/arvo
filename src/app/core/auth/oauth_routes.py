@@ -300,6 +300,16 @@ async def authorize(
     else:
         callback_url = str(request.url_for("oauth_callback", provider=provider))
 
+    # Enforce HTTPS in production for OAuth callbacks
+    # OAuth providers require HTTPS for security
+    if settings.is_production and callback_url.startswith("http://"):
+        callback_url = callback_url.replace("http://", "https://", 1)
+        logger.warning(
+            "oauth_callback_url_upgraded_to_https",
+            provider=provider,
+            original_scheme="http",
+        )
+
     # Store state in Redis with TTL
     await store_oauth_state(
         state,

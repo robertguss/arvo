@@ -6,7 +6,7 @@ This module provides FastAPI dependency injection functions for:
 - Getting the current tenant context
 """
 
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
 from fastapi import Depends
@@ -18,23 +18,29 @@ from app.core.auth.schemas import TokenData
 from app.core.errors import ForbiddenError, UnauthorizedError
 
 
+if TYPE_CHECKING:
+    from app.modules.users.models import User
+
+
 # HTTP Bearer token security scheme
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_token_data(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    db: DBSession,
 ) -> TokenData:
     """Extract and validate token data from the Authorization header.
 
     Args:
         credentials: Bearer token credentials from the request
+        db: Database session for revocation check
 
     Returns:
         Decoded token data
 
     Raises:
-        UnauthorizedError: If token is missing or invalid
+        UnauthorizedError: If token is missing, invalid, or revoked
     """
     if not credentials:
         raise UnauthorizedError(
@@ -55,13 +61,24 @@ async def get_token_data(
             error_code="invalid_token_type",
         )
 
+    # Check if token has been revoked
+    if token_data.jti:
+        from app.modules.users.repos import RevokedTokenRepository  # noqa: PLC0415
+
+        revoked_repo = RevokedTokenRepository(db)
+        if await revoked_repo.is_revoked(token_data.jti):
+            raise UnauthorizedError(
+                "Token has been revoked",
+                error_code="token_revoked",
+            )
+
     return token_data
 
 
 async def get_current_user(
     token_data: Annotated[TokenData, Depends(get_token_data)],
     db: DBSession,
-) -> Any:  # Returns User, but use Any to avoid circular import
+) -> "User":
     """Get the currently authenticated user.
 
     Args:
@@ -96,8 +113,8 @@ async def get_current_user(
 
 
 async def get_current_active_user(
-    user: Annotated[Any, Depends(get_current_user)],
-) -> Any:
+    user: Annotated["User", Depends(get_current_user)],
+) -> "User":
     """Get the current user, ensuring they are active.
 
     This is an alias for get_current_user that makes the intent explicit.
@@ -113,8 +130,8 @@ async def get_current_active_user(
 
 
 async def get_current_superuser(
-    user: Annotated[Any, Depends(get_current_user)],
-) -> Any:
+    user: Annotated["User", Depends(get_current_user)],
+) -> "User":
     """Get the current user, ensuring they are a superuser.
 
     Args:
@@ -149,17 +166,17 @@ async def get_tenant_id(
 
 
 # Type aliases for cleaner dependency injection
-# Use Any for User type to avoid circular imports at runtime
-CurrentUser = Annotated[Any, Depends(get_current_user)]
-CurrentActiveUser = Annotated[Any, Depends(get_current_active_user)]
-CurrentSuperuser = Annotated[Any, Depends(get_current_superuser)]
+# Using string annotations for forward references to avoid circular imports
+CurrentUser = Annotated["User", Depends(get_current_user)]
+CurrentActiveUser = Annotated["User", Depends(get_current_active_user)]
+CurrentSuperuser = Annotated["User", Depends(get_current_superuser)]
 TenantId = Annotated[UUID, Depends(get_tenant_id)]
 
 
 async def get_optional_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     db: DBSession,
-) -> Any | None:
+) -> "User | None":
     """Get the current user if authenticated, None otherwise.
 
     Useful for endpoints that work with or without authentication.
@@ -178,6 +195,14 @@ async def get_optional_user(
     if not token_data or token_data.type != "access":
         return None
 
+    # Check if token has been revoked
+    if token_data.jti:
+        from app.modules.users.repos import RevokedTokenRepository  # noqa: PLC0415
+
+        revoked_repo = RevokedTokenRepository(db)
+        if await revoked_repo.is_revoked(token_data.jti):
+            return None
+
     from app.modules.users.repos import UserRepository  # noqa: PLC0415
 
     repo = UserRepository(db)
@@ -190,4 +215,4 @@ async def get_optional_user(
     return user
 
 
-OptionalUser = Annotated[Any | None, Depends(get_optional_user)]
+OptionalUser = Annotated["User | None", Depends(get_optional_user)]

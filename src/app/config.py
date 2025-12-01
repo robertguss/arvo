@@ -2,7 +2,13 @@
 
 from functools import lru_cache
 
-from pydantic import PostgresDsn, RedisDsn, computed_field, field_validator
+from pydantic import (
+    PostgresDsn,
+    RedisDsn,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.constants import DEFAULT_INSECURE_SECRET, MIN_SECRET_KEY_LENGTH
@@ -67,6 +73,17 @@ class Settings(BaseSettings):
             )
         return v
 
+    @model_validator(mode="after")
+    def validate_production_settings(self) -> "Settings":
+        """Validate settings that depend on environment.
+
+        Raises:
+            ValueError: If debug mode is enabled in production
+        """
+        if self.environment == "production" and self.debug:
+            raise ValueError("Debug mode cannot be enabled in production environment")
+        return self
+
     # Redis
     redis_url: RedisDsn = RedisDsn("redis://localhost:6379")
 
@@ -86,6 +103,10 @@ class Settings(BaseSettings):
     # Rate Limiting
     rate_limit_requests: int = 100
     rate_limit_window: int = 60
+
+    # Trusted Proxies (for X-Forwarded-For header validation)
+    # Set to list of proxy IPs when behind a load balancer/reverse proxy
+    trusted_proxies: list[str] = []
 
     # Observability
     otlp_endpoint: str | None = None

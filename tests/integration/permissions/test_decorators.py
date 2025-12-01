@@ -28,25 +28,26 @@ from app.modules.users.models import User
 pytestmark = pytest.mark.integration
 
 
-# Create a test router with protected endpoints
-test_router = APIRouter()
+# Create a router with protected endpoints for testing
+# Named with underscore prefix to avoid pytest collection warning
+_permission_router = APIRouter()
 
 
-@test_router.get("/protected-single")
+@_permission_router.get("/protected-single")
 @require_permission("resource", "read")
 async def protected_single(current_user: CurrentUser, db: DBSession):
     """Endpoint requiring single permission."""
     return {"status": "ok", "user_id": str(current_user.id)}
 
 
-@test_router.get("/protected-any")
+@_permission_router.get("/protected-any")
 @require_any_permission([("resource", "read"), ("resource", "write")])
 async def protected_any(current_user: CurrentUser, db: DBSession):
     """Endpoint requiring any of the permissions."""
     return {"status": "ok", "user_id": str(current_user.id)}
 
 
-@test_router.get("/protected-all")
+@_permission_router.get("/protected-all")
 @require_all_permissions([("resource", "read"), ("resource", "write")])
 async def protected_all(current_user: CurrentUser, db: DBSession):
     """Endpoint requiring all permissions."""
@@ -58,8 +59,8 @@ class TestPermissionDecorators:
 
     @pytest.fixture
     async def test_app(self, app):
-        """Add test router to app."""
-        app.include_router(test_router, prefix="/test")
+        """Add permission router to app."""
+        app.include_router(_permission_router, prefix="/test")
         return app
 
     @pytest.fixture
