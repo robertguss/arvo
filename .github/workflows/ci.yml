@@ -2,10 +2,8 @@
 
 name: CI
 
-# Temporarily disabled automatic triggers - manual only while building
 on:
-  workflow_dispatch: # Manual trigger only
-  # Uncomment below to re-enable automatic CI:
+  workflow_dispatch: # Manual trigger
   # push:
   #   branches: [main]
   # pull_request:
@@ -41,6 +39,9 @@ jobs:
 
       - name: Type check with mypy
         run: uv run mypy src
+
+      - name: Architecture check with tach
+        run: uv run tach check
 
   test:
     name: Test
@@ -93,6 +94,14 @@ jobs:
           SECRET_KEY: test-secret-key-for-ci
           ENVIRONMENT: test
         run: uv run pytest --cov=src --cov-report=xml -v
+
+      - name: Check migrations match models
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/agency_standard_test
+          REDIS_URL: redis://localhost:6379
+          SECRET_KEY: test-secret-key-for-ci
+          ENVIRONMENT: test
+        run: uv run python scripts/check_migrations.py
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
