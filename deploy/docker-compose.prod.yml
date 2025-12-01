@@ -24,10 +24,6 @@ services:
     networks:
       - internal
       - web
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.app.rule=Host(`${DOMAIN:-api.example.com}`)"
-      - "traefik.http.routers.app.tls.certresolver=letsencrypt"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
       interval: 30s

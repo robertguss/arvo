@@ -42,6 +42,7 @@ async def clean_db(db: AsyncSession):
 class TestSeedDefault:
     """Tests for the default seeding scenario."""
 
+    @pytest.mark.asyncio
     async def test_creates_default_tenant(self, clean_db: AsyncSession):
         """Default scenario should create a single 'default' tenant."""
         # Clear any existing default tenant
@@ -69,6 +70,7 @@ class TestSeedDefault:
         assert created_tenant.slug == "default"
         assert created_tenant.is_active is True
 
+    @pytest.mark.asyncio
     async def test_default_tenant_is_idempotent(self, clean_db: AsyncSession):
         """Running default seed multiple times should not create duplicates."""
         # Create first tenant
@@ -97,6 +99,7 @@ class TestSeedDefault:
 class TestSeedDemo:
     """Tests for the demo seeding scenario."""
 
+    @pytest.mark.asyncio
     async def test_creates_demo_tenants(self, clean_db: AsyncSession):
         """Demo scenario should create Acme, Globex, and Initech tenants."""
         demo_tenants = [
@@ -133,6 +136,7 @@ class TestSeedDemo:
 class TestSeedFull:
     """Tests for the full seeding scenario with users, roles, and permissions."""
 
+    @pytest.mark.asyncio
     async def test_creates_standard_permissions(self, clean_db: AsyncSession):
         """Full scenario should create all standard permissions."""
         standard_permissions = [
@@ -173,6 +177,7 @@ class TestSeedFull:
             perm = result.scalar_one()
             assert perm is not None
 
+    @pytest.mark.asyncio
     async def test_creates_roles_for_tenant(self, clean_db: AsyncSession):
         """Full scenario should create admin, member, and viewer roles per tenant."""
         # Create tenant first
@@ -214,6 +219,7 @@ class TestSeedFull:
             assert role.description == data["description"]
             assert role.is_default == data["is_default"]
 
+    @pytest.mark.asyncio
     async def test_creates_users_with_hashed_passwords(self, clean_db: AsyncSession):
         """Full scenario should create users with properly hashed passwords."""
         # Create tenant
@@ -250,6 +256,7 @@ class TestSeedFull:
         # Password should be hashed, not plaintext
         assert created_user.password_hash != password
 
+    @pytest.mark.asyncio
     async def test_assigns_roles_to_users(self, clean_db: AsyncSession):
         """Full scenario should correctly assign roles to users."""
         # Create tenant
@@ -294,6 +301,7 @@ class TestSeedFull:
         assignment = result.scalar_one()
         assert assignment is not None
 
+    @pytest.mark.asyncio
     async def test_member_role_is_default(self, clean_db: AsyncSession):
         """Member role should be marked as the default role."""
         # Create tenant
@@ -321,6 +329,7 @@ class TestSeedFull:
         default_role = result.scalar_one()
         assert default_role.name == "member"
 
+    @pytest.mark.asyncio
     async def test_admin_role_has_wildcard_permission(self, clean_db: AsyncSession):
         """Admin role should have the wildcard (*:*) permission."""
         # Create tenant
@@ -370,6 +379,7 @@ class TestSeedFull:
 class TestSeedDataIntegrity:
     """Tests for data integrity and constraints."""
 
+    @pytest.mark.asyncio
     async def test_permission_resource_action_unique(self, clean_db: AsyncSession):
         """Permission (resource, action) combination should be unique."""
         perm1 = Permission(resource="users", action="read")
@@ -383,6 +393,7 @@ class TestSeedDataIntegrity:
         with pytest.raises(IntegrityError):
             await clean_db.flush()
 
+    @pytest.mark.asyncio
     async def test_role_name_unique_per_tenant(self, clean_db: AsyncSession):
         """Role name should be unique within a tenant."""
         # Create tenant
@@ -402,6 +413,7 @@ class TestSeedDataIntegrity:
         with pytest.raises(IntegrityError):
             await clean_db.flush()
 
+    @pytest.mark.asyncio
     async def test_user_email_unique_per_tenant(self, clean_db: AsyncSession):
         """User email should be unique within a tenant."""
         # Create tenant
@@ -431,6 +443,7 @@ class TestSeedDataIntegrity:
         with pytest.raises(IntegrityError):
             await clean_db.flush()
 
+    @pytest.mark.asyncio
     async def test_different_tenants_can_have_same_email(self, clean_db: AsyncSession):
         """Different tenants should be able to have users with the same email."""
         # Create two tenants

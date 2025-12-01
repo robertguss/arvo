@@ -282,6 +282,7 @@ class TestCaddyfile:
         content = caddyfile_path.read_text()
 
         security_headers = [
+            "Strict-Transport-Security",
             "X-Content-Type-Options",
             "X-Frame-Options",
             "Referrer-Policy",

@@ -48,6 +48,9 @@
 
 	# Security headers
 	header {
+		# HSTS - enforce HTTPS
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		
 		# Prevent MIME type sniffing
 		X-Content-Type-Options nosniff
 		
