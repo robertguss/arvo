@@ -1,0 +1,57 @@
+# Tach - Architecture boundary enforcement
+# Ensures proper layering: Routes -> Services -> Repos -> Models
+
+[tach]
+exact = true
+exclude = [
+    "tests",
+    "alembic",
+    "scripts",
+]
+
+[[modules]]
+path = "src.app.api"
+depends_on = [
+    "src.app.core",
+    "src.app.modules",
+    "src.app.config",
+]
+
+[[modules]]
+path = "src.app.core"
+depends_on = [
+    "src.app.config",
+]
+
+[[modules]]
+path = "src.app.modules"
+depends_on = [
+    "src.app.core",
+    "src.app.config",
+]
+
+[[modules]]
+path = "src.app.config"
+depends_on = []
+
+# Module-specific rules
+# Routes can import: schemas, services (NOT repos directly)
+# Services can import: repos, schemas, other services
+# Repos can import: models
+# Models import nothing (pure data)
+
+[[modules]]
+path = "src.app.modules.tenants"
+depends_on = [
+    "src.app.core",
+    "src.app.config",
+]
+
+[[modules]]
+path = "src.app.modules.users"
+depends_on = [
+    "src.app.core",
+    "src.app.config",
+    "src.app.modules.tenants",
+]
+

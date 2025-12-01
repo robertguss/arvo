@@ -1,7 +1,89 @@
 [project]
 name = "agency-python-starter-kit"
 version = "0.1.0"
-description = "Add your description here"
+description = "A production-ready Python backend kit for software agencies"
 readme = "README.md"
-requires-python = ">=3.13"
-dependencies = []
+requires-python = ">=3.12"
+dependencies = [
+    # Web Framework
+    "fastapi[standard]>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    
+    # Database
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    
+    # Validation & Settings
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    
+    # Redis & Background Jobs
+    "redis>=5.2.0",
+    "arq>=0.26.1",
+    
+    # Logging & Observability
+    "structlog>=24.4.0",
+    "opentelemetry-api>=1.28.0",
+    "opentelemetry-sdk>=1.28.0",
+    "opentelemetry-instrumentation-fastapi>=0.49b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.49b0",
+    "opentelemetry-instrumentation-redis>=0.49b0",
+    "opentelemetry-exporter-otlp>=1.28.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    # Testing
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.28.0",
+    "polyfactory>=2.18.0",
+    
+    # Code Quality
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "tach>=0.16.0",
+    
+    # Type Stubs
+    "types-redis>=4.6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "-ra",
+]
+markers = [
+    "unit: Unit tests (no I/O)",
+    "integration: Integration tests (database, redis)",
+    "e2e: End-to-end tests (full stack)",
+    "slow: Slow tests (excluded by default)",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
