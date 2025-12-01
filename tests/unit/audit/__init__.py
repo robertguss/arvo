@@ -1,2 +1,1 @@
 """Audit logging unit tests."""
-

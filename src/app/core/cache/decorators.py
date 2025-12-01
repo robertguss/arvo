@@ -134,7 +134,9 @@ def invalidate(
     return decorator
 
 
-def _generate_key(namespace: str, func_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
+def _generate_key(
+    namespace: str, func_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> str:
     """Generate a cache key from function arguments.
 
     Args:
@@ -152,7 +154,9 @@ def _generate_key(namespace: str, func_name: str, args: tuple[Any, ...], kwargs:
     if args and hasattr(args[0], "__class__"):
         # Check if first arg looks like 'self' (has class attributes)
         first_arg = args[0]
-        if hasattr(first_arg, "__dict__") and not isinstance(first_arg, (str, int, float, bool, list, dict, tuple)):
+        if hasattr(first_arg, "__dict__") and not isinstance(
+            first_arg, (str, int, float, bool, list, dict, tuple)
+        ):
             filtered_args = args[1:]
 
     # Build argument string for hashing
@@ -194,4 +198,3 @@ def _arg_to_string(arg: Any) -> str:
         return "{" + ",".join(pairs) + "}"
     # Fallback to repr hash
     return hashlib.md5(repr(arg).encode()).hexdigest()[:8]
-

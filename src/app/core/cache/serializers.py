@@ -32,7 +32,11 @@ class CacheEncoder(json.JSONEncoder):
             JSON-serializable representation
         """
         if isinstance(obj, BaseModel):
-            return {"__pydantic__": True, "__class__": obj.__class__.__name__, "data": obj.model_dump(mode="json")}
+            return {
+                "__pydantic__": True,
+                "__class__": obj.__class__.__name__,
+                "data": obj.model_dump(mode="json"),
+            }
         if isinstance(obj, UUID):
             return {"__uuid__": True, "value": str(obj)}
         if isinstance(obj, datetime):
@@ -89,4 +93,3 @@ def _decode_hook(obj: dict[str, Any]) -> Any:
         # Return the data dict - caller reconstructs the model
         return obj["data"]
     return obj
-

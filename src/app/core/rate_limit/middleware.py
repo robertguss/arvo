@@ -111,4 +111,3 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             client_ip = request.client.host if request.client else "unknown"
 
         return f"ip:{client_ip}"
-

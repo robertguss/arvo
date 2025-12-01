@@ -123,4 +123,3 @@ class TestRateLimitResult:
         assert result.allowed is False
         assert result.remaining == 0
         assert result.retry_after == 30
-

@@ -173,4 +173,3 @@ def get_client_ip(request: Request) -> str | None:
         return request.client.host
 
     return None
-

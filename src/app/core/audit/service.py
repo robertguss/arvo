@@ -186,4 +186,3 @@ class AuditService:
             resource_id=resource_id,
             metadata={"required_permission": required_permission},
         )
-

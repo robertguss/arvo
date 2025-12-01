@@ -29,4 +29,3 @@ __all__ = [
     "serialize",
     "store_oauth_state",
 ]
-

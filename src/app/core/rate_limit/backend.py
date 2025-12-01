@@ -150,4 +150,3 @@ class SlidingWindowRateLimiter:
 
 # Global rate limiter instance
 rate_limiter = SlidingWindowRateLimiter()
-

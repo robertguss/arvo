@@ -328,4 +328,3 @@ class TestCrossTenantAttackPrevention:
             data["tenant_victim"].id,
         )
         assert result is None
-

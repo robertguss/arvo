@@ -157,4 +157,3 @@ class TestTokenHashing:
         hash2 = hash_token("token2")
 
         assert hash1 != hash2
-

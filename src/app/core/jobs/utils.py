@@ -52,4 +52,3 @@ def get_redis_settings() -> RedisSettings:
         password=password,
         database=0,
     )
-

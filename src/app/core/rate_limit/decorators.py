@@ -23,9 +23,7 @@ def rate_limit(
     requests: int | None = None,
     window: int | None = None,
     key_func: Callable[[Request], str] | None = None,
-) -> Callable[
-    [Callable[P, Awaitable[T]]], Callable[P, Awaitable[T | Response]]
-]:
+) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T | Response]]]:
     """Decorator to apply custom rate limits to a route.
 
     Args:
@@ -126,4 +124,3 @@ def _get_default_identifier(request: Request) -> str:
         client_ip = request.client.host if request.client else "unknown"
 
     return f"ip:{client_ip}"
-

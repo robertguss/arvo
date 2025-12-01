@@ -58,7 +58,9 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     """Schema for creating a new user with password."""
 
-    password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+    password: str = Field(
+        ..., min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH
+    )
 
     @field_validator("password")
     @classmethod
@@ -87,7 +89,9 @@ class UserPasswordUpdate(BaseModel):
     """Schema for updating user password."""
 
     current_password: str
-    new_password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+    new_password: str = Field(
+        ..., min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH
+    )
 
     @field_validator("new_password")
     @classmethod
@@ -166,7 +170,9 @@ class RegisterRequest(BaseModel):
     """
 
     email: EmailStr
-    password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+    password: str = Field(
+        ..., min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH
+    )
     full_name: str = Field(..., min_length=1, max_length=255)
     tenant_name: str = Field(..., min_length=1, max_length=255)
 
@@ -185,4 +191,3 @@ class RegisterResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     expires_in: int
-

@@ -255,4 +255,3 @@ class AuthService:
 
 # Type alias for dependency injection
 AuthSvc = Annotated[AuthService, Depends(AuthService)]
-

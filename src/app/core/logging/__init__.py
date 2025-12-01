@@ -6,4 +6,3 @@ from app.core.logging.middleware import RequestLoggingMiddleware
 __all__ = [
     "RequestLoggingMiddleware",
 ]
-

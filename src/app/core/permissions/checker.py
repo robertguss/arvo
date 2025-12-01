@@ -178,4 +178,3 @@ async def check_permission(
 
     checker = PermissionChecker(session)
     return await checker.has_permission(user.id, user.tenant_id, resource, action)
-

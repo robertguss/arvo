@@ -56,4 +56,3 @@ async def cleanup_expired_tokens(ctx: dict[str, Any]) -> dict[str, int]:
         "refresh_tokens_deleted": refresh_count,
         "revoked_tokens_deleted": revoked_count,
     }
-

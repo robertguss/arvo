@@ -101,4 +101,3 @@ class AuditLog(Base, UUIDMixin):
             f"<AuditLog(id={self.id}, action={self.action}, "
             f"resource_type={self.resource_type}, resource_id={self.resource_id})>"
         )
-

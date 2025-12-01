@@ -31,4 +31,3 @@ def generate_slug(name: str, max_length: int = MAX_SLUG_LENGTH) -> str:
     slug = re.sub(r"[^\w\s-]", "", slug)
     slug = re.sub(r"[-\s]+", "-", slug)
     return slug[:max_length]
-

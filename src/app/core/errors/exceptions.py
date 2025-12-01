@@ -163,4 +163,3 @@ class ServiceUnavailableError(AppException):
     message = "Service temporarily unavailable"
     error_code = "service_unavailable"
     status_code = 503
-

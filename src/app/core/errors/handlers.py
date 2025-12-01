@@ -190,4 +190,3 @@ def register_exception_handlers(app: FastAPI) -> None:
         RequestValidationError, cast("ExceptionHandler", validation_exception_handler)
     )
     app.add_exception_handler(Exception, generic_exception_handler)
-

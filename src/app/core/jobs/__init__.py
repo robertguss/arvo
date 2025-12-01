@@ -16,4 +16,3 @@ __all__ = [
     "get_arq_pool",
     "init_arq_pool",
 ]
-
