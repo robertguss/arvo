@@ -6,7 +6,6 @@ Provides endpoints for OAuth authentication flow:
 - Link/unlink accounts
 """
 
-
 import structlog
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel

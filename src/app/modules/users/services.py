@@ -256,4 +256,3 @@ class UserService:
 
 # Type alias for dependency injection
 UserSvc = Annotated[UserService, Depends(UserService)]
-

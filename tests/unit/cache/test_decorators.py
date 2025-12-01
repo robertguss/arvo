@@ -142,4 +142,3 @@ class TestSerializers:
         serialized = serialize(data)
         deserialized = deserialize(serialized)
         assert deserialized["tags"] == {1, 2, 3}
-

@@ -102,4 +102,3 @@ class WorkerSettings:
     keep_result = 3600  # Keep results for 1 hour
     retry_jobs = True  # Retry failed jobs
     max_tries = 3  # Maximum retry attempts
-

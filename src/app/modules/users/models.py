@@ -175,4 +175,3 @@ class RevokedToken(Base, UUIDMixin, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<RevokedToken(id={self.id}, jti={self.jti[:8]}...)>"
-

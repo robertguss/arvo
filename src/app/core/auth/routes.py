@@ -7,7 +7,6 @@ Provides endpoints for:
 - OAuth callbacks
 """
 
-
 from fastapi import APIRouter, Request, status
 
 from app.core.auth.dependencies import CurrentUser
@@ -160,4 +159,3 @@ async def get_me(
 ) -> UserResponse:
     """Get current user profile."""
     return UserResponse.model_validate(current_user)
-

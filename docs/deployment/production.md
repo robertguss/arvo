@@ -170,37 +170,24 @@ api.yourdomain.com {
 
 ## Environment Configuration
 
-Create a `.env.prod` file:
+Create a `.env.prod` file from the template:
 
 ```bash
-# .env.prod
-
-# Application
-SECRET_KEY=your-production-secret-key  # Generate with: just secret
-ENVIRONMENT=production
-DEBUG=false
-LOG_LEVEL=INFO
-
-# Database
-DATABASE_URL=postgresql+asyncpg://postgres:your-db-password@postgres:5432/agency_standard
-DB_USER=postgres
-DB_PASSWORD=your-db-password
-DB_NAME=agency_standard
-
-# Redis
-REDIS_URL=redis://redis:6379
-
-# Optional: OAuth providers
-GOOGLE_CLIENT_ID=
-GOOGLE_CLIENT_SECRET=
-MICROSOFT_CLIENT_ID=
-MICROSOFT_CLIENT_SECRET=
-GITHUB_CLIENT_ID=
-GITHUB_CLIENT_SECRET=
-
-# Optional: Observability
-OTLP_ENDPOINT=
+cd deploy
+cp env.prod.example .env.prod
+# Edit .env.prod with your production values
 ```
+
+Key variables to configure:
+
+| Variable | Description |
+|----------|-------------|
+| `SECRET_KEY` | JWT signing key (generate with `just secret`) |
+| `DB_PASSWORD` | Strong database password |
+| `DOMAIN` | Your API domain (e.g., `api.example.com`) |
+| `ACME_EMAIL` | Email for Let's Encrypt notifications |
+
+See `deploy/env.prod.example` for all available options.
 
 !!! warning "Security"
     Never commit `.env.prod` to version control. Use secrets management in CI/CD.
@@ -236,6 +223,21 @@ cp .env.example .env.prod
 
 ### 4. Build and Start
 
+Using justfile commands:
+
+```bash
+# Build production image
+just build
+
+# Start production services
+just prod-up
+
+# Run migrations
+just prod-migrate
+```
+
+Or using docker compose directly:
+
 ```bash
 # Build images
 docker compose -f deploy/docker-compose.prod.yml build
@@ -254,12 +256,29 @@ docker compose -f deploy/docker-compose.prod.yml exec app alembic upgrade head
 docker compose -f deploy/docker-compose.prod.yml ps
 
 # Check logs
-docker compose -f deploy/docker-compose.prod.yml logs app
+just prod-logs
+
+# Or view a specific service
+just prod-logs postgres
 
 # Test endpoints
 curl https://api.yourdomain.com/health/live
 curl https://api.yourdomain.com/health/ready
 ```
+
+## Production Commands
+
+The justfile provides convenient commands for production management:
+
+| Command | Description |
+|---------|-------------|
+| `just build` | Build production Docker image |
+| `just prod-up` | Start production stack |
+| `just prod-down` | Stop production stack |
+| `just prod-logs` | View production logs (app by default) |
+| `just prod-logs postgres` | View specific service logs |
+| `just prod-restart app` | Restart a specific service |
+| `just prod-migrate` | Run database migrations |
 
 ## Updates and Rollbacks
 

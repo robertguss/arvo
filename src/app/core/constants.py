@@ -38,4 +38,3 @@ ACCESS_TOKEN_JTI_LENGTH = 32
 # Secret key requirements
 MIN_SECRET_KEY_LENGTH = 32
 DEFAULT_INSECURE_SECRET = "change-me-in-production"
-

@@ -114,13 +114,17 @@ db-current:
 # SEED DATA
 # ============================================================
 
-# Generate demo data
+# Generate default seed data
 seed:
     uv run python scripts/seed.py
 
-# Seed with specific scenario
+# Seed with specific scenario (default, demo, full)
 seed-scenario scenario:
     uv run python scripts/seed.py --scenario {{scenario}}
+
+# Seed full demo (tenants + users + roles + permissions)
+seed-full:
+    uv run python scripts/seed.py --scenario full
 
 # ============================================================
 # AI CONTEXT
@@ -138,13 +142,38 @@ update-context:
 build:
     docker build -f deploy/Dockerfile -t agency-standard:latest .
 
-# Deploy to production
-deploy:
+# Deploy to production (requires deploy/.env.prod)
+prod-up:
     docker compose -f deploy/docker-compose.prod.yml up -d
 
-# View logs
+# Stop production stack
+prod-down:
+    docker compose -f deploy/docker-compose.prod.yml down
+
+# View production logs
+prod-logs service="app":
+    docker compose -f deploy/docker-compose.prod.yml logs -f {{service}}
+
+# Restart production service
+prod-restart service="app":
+    docker compose -f deploy/docker-compose.prod.yml restart {{service}}
+
+# Run migrations in production
+prod-migrate:
+    docker compose -f deploy/docker-compose.prod.yml exec app alembic upgrade head
+
+# View development logs
 logs service="app":
     docker compose -f deploy/docker-compose.yml logs -f {{service}}
+
+# ============================================================
+# FRONTEND BRIDGE
+# ============================================================
+
+# Generate TypeScript client from OpenAPI (requires dev server running)
+gen-client output="../frontend/src/api":
+    npx --yes openapi-typescript http://localhost:8000/openapi.json --output {{output}}/schema.ts
+    @echo "✓ Generated TypeScript client at {{output}}/schema.ts"
 
 # ============================================================
 # DOCUMENTATION

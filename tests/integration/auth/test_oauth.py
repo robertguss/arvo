@@ -58,7 +58,9 @@ class TestOAuthAuthorize:
     async def test_authorize_returns_url_and_state(self, client: AsyncClient):
         """GET /api/v1/auth/oauth/{provider}/authorize should return auth URL."""
         mock_provider = MagicMock()
-        mock_provider.get_authorize_url.return_value = "https://accounts.google.com/o/oauth2/v2/auth?..."
+        mock_provider.get_authorize_url.return_value = (
+            "https://accounts.google.com/o/oauth2/v2/auth?..."
+        )
 
         with (
             patch(
@@ -376,4 +378,3 @@ class TestOAuthStateSecurity:
             )
 
         assert response.status_code == 400
-

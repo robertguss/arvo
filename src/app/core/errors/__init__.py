@@ -34,4 +34,3 @@ __all__ = [
     "ValidationError",
     "register_exception_handlers",
 ]
-

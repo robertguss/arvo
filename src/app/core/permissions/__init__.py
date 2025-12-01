@@ -16,4 +16,3 @@ __all__ = [
     # Decorators
     "require_permission",
 ]
-

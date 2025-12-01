@@ -224,4 +224,3 @@ class TestAuditContextAsyncIsolation:
             assert result["expected_request"] == result["actual_request"], (
                 f"Task {task_id} saw wrong request_id"
             )
-

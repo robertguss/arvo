@@ -314,4 +314,3 @@ class TestPermissionDecorators:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 200
-

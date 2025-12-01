@@ -194,4 +194,3 @@ def get_token_expiration(days: int | None = None) -> datetime:
     if days is None:
         days = settings.refresh_token_expire_days
     return datetime.now(UTC) + timedelta(days=days)
-

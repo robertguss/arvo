@@ -225,8 +225,12 @@ class TestPermissionChecker:
         # Should match any permission
         assert await checker.has_permission(user.id, user.tenant_id, "users", "read")
         assert await checker.has_permission(user.id, user.tenant_id, "users", "write")
-        assert await checker.has_permission(user.id, user.tenant_id, "projects", "delete")
-        assert await checker.has_permission(user.id, user.tenant_id, "anything", "whatever")
+        assert await checker.has_permission(
+            user.id, user.tenant_id, "projects", "delete"
+        )
+        assert await checker.has_permission(
+            user.id, user.tenant_id, "anything", "whatever"
+        )
 
     async def test_has_any_permission(
         self,
@@ -365,4 +369,3 @@ class TestCheckPermissionFunction:
         """Regular user without permission should fail."""
         result = await check_permission(regular_user, "users", "delete", db)
         assert result is False
-

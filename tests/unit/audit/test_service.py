@@ -182,4 +182,3 @@ class TestAuditService:
         assert added_entry.action == "permission_denied"
         assert added_entry.resource_type == "project"
         assert added_entry.metadata_["required_permission"] == "project:delete"
-

@@ -129,4 +129,3 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         structlog.contextvars.unbind_contextvars("request_id", "tenant_id", "user_id")
 
         return response
-

@@ -107,7 +107,9 @@ class UserRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def get_by_oauth(self, provider: str, oauth_id: str, tenant_id: UUID) -> User | None:
+    async def get_by_oauth(
+        self, provider: str, oauth_id: str, tenant_id: UUID
+    ) -> User | None:
         """Get a user by OAuth provider and ID, scoped to tenant.
 
         Args:
@@ -181,7 +183,9 @@ class UserRepository:
             Tuple of (users list, total count)
         """
         # Count total
-        count_stmt = select(func.count()).select_from(User).where(User.tenant_id == tenant_id)
+        count_stmt = (
+            select(func.count()).select_from(User).where(User.tenant_id == tenant_id)
+        )
         count_result = await self.session.execute(count_stmt)
         total = count_result.scalar_one()
 
@@ -370,4 +374,3 @@ class RevokedTokenRepository:
 UserRepo = Annotated[UserRepository, Depends(UserRepository)]
 RefreshTokenRepo = Annotated[RefreshTokenRepository, Depends(RefreshTokenRepository)]
 RevokedTokenRepo = Annotated[RevokedTokenRepository, Depends(RevokedTokenRepository)]
-

@@ -121,4 +121,3 @@ async def test_cleanup_expired_tokens_removes_expired_revoked_tokens(db: AsyncSe
         select(RevokedToken).where(RevokedToken.id == expired_revoked.id)
     )
     assert result_query.scalar_one_or_none() is None
-

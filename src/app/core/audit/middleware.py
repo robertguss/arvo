@@ -48,13 +48,15 @@ def set_audit_context(
         ip_address: Client IP address
         user_agent: Client user agent
     """
-    _audit_context.set({
-        "tenant_id": tenant_id,
-        "user_id": user_id,
-        "request_id": request_id,
-        "ip_address": ip_address,
-        "user_agent": user_agent,
-    })
+    _audit_context.set(
+        {
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "request_id": request_id,
+            "ip_address": ip_address,
+            "user_agent": user_agent,
+        }
+    )
 
 
 def clear_audit_context() -> None:
@@ -232,4 +234,3 @@ def setup_audit_listeners() -> None:
         for obj in session.deleted:
             if _should_audit(obj):
                 _create_audit_entry(session, "delete", obj)
-

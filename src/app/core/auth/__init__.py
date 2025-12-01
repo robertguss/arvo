@@ -57,4 +57,3 @@ __all__ = [
     "oauth_router",
     "verify_password",
 ]
-

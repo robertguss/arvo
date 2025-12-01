@@ -92,4 +92,3 @@ class RefreshTokenFactory(SQLAlchemyFactory):
     def revoked(cls) -> bool:
         """Default to not revoked."""
         return False
-

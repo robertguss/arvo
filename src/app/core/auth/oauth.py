@@ -203,4 +203,3 @@ def generate_state() -> str:
         URL-safe random string
     """
     return secrets.token_urlsafe(32)
-

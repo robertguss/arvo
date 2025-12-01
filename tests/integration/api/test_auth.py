@@ -288,4 +288,3 @@ class TestLogout:
             json={"refresh_token": refresh_token},
         )
         assert refresh_response.status_code == 401
-

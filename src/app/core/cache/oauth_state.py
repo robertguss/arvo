@@ -90,7 +90,9 @@ async def get_oauth_state(state: str) -> OAuthStateData | None:
     )
 
 
-async def verify_oauth_state(state: str, expected_provider: str) -> OAuthStateData | None:
+async def verify_oauth_state(
+    state: str, expected_provider: str
+) -> OAuthStateData | None:
     """Verify OAuth state and check provider matches.
 
     Combines state retrieval with provider verification.
@@ -117,4 +119,3 @@ async def verify_oauth_state(state: str, expected_provider: str) -> OAuthStateDa
         return None
 
     return data
-
