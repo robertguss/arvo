@@ -9,6 +9,7 @@ from sqlalchemy import text
 
 from app.api.dependencies import DBSession
 from app.config import settings
+from app.core.auth import auth_router, oauth_router
 from app.modules import discover_modules
 
 
@@ -91,6 +92,10 @@ async def info() -> dict[str, Any]:
 
 # Create versioned API router
 v1_router = APIRouter(prefix="/api/v1")
+
+# Mount auth routers
+v1_router.include_router(auth_router)
+v1_router.include_router(oauth_router)
 
 # Mount discovered module routers
 for module_router in discover_modules():

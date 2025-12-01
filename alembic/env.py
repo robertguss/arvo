@@ -13,6 +13,8 @@ from app.core.database import Base
 
 # Import all models to ensure they're registered with Base.metadata
 from app.modules.tenants.models import Tenant  # noqa: F401
+from app.modules.users.models import RefreshToken, User  # noqa: F401
+from app.core.permissions.models import Permission, Role, UserRole  # noqa: F401
 
 
 # Alembic Config object

@@ -10,6 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import api_router
 from app.config import settings
+from app.core.auth import RequestIdMiddleware, TenantContextMiddleware
+from app.core.errors import register_exception_handlers
+from app.core.logging import RequestLoggingMiddleware
 
 
 # Configure structlog
@@ -82,6 +85,18 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Add request ID middleware (outermost, runs first)
+    app.add_middleware(RequestIdMiddleware)
+
+    # Add tenant context middleware
+    app.add_middleware(TenantContextMiddleware)
+
+    # Add request logging middleware
+    app.add_middleware(RequestLoggingMiddleware)
+
+    # Register exception handlers for RFC 7807 error responses
+    register_exception_handlers(app)
 
     # Include API router
     app.include_router(api_router)
