@@ -84,9 +84,9 @@ class RefreshTokenFactory(SQLAlchemyFactory):
         return uuid4().hex * 2  # 64 chars like SHA-256
 
     @classmethod
-    def expires_at(cls) -> str:
+    def expires_at(cls) -> datetime:
         """Generate expiration time."""
-        return (datetime.now(UTC) + timedelta(days=7)).isoformat()
+        return datetime.now(UTC) + timedelta(days=7)
 
     @classmethod
     def revoked(cls) -> bool:

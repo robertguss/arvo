@@ -4,6 +4,10 @@ Provides automatic tracking of model changes for models that
 inherit from AuditMixin.
 """
 
+from contextvars import ContextVar
+from datetime import date, datetime
+from decimal import Decimal
+from enum import Enum
 from typing import Any
 from uuid import UUID
 
@@ -17,9 +21,11 @@ from app.core.audit.models import AuditLog
 log = structlog.get_logger()
 
 
-# Thread-local storage for audit context
-# This is set by the request middleware and used by event listeners
-_audit_context: dict[str, Any] = {}
+# ContextVar for async-safe audit context storage
+# Each async task/request gets its own isolated context
+_audit_context: ContextVar[dict[str, Any] | None] = ContextVar(
+    "audit_context", default=None
+)
 
 
 def set_audit_context(
@@ -32,7 +38,8 @@ def set_audit_context(
     """Set the audit context for the current request.
 
     This should be called by middleware to provide context
-    for automatic audit logging.
+    for automatic audit logging. Creates a new dict to ensure
+    isolation between concurrent requests.
 
     Args:
         tenant_id: Current tenant ID
@@ -41,25 +48,67 @@ def set_audit_context(
         ip_address: Client IP address
         user_agent: Client user agent
     """
-    _audit_context["tenant_id"] = tenant_id
-    _audit_context["user_id"] = user_id
-    _audit_context["request_id"] = request_id
-    _audit_context["ip_address"] = ip_address
-    _audit_context["user_agent"] = user_agent
+    _audit_context.set({
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "request_id": request_id,
+        "ip_address": ip_address,
+        "user_agent": user_agent,
+    })
 
 
 def clear_audit_context() -> None:
     """Clear the audit context after request completes."""
-    _audit_context.clear()
+    _audit_context.set(None)
 
 
 def get_audit_context() -> dict[str, Any]:
     """Get the current audit context.
 
     Returns:
-        Current audit context dict
+        Shallow copy of current audit context dict, or empty dict if not set
     """
-    return _audit_context.copy()
+    ctx = _audit_context.get()
+    if ctx is None:
+        return {}
+    return ctx.copy()
+
+
+def _serialize_value(value: Any) -> Any:
+    """Serialize a value to JSON-compatible primitives.
+
+    Recursively converts non-JSON-serializable types to their
+    string or primitive representations.
+
+    Args:
+        value: Any value to serialize
+
+    Returns:
+        JSON-serializable representation of the value
+    """
+    # Pass through JSON primitives
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    # Handle specific types that need conversion
+    result: Any
+    if isinstance(value, UUID):
+        result = str(value)
+    elif isinstance(value, (datetime, date)):
+        result = value.isoformat()
+    elif isinstance(value, Decimal):
+        result = str(value)
+    elif isinstance(value, Enum):
+        result = value.value
+    elif isinstance(value, dict):
+        result = {k: _serialize_value(v) for k, v in value.items()}
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        result = [_serialize_value(item) for item in value]
+    else:
+        # Fallback: convert to string
+        result = str(value)
+
+    return result
 
 
 def _get_changes(obj: Any) -> dict[str, dict[str, Any]]:
@@ -83,13 +132,10 @@ def _get_changes(obj: Any) -> dict[str, dict[str, Any]]:
             old_value = history.deleted[0] if history.deleted else None
             new_value = history.added[0] if history.added else None
 
-            # Convert UUIDs to strings for JSON serialization
-            if isinstance(old_value, UUID):
-                old_value = str(old_value)
-            if isinstance(new_value, UUID):
-                new_value = str(new_value)
-
-            changes[attr.key] = {"old": old_value, "new": new_value}
+            changes[attr.key] = {
+                "old": _serialize_value(old_value),
+                "new": _serialize_value(new_value),
+            }
 
     return changes
 

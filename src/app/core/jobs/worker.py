@@ -8,11 +8,11 @@ from typing import Any, ClassVar
 
 import structlog
 from arq import cron
-from arq.connections import RedisSettings
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.core.jobs.tasks.cleanup import cleanup_expired_tokens
+from app.core.jobs.utils import get_redis_settings
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -68,42 +68,6 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     log.info("worker_shutdown_complete")
 
 
-def _get_redis_settings() -> RedisSettings:
-    """Get Redis settings for ARQ.
-
-    Returns:
-        ARQ RedisSettings
-    """
-    # Parse redis URL
-    url = str(settings.redis_url)
-    if url.startswith("redis://"):
-        url = url[8:]
-
-    if "@" in url:
-        auth, host_port = url.split("@", 1)
-    else:
-        auth = None
-        host_port = url
-
-    if ":" in host_port:
-        host, port_str = host_port.split(":", 1)
-        port = int(port_str.split("/")[0]) if port_str else 6379
-    else:
-        host = host_port.split("/")[0]
-        port = 6379
-
-    password = None
-    if auth and ":" in auth:
-        _, password = auth.split(":", 1)
-
-    return RedisSettings(
-        host=host,
-        port=port,
-        password=password,
-        database=0,
-    )
-
-
 class WorkerSettings:
     """ARQ worker settings.
 
@@ -130,7 +94,7 @@ class WorkerSettings:
     on_shutdown = shutdown
 
     # Redis connection
-    redis_settings = _get_redis_settings()
+    redis_settings = get_redis_settings()
 
     # Worker configuration
     max_jobs = 10  # Maximum concurrent jobs
