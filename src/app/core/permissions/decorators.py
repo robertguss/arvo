@@ -4,9 +4,9 @@ This module provides decorators that can be applied to FastAPI
 routes to require specific permissions.
 """
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from functools import wraps
-from typing import TYPE_CHECKING, ParamSpec, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import structlog
 
@@ -87,7 +87,7 @@ async def _check_permissions(
 
 
 def _get_user_and_db(
-    kwargs: dict,
+    kwargs: dict[str, Any],
 ) -> tuple["User | None", "AsyncSession | None", "Request | None"]:
     """Extract user, db session, and request from kwargs.
 
@@ -103,7 +103,9 @@ def _get_user_and_db(
     return user, db, request
 
 
-def require_permission(resource: str, action: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
+def require_permission(
+    resource: str, action: str
+) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[R]]]:
     """Decorator that requires a specific permission to access a route.
 
     Usage:
@@ -127,7 +129,7 @@ def require_permission(resource: str, action: str) -> Callable[[Callable[P, R]],
 
 def require_any_permission(
     permissions: list[tuple[str, str]],
-) -> Callable[[Callable[P, R]], Callable[P, R]]:
+) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[R]]]:
     """Decorator that requires any one of the specified permissions.
 
     Usage:
@@ -143,7 +145,7 @@ def require_any_permission(
         Decorator function
     """
 
-    def decorator(func: Callable[P, R]) -> Callable[P, R]:
+    def decorator(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
         @wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             user, db, request = _get_user_and_db(kwargs)
@@ -181,7 +183,7 @@ def require_any_permission(
 
 def require_all_permissions(
     permissions: list[tuple[str, str]],
-) -> Callable[[Callable[P, R]], Callable[P, R]]:
+) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Awaitable[R]]]:
     """Decorator that requires all of the specified permissions.
 
     Usage:
@@ -197,7 +199,7 @@ def require_all_permissions(
         Decorator function
     """
 
-    def decorator(func: Callable[P, R]) -> Callable[P, R]:
+    def decorator(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]:
         @wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             user, db, request = _get_user_and_db(kwargs)

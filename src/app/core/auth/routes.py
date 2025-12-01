@@ -29,11 +29,12 @@ def _get_client_info(request: Request) -> tuple[str | None, str | None]:
     """Extract client info from request."""
     user_agent = request.headers.get("User-Agent")
     # Get IP from X-Forwarded-For or client host
+    ip_address: str | None = None
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
         ip_address = forwarded.split(",")[0].strip()
-    else:
-        ip_address = request.client.host if request.client else None
+    elif request.client:
+        ip_address = request.client.host
     return user_agent, ip_address
 
 

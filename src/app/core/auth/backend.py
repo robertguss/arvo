@@ -167,7 +167,7 @@ def decode_token(token: str) -> TokenData | None:
         token_type = payload.get("type", "access")
         jti = payload.get("jti")
 
-        if not user_id or not tenant_id:
+        if not user_id or not tenant_id or exp is None:
             return None
 
         return TokenData(

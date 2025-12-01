@@ -7,7 +7,7 @@ These tests verify the permission decorator behavior on routes including:
 """
 
 import pytest
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 

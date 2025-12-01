@@ -6,7 +6,6 @@ Provides endpoints for OAuth authentication flow:
 - Link/unlink accounts
 """
 
-from typing import Any
 
 import structlog
 from fastapi import APIRouter, Query, Request
@@ -330,7 +329,7 @@ async def oauth_callback(
     provider: str,
     request: Request,
     db: DBSession,
-    code: str = Query(..., description="Authorization code from provider"),
+    code: str | None = Query(None, description="Authorization code from provider"),
     state: str = Query(..., description="State parameter for CSRF verification"),
     error: str | None = Query(None, description="Error from provider"),
     error_description: str | None = Query(None, description="Error description"),
@@ -351,6 +350,13 @@ async def oauth_callback(
         raise BadRequestError(
             error_description or f"OAuth error: {error}",
             error_code="oauth_error",
+        )
+
+    # Validate that code is provided
+    if not code:
+        raise BadRequestError(
+            "Authorization code is required",
+            error_code="missing_code",
         )
 
     # Step 1: Verify state (CSRF protection)

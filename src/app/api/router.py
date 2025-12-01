@@ -10,6 +10,7 @@ from sqlalchemy import text
 from app.api.dependencies import DBSession
 from app.config import settings
 from app.core.auth import auth_router, oauth_router
+from app.core.cache.redis import redis_client
 from app.modules import discover_modules
 
 
@@ -61,7 +62,13 @@ async def readiness(db: DBSession) -> JSONResponse:
     except Exception as e:
         checks["database"] = str(e)
 
-    # Note: Redis check will be added in Phase 2 with cache layer
+    # Redis check
+    try:
+        async with redis_client() as client:
+            await client.ping()
+        checks["redis"] = "ok"
+    except Exception as e:
+        checks["redis"] = str(e)
 
     all_ok = all(v == "ok" for v in checks.values())
 

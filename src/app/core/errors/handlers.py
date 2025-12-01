@@ -6,7 +6,7 @@ RFC 7807 "Problem Details for HTTP APIs" specification.
 See: https://tools.ietf.org/html/rfc7807
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from fastapi import FastAPI, Request, status
@@ -14,7 +14,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.config import settings
 from app.core.errors.exceptions import AppException
+
+
+if TYPE_CHECKING:
+    from starlette.types import ExceptionHandler
 
 
 logger = structlog.get_logger()
@@ -62,8 +67,6 @@ def _get_error_type_uri(error_code: str) -> str:
 
     In production, this should point to documentation about the error.
     """
-    from app.config import settings
-
     return f"{settings.api_docs_base_url}/errors/{error_code}"
 
 
@@ -180,7 +183,11 @@ def register_exception_handlers(app: FastAPI) -> None:
         app = FastAPI()
         register_exception_handlers(app)
     """
-    app.add_exception_handler(AppException, app_exception_handler)
-    app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(
+        AppException, cast("ExceptionHandler", app_exception_handler)
+    )
+    app.add_exception_handler(
+        RequestValidationError, cast("ExceptionHandler", validation_exception_handler)
+    )
     app.add_exception_handler(Exception, generic_exception_handler)
 

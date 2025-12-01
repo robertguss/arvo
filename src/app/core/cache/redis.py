@@ -4,9 +4,9 @@ Provides async Redis client with connection pooling for
 caching, session storage, and distributed state.
 """
 
-from collections.abc import AsyncGenerator
+import json
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import redis.asyncio as redis
 from redis.asyncio.connection import ConnectionPool
@@ -14,23 +14,32 @@ from redis.asyncio.connection import ConnectionPool
 from app.config import settings
 
 
-# Connection pool for efficient connection reuse
-_pool: ConnectionPool | None = None
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
-def _get_pool() -> ConnectionPool:
+class RedisPoolHolder:
+    """Holder for the Redis connection pool.
+
+    Uses a class attribute to manage module-level state without
+    global statements.
+    """
+
+    pool: "ConnectionPool[Any]| None" = None
+
+
+def _get_pool() -> "ConnectionPool[Any]":
     """Get or create the Redis connection pool."""
-    global _pool
-    if _pool is None:
-        _pool = ConnectionPool.from_url(
+    if RedisPoolHolder.pool is None:
+        RedisPoolHolder.pool = ConnectionPool.from_url(
             str(settings.redis_url),
             max_connections=50,
             decode_responses=True,
         )
-    return _pool
+    return RedisPoolHolder.pool
 
 
-async def get_redis() -> AsyncGenerator[redis.Redis, None]:  # type: ignore[type-arg]
+async def get_redis() -> "AsyncGenerator[redis.Redis[Any], None]":
     """Get a Redis client from the connection pool.
 
     Yields:
@@ -44,11 +53,11 @@ async def get_redis() -> AsyncGenerator[redis.Redis, None]:  # type: ignore[type
     try:
         yield client
     finally:
-        await client.aclose()
+        await client.close()
 
 
 @asynccontextmanager
-async def redis_client() -> AsyncGenerator[redis.Redis, None]:  # type: ignore[type-arg]
+async def redis_client() -> "AsyncGenerator[redis.Redis[Any], None]":
     """Context manager for Redis client.
 
     Usage:
@@ -59,7 +68,7 @@ async def redis_client() -> AsyncGenerator[redis.Redis, None]:  # type: ignore[t
     try:
         yield client
     finally:
-        await client.aclose()
+        await client.close()
 
 
 async def close_redis_pool() -> None:
@@ -67,10 +76,9 @@ async def close_redis_pool() -> None:
 
     Call this during application shutdown.
     """
-    global _pool
-    if _pool is not None:
-        await _pool.disconnect()
-        _pool = None
+    if RedisPoolHolder.pool is not None:
+        await RedisPoolHolder.pool.disconnect()
+        RedisPoolHolder.pool = None
 
 
 class RedisCache:
@@ -172,8 +180,6 @@ class RedisCache:
             value: Dictionary to cache as JSON
             ttl_seconds: Optional TTL in seconds
         """
-        import json
-
         await self.set(key, json.dumps(value), ttl_seconds)
 
     async def get_json(self, key: str) -> dict[str, Any] | None:
@@ -185,11 +191,10 @@ class RedisCache:
         Returns:
             Parsed dictionary or None if not found
         """
-        import json
-
         data = await self.get(key)
         if data:
-            return json.loads(data)
+            result: dict[str, Any] = json.loads(data)
+            return result
         return None
 
     async def get_json_and_delete(self, key: str) -> dict[str, Any] | None:
@@ -201,10 +206,8 @@ class RedisCache:
         Returns:
             Parsed dictionary or None if not found
         """
-        import json
-
         data = await self.get_and_delete(key)
         if data:
-            return json.loads(data)
+            result: dict[str, Any] = json.loads(data)
+            return result
         return None
-
