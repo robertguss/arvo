@@ -57,6 +57,14 @@ dev = [
     "types-redis>=4.6.0",
     "types-passlib>=1.7.7",
     "types-python-jose>=3.3.4",
+    
+    # Documentation
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.5.0",
+    
+    # AI Context Generation
+    "pyyaml>=6.0.0",
+    "types-pyyaml>=6.0.0",
 ]
 
 [build-system]

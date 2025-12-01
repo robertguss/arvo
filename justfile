@@ -147,6 +147,18 @@ logs service="app":
     docker compose -f deploy/docker-compose.yml logs -f {{service}}
 
 # ============================================================
+# DOCUMENTATION
+# ============================================================
+
+# Serve documentation locally
+docs:
+    uv run mkdocs serve
+
+# Build documentation
+docs-build:
+    uv run mkdocs build
+
+# ============================================================
 # UTILITIES
 # ============================================================
 
