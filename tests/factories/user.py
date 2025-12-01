@@ -14,6 +14,8 @@ class UserFactory(SQLAlchemyFactory):
     """Factory for creating test User instances."""
 
     __model__ = User
+    # Don't auto-create related objects (like roles)
+    __set_relationships__ = False
 
     @classmethod
     def email(cls) -> str:
