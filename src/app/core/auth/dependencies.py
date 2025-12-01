@@ -77,7 +77,8 @@ async def get_current_user(
     from app.modules.users.repos import UserRepository  # noqa: PLC0415
 
     repo = UserRepository(db)
-    user = await repo.get_by_id(token_data.user_id)
+    # Use tenant-scoped lookup for security
+    user = await repo.get_by_id(token_data.user_id, token_data.tenant_id)
 
     if not user:
         raise UnauthorizedError(
@@ -180,7 +181,8 @@ async def get_optional_user(
     from app.modules.users.repos import UserRepository  # noqa: PLC0415
 
     repo = UserRepository(db)
-    user = await repo.get_by_id(token_data.user_id)
+    # Use tenant-scoped lookup for security
+    user = await repo.get_by_id(token_data.user_id, token_data.tenant_id)
 
     if not user or not user.is_active:
         return None

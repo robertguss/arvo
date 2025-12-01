@@ -62,7 +62,9 @@ def _get_error_type_uri(error_code: str) -> str:
 
     In production, this should point to documentation about the error.
     """
-    return f"https://api.example.com/errors/{error_code}"
+    from app.config import settings
+
+    return f"{settings.api_docs_base_url}/errors/{error_code}"
 
 
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:

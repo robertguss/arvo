@@ -14,12 +14,14 @@ class TokenData(BaseModel):
         tenant_id: The tenant's UUID
         exp: Token expiration time
         type: Token type (access or refresh)
+        jti: Unique token identifier (for revocation)
     """
 
     user_id: UUID
     tenant_id: UUID
     exp: datetime
     type: str = "access"
+    jti: str | None = None
 
 
 class TokenPair(BaseModel):

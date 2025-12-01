@@ -1,4 +1,5 @@
 # Consolidated Review Findings
+
 ## Agency Standard Python Kit - Phase 2 Complete
 
 **Review Date:** 2025-11-30
@@ -9,13 +10,13 @@
 
 ## Summary
 
-| Priority | Count | Status |
-|----------|-------|--------|
-| P0 - Critical (Production Blockers) | 4 | Must fix before production |
-| P1 - High Priority | 9 | Fix before next release |
-| P2 - Medium Priority | 7 | Plan for next sprint |
-| P3 - Low Priority | 4 | Track in backlog |
-| **Total** | **24** | |
+| Priority                            | Count  | Status                     |
+| ----------------------------------- | ------ | -------------------------- |
+| P0 - Critical (Production Blockers) | 4      | Must fix before production |
+| P1 - High Priority                  | 9      | Fix before next release    |
+| P2 - Medium Priority                | 7      | Plan for next sprint       |
+| P3 - Low Priority                   | 4      | Track in backlog           |
+| **Total**                           | **24** |                            |
 
 **Estimated Total Effort:** 80-90 hours
 
@@ -34,6 +35,7 @@ These issues MUST be resolved before any production deployment.
 **Effort:** 4 hours
 
 **Location:**
+
 - `src/app/core/database/tenant.py:26-97` - TenantSession exists but unused
 - `src/app/modules/users/repos.py:38-52` - tenant_id is optional
 - `src/app/core/auth/dependencies.py:80` - get_by_id without tenant_id
@@ -42,6 +44,7 @@ These issues MUST be resolved before any production deployment.
 The `TenantSession` wrapper exists but is never instantiated or used. All repositories use raw `AsyncSession` and make `tenant_id` filtering optional. This violates the spec requirement: "Cross-tenant data access: Impossible via normal repository methods."
 
 **Evidence:**
+
 ```python
 # src/app/modules/users/repos.py:38-52
 async def get_by_id(self, user_id: UUID, tenant_id: UUID | None = None):
@@ -51,6 +54,7 @@ async def get_by_id(self, user_id: UUID, tenant_id: UUID | None = None):
 ```
 
 **Impact:**
+
 - Complete multi-tenancy isolation failure
 - Cross-tenant data access possible
 - GDPR/compliance violations
@@ -59,6 +63,7 @@ async def get_by_id(self, user_id: UUID, tenant_id: UUID | None = None):
 **Remediation:**
 
 Option A - Enforce TenantSession:
+
 ```python
 # src/app/modules/users/repos.py
 class UserRepository:
@@ -72,6 +77,7 @@ class UserRepository:
 ```
 
 Option B - Make tenant_id required everywhere:
+
 ```python
 async def get_by_id(self, user_id: UUID, tenant_id: UUID) -> User | None:  # Required!
     stmt = select(User).where(
@@ -93,6 +99,7 @@ async def get_by_id(self, user_id: UUID, tenant_id: UUID) -> User | None:  # Req
 **Location:** `src/app/config.py:23`
 
 **Description:**
+
 ```python
 secret_key: str = "change-me-in-production"
 ```
@@ -100,12 +107,14 @@ secret_key: str = "change-me-in-production"
 The SECRET_KEY has a hardcoded default. If production deployments don't override this, all JWT tokens can be forged by anyone who reads the source code.
 
 **Impact:**
+
 - Complete authentication bypass
 - Token forgery
 - Session hijacking
 - Privilege escalation to any user/admin
 
 **Remediation:**
+
 ```python
 # src/app/config.py
 from pydantic import field_validator
@@ -137,23 +146,27 @@ class Settings(BaseSettings):
 **Location:** `src/app/core/auth/oauth_routes.py:55`
 
 **Description:**
+
 ```python
 # In-memory state storage (use Redis in production for horizontal scaling)
 _oauth_states: dict[str, dict] = {}
 ```
 
 OAuth CSRF state is stored in a Python dict which:
+
 1. Doesn't work with multiple server instances (load balancing)
 2. Lost on server restart
 3. Never expires (memory leak)
 4. Not thread-safe
 
 **Impact:**
+
 - OAuth CSRF protection fails in distributed deployments
 - OAuth flow failures in load-balanced environments
 - Memory exhaustion over time
 
 **Remediation:**
+
 ```python
 # src/app/core/auth/oauth_routes.py
 from app.core.cache import redis_client
@@ -191,16 +204,19 @@ async def get_oauth_state(state: str) -> dict | None:
 The engine fixture has `scope="session"` but needs `scope="function"` to work with the transaction rollback pattern. This causes all 16 integration tests to fail with connection errors.
 
 **Evidence:**
+
 ```
 FAILED tests/integration/api/test_auth.py - Connection refused
 ```
 
 **Impact:**
+
 - 0% integration test coverage
 - Cannot verify any API behavior
 - CI/CD pipeline broken
 
 **Remediation:**
+
 ```python
 # tests/conftest.py:36
 # Change from:
@@ -228,6 +244,7 @@ Fix before next release. These significantly impact security, performance, or ma
 **Location:** `src/app/modules/users/models.py:70-79`
 
 **Description:**
+
 ```python
 tenant: Mapped["Tenant"] = relationship("Tenant", lazy="selectin")
 roles: Mapped[list["Role"]] = relationship(..., lazy="selectin")
@@ -236,11 +253,13 @@ roles: Mapped[list["Role"]] = relationship(..., lazy="selectin")
 Universal `selectin` loading causes 3-4 extra queries per request even when relationships aren't needed.
 
 **Impact:**
+
 - 70% unnecessary database load
 - ~100ms latency instead of ~30ms
 - Database connection exhaustion under load
 
 **Remediation:**
+
 ```python
 # src/app/modules/users/models.py:70-79
 tenant: Mapped["Tenant"] = relationship("Tenant", lazy="raise")
@@ -273,6 +292,7 @@ async def get_with_roles(self, user_id: UUID) -> User | None:
 **Location:** `src/app/config.py:29-30`
 
 **Description:**
+
 ```python
 database_pool_size: int = 5
 database_max_overflow: int = 10
@@ -281,11 +301,13 @@ database_max_overflow: int = 10
 With only 15 max connections, the application fails at ~500 concurrent users.
 
 **Impact:**
+
 - Connection exhaustion under moderate load
 - Request failures and timeouts
 - Cannot scale to spec target (1000+ tenants)
 
 **Remediation:**
+
 ```python
 # src/app/config.py:29-30
 database_pool_size: int = 25      # Was 5
@@ -306,6 +328,7 @@ database_max_overflow: int = 50   # Was 10
 JWT access tokens cannot be revoked once issued. If a token is compromised or user is deactivated, the token remains valid for 15 minutes.
 
 **Impact:**
+
 - Continued access after account compromise
 - Delayed security response
 - Compliance issues (inability to immediately revoke access)
@@ -313,6 +336,7 @@ JWT access tokens cannot be revoked once issued. If a token is compromised or us
 **Remediation:**
 
 Option A - Token blacklist:
+
 ```python
 # src/app/modules/users/models.py
 class RevokedToken(Base, UUIDMixin, TimestampMixin):
@@ -342,12 +366,14 @@ Option B - Reduce token TTL to 5 minutes and rely on refresh token revocation.
 **Effort:** 30 minutes
 
 **Locations:**
+
 - `src/app/core/auth/service.py:27`
 - `src/app/core/auth/oauth_routes.py:58`
 - `src/app/modules/users/services.py:15`
 
 **Description:**
 The same slug generation function is duplicated 3 times:
+
 ```python
 def _generate_slug(name: str) -> str:
     """Generate a URL-safe slug from a name."""
@@ -358,11 +384,13 @@ def _generate_slug(name: str) -> str:
 ```
 
 **Impact:**
+
 - DRY violation
 - Risk of inconsistent behavior if one copy is modified
 - Maintenance burden
 
 **Remediation:**
+
 ```python
 # src/app/core/utils/text.py (new file)
 import re
@@ -401,12 +429,14 @@ from app.core.utils.text import generate_slug
 The entire OAuth2 implementation (Google, Microsoft, GitHub) has no test coverage.
 
 **Impact:**
+
 - CSRF vulnerabilities unverified
 - Token exchange flow untested
 - Provider callback validation untested
 - State parameter validation untested
 
 **Required Tests:**
+
 ```python
 # tests/integration/auth/test_oauth.py
 async def test_oauth_authorize_redirects_to_provider():
@@ -431,12 +461,14 @@ async def test_oauth_callback_handles_provider_error():
 The entire RBAC permission system has no test coverage.
 
 **Impact:**
+
 - Permission bypass vulnerabilities unverified
 - Role assignment logic untested
 - Superuser bypass behavior untested
 - Decorator behavior untested
 
 **Required Tests:**
+
 ```python
 # tests/unit/permissions/test_checker.py
 async def test_user_with_permission_allowed():
@@ -462,10 +494,12 @@ async def test_require_all_permissions_requires_all():
 No tests verify that tenant isolation actually works.
 
 **Impact:**
+
 - Cross-tenant data access bugs undetected
 - Critical security assumption untested
 
 **Required Tests:**
+
 ```python
 # tests/integration/security/test_tenant_isolation.py
 async def test_user_cannot_access_other_tenant_users():
@@ -488,12 +522,14 @@ async def test_superuser_cannot_access_other_tenants():
 The `oauth_callback` function is 150 lines long, violating single responsibility principle.
 
 **Impact:**
+
 - Hard to test individual logic paths
 - Hard to maintain
 - High cognitive complexity
 
 **Remediation:**
 Extract into helper methods:
+
 ```python
 async def oauth_callback(...) -> TokenResponse:
     state_data = await _verify_oauth_state(state)
@@ -514,16 +550,19 @@ async def oauth_callback(...) -> TokenResponse:
 
 **Description:**
 Three permission decorators with 60+ lines each share significant common logic:
+
 - `require_permission` (67 lines)
 - `require_any_permission` (61 lines)
 - `require_all_permissions` (61 lines)
 
 **Impact:**
+
 - 180+ lines that could be ~80
 - Maintenance burden
 - Risk of inconsistent behavior
 
 **Remediation:**
+
 ```python
 def _check_permissions(
     user: User,
@@ -554,6 +593,7 @@ Plan for next sprint. These impact code quality and maintainability.
 **Effort:** 2 hours
 
 **Locations:**
+
 - `src/app/core/auth/middleware.py:65, 83, 128` - middleware return types
 - `src/app/core/permissions/decorators.py` - kwargs type casting
 - `src/app/core/errors/handlers.py:181-182` - exception handler signatures
@@ -562,6 +602,7 @@ Plan for next sprint. These impact code quality and maintainability.
 22 Mypy errors related to return types and type casting.
 
 **Remediation:**
+
 ```python
 # For middleware return types:
 from starlette.responses import Response
@@ -587,6 +628,7 @@ user = cast(User | None, kwargs.get("current_user"))
 Missing composite indexes for common query patterns.
 
 **Remediation:**
+
 ```python
 # src/app/modules/users/models.py
 class User(Base, UUIDMixin, TimestampMixin, TenantMixin):
@@ -599,6 +641,7 @@ class User(Base, UUIDMixin, TimestampMixin, TenantMixin):
 ```
 
 Then create migration:
+
 ```bash
 just migration "add_user_indexes"
 ```
@@ -613,6 +656,7 @@ just migration "add_user_indexes"
 **Location:** `src/app/modules/users/models.py:113`
 
 **Description:**
+
 ```python
 expires_at: Mapped[str] = mapped_column(nullable=False)  # Should be DateTime!
 ```
@@ -620,11 +664,13 @@ expires_at: Mapped[str] = mapped_column(nullable=False)  # Should be DateTime!
 Storing datetime as string requires manual ISO format conversion everywhere.
 
 **Impact:**
+
 - Cannot use database date comparisons efficiently
 - Timezone handling errors possible
 - Index inefficiency
 
 **Remediation:**
+
 ```python
 # src/app/modules/users/models.py:113
 from sqlalchemy import DateTime
@@ -647,12 +693,14 @@ expires_at: Mapped[datetime] = mapped_column(
 
 **Description:**
 Hardcoded values without named constants:
+
 - `63` - slug length
 - `64` - SHA-256 hash length
 - `255`, `100`, `50` - string lengths
 - `12` - bcrypt rounds
 
 **Remediation:**
+
 ```python
 # src/app/core/constants.py (new file)
 MAX_SLUG_LENGTH = 63
@@ -675,6 +723,7 @@ BCRYPT_ROUNDS = 12
 **Location:** `src/app/modules/users/schemas.py:24`
 
 **Description:**
+
 ```python
 password: str = Field(..., min_length=8, max_length=128)
 ```
@@ -682,6 +731,7 @@ password: str = Field(..., min_length=8, max_length=128)
 Only length validation. Users can register with "12345678".
 
 **Remediation:**
+
 ```python
 # src/app/modules/users/schemas.py
 from pydantic import field_validator
@@ -715,6 +765,7 @@ class RegisterRequest(BaseModel):
 **Location:** `src/app/core/permissions/decorators.py:60`
 
 **Description:**
+
 ```python
 if user.is_superuser:
     return await func(*args, **kwargs)  # No logging!
@@ -723,6 +774,7 @@ if user.is_superuser:
 Superuser actions bypass RBAC with zero audit logging.
 
 **Remediation:**
+
 ```python
 if user.is_superuser:
     logger.warning(
@@ -746,6 +798,7 @@ if user.is_superuser:
 **Location:** `src/app/api/dependencies.py:22`
 
 **Description:**
+
 ```python
 # TODO: Extract tenant_id from authenticated user
 yield None
@@ -774,12 +827,14 @@ Track in backlog. Nice-to-have improvements.
 
 **Description:**
 Registration error reveals whether email exists:
+
 ```python
 if existing:
     raise ConflictError("Email already registered", ...)
 ```
 
 **Remediation:**
+
 ```python
 if existing:
     raise ConflictError(
@@ -800,6 +855,7 @@ if existing:
 **Location:** `src/app/main.py:81-87`
 
 **Description:**
+
 ```python
 allow_origins=["*"] if settings.is_development else [],
 ```
@@ -807,6 +863,7 @@ allow_origins=["*"] if settings.is_development else [],
 Production CORS is empty array - needs explicit allowlist.
 
 **Remediation:**
+
 ```python
 # src/app/config.py
 cors_origins: list[str] = []
@@ -831,11 +888,13 @@ app.add_middleware(
 **Location:** `src/app/core/errors/handlers.py:65`
 
 **Description:**
+
 ```python
 return f"https://api.example.com/errors/{error_code}"
 ```
 
 **Remediation:**
+
 ```python
 # src/app/config.py
 api_docs_base_url: str = "https://api.example.com"
@@ -854,6 +913,7 @@ return f"{settings.api_docs_base_url}/errors/{error_code}"
 **Location:** `src/app/core/auth/oauth.py:129`
 
 **Description:**
+
 ```python
 class GoogleOAuthProvider(OAuthProvider):
     scopes: ClassVar[list[str]] = ["openid", "email", "profile"]
@@ -914,15 +974,15 @@ Make `scopes` a `ClassVar` in the base class as well.
 
 ## Spec Compliance Summary
 
-| Spec Section | Status | Blocking Issues |
-|--------------|--------|-----------------|
-| 5.4 Tenant Isolation | FAIL | P0-1 |
-| 6.1 Authentication | PASS | - |
-| 6.2 OAuth2 | PARTIAL | P0-3 |
-| 6.3 Permissions (RBAC) | PASS | - |
-| 7.2 Error Handling | PASS | - |
-| 13 Testing (>80% coverage) | FAIL | P0-4, P1-5/6/7 |
-| 21 Success Criteria | PARTIAL | Multiple |
+| Spec Section               | Status  | Blocking Issues |
+| -------------------------- | ------- | --------------- |
+| 5.4 Tenant Isolation       | FAIL    | P0-1            |
+| 6.1 Authentication         | PASS    | -               |
+| 6.2 OAuth2                 | PARTIAL | P0-3            |
+| 6.3 Permissions (RBAC)     | PASS    | -               |
+| 7.2 Error Handling         | PASS    | -               |
+| 13 Testing (>80% coverage) | FAIL    | P0-4, P1-5/6/7  |
+| 21 Success Criteria        | PARTIAL | Multiple        |
 
 ---
 

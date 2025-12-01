@@ -1,9 +1,46 @@
 """Pydantic schemas for user operations."""
 
+import re
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+from app.core.constants import MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH
+
+
+# ============================================================
+# Password Validation
+# ============================================================
+
+
+def validate_password_complexity(password: str) -> str:
+    """Validate password meets complexity requirements.
+
+    Requirements:
+    - At least one uppercase letter
+    - At least one lowercase letter
+    - At least one digit
+    - At least one special character
+
+    Args:
+        password: The password to validate
+
+    Returns:
+        The validated password
+
+    Raises:
+        ValueError: If password doesn't meet requirements
+    """
+    if not re.search(r"[A-Z]", password):
+        raise ValueError("Password must contain at least one uppercase letter")
+    if not re.search(r"[a-z]", password):
+        raise ValueError("Password must contain at least one lowercase letter")
+    if not re.search(r"\d", password):
+        raise ValueError("Password must contain at least one digit")
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>\[\]\\;'`~_+\-=/]", password):
+        raise ValueError("Password must contain at least one special character")
+    return password
 
 
 # ============================================================
@@ -21,7 +58,13 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     """Schema for creating a new user with password."""
 
-    password: str = Field(..., min_length=8, max_length=128)
+    password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+
+    @field_validator("password")
+    @classmethod
+    def password_complexity(cls, v: str) -> str:
+        """Validate password complexity."""
+        return validate_password_complexity(v)
 
 
 class UserCreateOAuth(BaseModel):
@@ -44,7 +87,13 @@ class UserPasswordUpdate(BaseModel):
     """Schema for updating user password."""
 
     current_password: str
-    new_password: str = Field(..., min_length=8, max_length=128)
+    new_password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+
+    @field_validator("new_password")
+    @classmethod
+    def password_complexity(cls, v: str) -> str:
+        """Validate password complexity."""
+        return validate_password_complexity(v)
 
 
 class UserResponse(UserBase):
@@ -117,9 +166,15 @@ class RegisterRequest(BaseModel):
     """
 
     email: EmailStr
-    password: str = Field(..., min_length=8, max_length=128)
+    password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
     full_name: str = Field(..., min_length=1, max_length=255)
     tenant_name: str = Field(..., min_length=1, max_length=255)
+
+    @field_validator("password")
+    @classmethod
+    def password_complexity(cls, v: str) -> str:
+        """Validate password complexity."""
+        return validate_password_complexity(v)
 
 
 class RegisterResponse(BaseModel):

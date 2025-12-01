@@ -5,12 +5,11 @@ with structured logging via structlog.
 """
 
 import time
-from collections.abc import Callable
 from typing import Any
 
 import structlog
 from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 
 logger = structlog.get_logger()
@@ -58,7 +57,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self,
         request: Request,
-        call_next: Callable[[Request], Any],
+        call_next: RequestResponseEndpoint,
     ) -> Response:
         """Process the request and log details.
 

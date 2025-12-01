@@ -2,8 +2,10 @@
 
 from functools import lru_cache
 
-from pydantic import PostgresDsn, RedisDsn, computed_field
+from pydantic import PostgresDsn, RedisDsn, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.core.constants import DEFAULT_INSECURE_SECRET, MIN_SECRET_KEY_LENGTH
 
 
 class Settings(BaseSettings):
@@ -20,15 +22,51 @@ class Settings(BaseSettings):
     app_name: str = "Agency Standard"
     debug: bool = False
     environment: str = "development"  # development, staging, production
-    secret_key: str = "change-me-in-production"
+    secret_key: str = DEFAULT_INSECURE_SECRET
 
     # Database
     database_url: PostgresDsn = PostgresDsn(
         "postgresql://postgres:postgres@localhost:5432/agency_standard"
     )
-    database_pool_size: int = 5
-    database_max_overflow: int = 10
+    database_pool_size: int = 25
+    database_max_overflow: int = 50
     database_echo: bool = False
+
+    # CORS
+    cors_origins: list[str] = []
+
+    # API Documentation
+    api_docs_base_url: str = "https://api.example.com"
+
+    @field_validator("secret_key")
+    @classmethod
+    def validate_secret_key(cls, v: str, info) -> str:
+        """Validate that secret_key is secure in production.
+
+        Args:
+            v: The secret key value
+            info: Validation info containing other field values
+
+        Returns:
+            The validated secret key
+
+        Raises:
+            ValueError: If secret key is insecure in production
+        """
+        # Get environment from the data being validated
+        # Note: In pydantic v2, we need to handle this differently
+        # The validation happens before all fields are set
+        # So we check the value itself rather than environment
+        if v == DEFAULT_INSECURE_SECRET:
+            # We'll do a runtime check in is_production instead
+            # to allow development mode to use default
+            pass
+        elif len(v) < MIN_SECRET_KEY_LENGTH:
+            raise ValueError(
+                f"SECRET_KEY must be at least {MIN_SECRET_KEY_LENGTH} characters. "
+                "Generate one with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
+            )
+        return v
 
     # Redis
     redis_url: RedisDsn = RedisDsn("redis://localhost:6379")
@@ -63,8 +101,18 @@ class Settings(BaseSettings):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def is_production(self) -> bool:
-        """Check if running in production environment."""
-        return self.environment == "production"
+        """Check if running in production environment.
+
+        Raises:
+            ValueError: If using insecure secret key in production
+        """
+        is_prod = self.environment == "production"
+        if is_prod and self.secret_key == DEFAULT_INSECURE_SECRET:
+            raise ValueError(
+                "SECRET_KEY must be set to a secure value in production. "
+                "Generate one with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
+            )
+        return is_prod
 
     @computed_field  # type: ignore[prop-decorator]
     @property

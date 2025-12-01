@@ -33,7 +33,7 @@ def event_loop():
     loop.close()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 async def engine():
     """Create test database engine."""
     engine = create_async_engine(

@@ -58,6 +58,12 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     # Shutdown
     logger.info("application_shutdown")
 
+    # Close Redis connection pool
+    from app.core.cache.redis import close_redis_pool
+
+    await close_redis_pool()
+    logger.info("redis_pool_closed")
+
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application.
@@ -77,13 +83,17 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json" if not settings.is_production else None,
     )
 
-    # Configure CORS
+    # Configure CORS (P3-2: Use configured origins with sensible defaults)
+    cors_origins = settings.cors_origins
+    if settings.is_development and not cors_origins:
+        cors_origins = ["http://localhost:3000", "http://localhost:5173"]
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"] if settings.is_development else [],
+        allow_origins=cors_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
     )
 
     # Add request ID middleware (outermost, runs first)

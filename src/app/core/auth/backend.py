@@ -4,6 +4,7 @@ This module provides core authentication utilities including:
 - Password hashing with bcrypt
 - JWT token creation and verification
 - Token hashing for storage
+- Token revocation
 """
 
 import hashlib
@@ -17,6 +18,7 @@ from passlib.context import CryptContext
 
 from app.config import settings
 from app.core.auth.schemas import TokenData
+from app.core.constants import ACCESS_TOKEN_JTI_LENGTH
 
 
 # Password hashing context using bcrypt
@@ -93,6 +95,7 @@ def create_access_token(
         "exp": expire,
         "type": "access",
         "iat": datetime.now(UTC),
+        "jti": secrets.token_urlsafe(ACCESS_TOKEN_JTI_LENGTH),  # Unique token ID
     }
 
     if additional_claims:
@@ -162,6 +165,7 @@ def decode_token(token: str) -> TokenData | None:
         tenant_id = payload.get("tenant_id")
         exp = payload.get("exp")
         token_type = payload.get("type", "access")
+        jti = payload.get("jti")
 
         if not user_id or not tenant_id:
             return None
@@ -171,6 +175,7 @@ def decode_token(token: str) -> TokenData | None:
             tenant_id=UUID(tenant_id),
             exp=datetime.fromtimestamp(exp, tz=UTC),
             type=token_type,
+            jti=jti,
         )
 
     except (JWTError, ValueError):

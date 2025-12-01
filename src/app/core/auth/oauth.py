@@ -39,11 +39,11 @@ class OAuthUserInfo(BaseModel):
 class OAuthProvider:
     """Base class for OAuth providers."""
 
-    name: str
-    authorize_url: str
-    token_url: str
-    userinfo_url: str
-    scopes: list[str]
+    name: ClassVar[str]
+    authorize_url: ClassVar[str]
+    token_url: ClassVar[str]
+    userinfo_url: ClassVar[str]
+    scopes: ClassVar[list[str]]
     client_id: str | None
     client_secret: str | None
 

@@ -1,6 +1,5 @@
 """Authentication service for login, registration, and token management."""
 
-import re
 from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
@@ -19,17 +18,10 @@ from app.core.auth.backend import (
 )
 from app.core.auth.schemas import TokenPair
 from app.core.errors import ConflictError, UnauthorizedError
+from app.core.utils.text import generate_slug
 from app.modules.tenants.models import Tenant
 from app.modules.users.models import RefreshToken, User
 from app.modules.users.repos import RefreshTokenRepository, UserRepository
-
-
-def _generate_slug(name: str) -> str:
-    """Generate a URL-safe slug from a name."""
-    slug = name.lower().strip()
-    slug = re.sub(r"[^\w\s-]", "", slug)
-    slug = re.sub(r"[-\s]+", "-", slug)
-    return slug[:63]
 
 
 class AuthService:
@@ -66,19 +58,18 @@ class AuthService:
         Raises:
             ConflictError: If email already exists
         """
-        # Check if email already exists globally
-        existing = await self.user_repo.get_by_email(email)
+        # Check if email already exists globally (P3-1: generic message to prevent enumeration)
+        existing = await self.user_repo.get_by_email_system(email)
         if existing:
             raise ConflictError(
-                "Email already registered",
-                error_code="email_exists",
-                details={"email": email},
+                "Registration failed. If this email is already registered, please use the login page.",
+                error_code="registration_failed",
             )
 
         # Create tenant
         tenant = Tenant(
             name=tenant_name,
-            slug=_generate_slug(tenant_name),
+            slug=generate_slug(tenant_name),
         )
         self.db.add(tenant)
         await self.db.flush()
@@ -119,8 +110,8 @@ class AuthService:
         Raises:
             UnauthorizedError: If credentials are invalid
         """
-        # Find user by email
-        user = await self.user_repo.get_by_email(email)
+        # Find user by email (system-level: tenant not known during login)
+        user = await self.user_repo.get_by_email_system(email)
         if not user:
             raise UnauthorizedError(
                 "Invalid email or password",
@@ -178,16 +169,15 @@ class AuthService:
             )
 
         # Check expiration
-        expires_at = datetime.fromisoformat(stored_token.expires_at)
-        if expires_at < datetime.now(UTC):
+        if stored_token.expires_at < datetime.now(UTC):
             await self.token_repo.revoke(stored_token)
             raise UnauthorizedError(
                 "Refresh token expired",
                 error_code="token_expired",
             )
 
-        # Get user
-        user = await self.user_repo.get_by_id(stored_token.user_id)
+        # Get user (system-level: validating token, not user-initiated request)
+        user = await self.user_repo.get_by_id_system(stored_token.user_id)
         if not user or not user.is_active:
             await self.token_repo.revoke(stored_token)
             raise UnauthorizedError(
@@ -250,7 +240,7 @@ class AuthService:
         stored_token = RefreshToken(
             user_id=user.id,
             token_hash=hash_token(refresh_token),
-            expires_at=expires_at.isoformat(),
+            expires_at=expires_at,
             user_agent=user_agent,
             ip_address=ip_address,
         )

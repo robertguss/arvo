@@ -1,6 +1,5 @@
 """User service for business logic."""
 
-import re
 from typing import Annotated
 from uuid import UUID
 
@@ -10,15 +9,6 @@ from app.core.errors import ConflictError, NotFoundError
 from app.modules.users.models import User
 from app.modules.users.repos import UserRepo
 from app.modules.users.schemas import UserCreate, UserCreateOAuth, UserUpdate
-
-
-def _generate_slug(name: str) -> str:
-    """Generate a URL-safe slug from a name."""
-    # Convert to lowercase and replace spaces with hyphens
-    slug = name.lower().strip()
-    slug = re.sub(r"[^\w\s-]", "", slug)
-    slug = re.sub(r"[-\s]+", "-", slug)
-    return slug[:63]  # Max 63 chars for slug
 
 
 class UserService:
@@ -50,13 +40,12 @@ class UserService:
         Raises:
             ConflictError: If email already exists for this tenant
         """
-        # Check for existing email
+        # Check for existing email (P3-1: generic message to prevent enumeration)
         existing = await self.repo.get_by_email(data.email, tenant_id)
         if existing:
             raise ConflictError(
-                "Email already registered",
-                error_code="email_exists",
-                details={"email": data.email},
+                "Registration failed. If this email is already registered, please use the login page.",
+                error_code="registration_failed",
             )
 
         user = User(
@@ -84,8 +73,10 @@ class UserService:
         Raises:
             ConflictError: If OAuth ID already exists
         """
-        # Check for existing OAuth user
-        existing = await self.repo.get_by_oauth(data.oauth_provider, data.oauth_id)
+        # Check for existing OAuth user within tenant
+        existing = await self.repo.get_by_oauth(
+            data.oauth_provider, data.oauth_id, tenant_id
+        )
         if existing:
             raise ConflictError(
                 "OAuth account already linked",
@@ -101,18 +92,18 @@ class UserService:
         )
         return await self.repo.create(user)
 
-    async def get_user(self, user_id: UUID, tenant_id: UUID | None = None) -> User:
-        """Get a user by ID.
+    async def get_user(self, user_id: UUID, tenant_id: UUID) -> User:
+        """Get a user by ID, scoped to tenant.
 
         Args:
             user_id: The user's UUID
-            tenant_id: Optional tenant scope
+            tenant_id: The tenant scope (required for security)
 
         Returns:
             The user
 
         Raises:
-            NotFoundError: If user not found
+            NotFoundError: If user not found within tenant
         """
         user = await self.repo.get_by_id(user_id, tenant_id)
         if not user:
@@ -123,17 +114,15 @@ class UserService:
             )
         return user
 
-    async def get_user_by_email(
-        self, email: str, tenant_id: UUID | None = None
-    ) -> User | None:
-        """Get a user by email.
+    async def get_user_by_email(self, email: str, tenant_id: UUID) -> User | None:
+        """Get a user by email, scoped to tenant.
 
         Args:
             email: The email address
-            tenant_id: Optional tenant scope
+            tenant_id: The tenant scope (required for security)
 
         Returns:
-            User if found, None otherwise
+            User if found within tenant, None otherwise
         """
         return await self.repo.get_by_email(email, tenant_id)
 
@@ -145,7 +134,7 @@ class UserService:
         oauth_id: str,
         tenant_id: UUID,
     ) -> tuple[User, bool]:
-        """Get or create a user from OAuth data.
+        """Get or create a user from OAuth data within a tenant.
 
         Args:
             email: User's email
@@ -157,12 +146,12 @@ class UserService:
         Returns:
             Tuple of (user, was_created)
         """
-        # Try to find by OAuth ID first
-        user = await self.repo.get_by_oauth(oauth_provider, oauth_id)
+        # Try to find by OAuth ID first within tenant
+        user = await self.repo.get_by_oauth(oauth_provider, oauth_id, tenant_id)
         if user:
             return user, False
 
-        # Try to find by email and link OAuth
+        # Try to find by email within tenant and link OAuth
         user = await self.repo.get_by_email(email, tenant_id)
         if user:
             user.oauth_provider = oauth_provider

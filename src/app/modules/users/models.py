@@ -1,9 +1,10 @@
 """User database models."""
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import Boolean, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database.base import Base, TenantMixin, TimestampMixin, UUIDMixin
@@ -31,6 +32,13 @@ class User(Base, UUIDMixin, TimestampMixin, TenantMixin):
     """
 
     __tablename__ = "users"
+
+    __table_args__ = (
+        # Composite index for tenant-scoped email uniqueness
+        Index("ix_users_tenant_email", "tenant_id", "email", unique=True),
+        # Index for OAuth lookups
+        Index("ix_users_oauth", "oauth_provider", "oauth_id"),
+    )
 
     email: Mapped[str] = mapped_column(
         String(255),
@@ -66,16 +74,17 @@ class User(Base, UUIDMixin, TimestampMixin, TenantMixin):
         nullable=True,
     )
 
-    # Relationships
+    # Relationships - use lazy="raise" to prevent N+1 queries
+    # Load these explicitly with selectinload() when needed
     tenant: Mapped["Tenant"] = relationship(
         "Tenant",
-        lazy="selectin",
+        lazy="raise",
     )
     roles: Mapped[list["Role"]] = relationship(
         "Role",
         secondary="user_roles",
         back_populates="users",
-        lazy="selectin",
+        lazy="raise",
     )
 
     def __repr__(self) -> str:
@@ -110,8 +119,10 @@ class RefreshToken(Base, UUIDMixin, TimestampMixin):
         unique=True,
         index=True,
     )
-    expires_at: Mapped[str] = mapped_column(
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
         nullable=False,
+        index=True,
     )
     revoked: Mapped[bool] = mapped_column(
         Boolean,
@@ -127,12 +138,41 @@ class RefreshToken(Base, UUIDMixin, TimestampMixin):
         nullable=True,
     )
 
-    # Relationship
+    # Relationship - use lazy="raise" to prevent N+1 queries
     user: Mapped["User"] = relationship(
         "User",
-        lazy="selectin",
+        lazy="raise",
     )
 
     def __repr__(self) -> str:
         return f"<RefreshToken(id={self.id}, user_id={self.user_id}, revoked={self.revoked})>"
+
+
+class RevokedToken(Base, UUIDMixin, TimestampMixin):
+    """Revoked JWT access tokens.
+
+    Stores JTIs (JWT IDs) of revoked access tokens for blacklist checking.
+    Tokens are automatically cleaned up after expiration.
+
+    Attributes:
+        jti: Unique JWT ID
+        expires_at: When the original token would have expired
+    """
+
+    __tablename__ = "revoked_tokens"
+
+    jti: Mapped[str] = mapped_column(
+        String(64),  # Token ID length
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        index=True,
+    )
+
+    def __repr__(self) -> str:
+        return f"<RevokedToken(id={self.id}, jti={self.jti[:8]}...)>"
 

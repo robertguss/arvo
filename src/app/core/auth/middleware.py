@@ -6,14 +6,17 @@ This module provides middleware for:
 """
 
 import uuid
-from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING
 
 import structlog
 from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from app.core.auth.backend import decode_token
+
+
+if TYPE_CHECKING:
+    from starlette.types import ASGIApp
 
 
 logger = structlog.get_logger()
@@ -31,7 +34,7 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
 
     def __init__(
         self,
-        app: Any,
+        app: "ASGIApp",
         exclude_paths: list[str] | None = None,
     ) -> None:
         super().__init__(app)
@@ -49,7 +52,7 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self,
         request: Request,
-        call_next: Callable[[Request], Any],
+        call_next: RequestResponseEndpoint,
     ) -> Response:
         """Process the request and inject tenant context.
 
@@ -95,7 +98,7 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self,
         request: Request,
-        call_next: Callable[[Request], Any],
+        call_next: RequestResponseEndpoint,
     ) -> Response:
         """Process the request and add request ID.
 

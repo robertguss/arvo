@@ -6,20 +6,101 @@ routes to require specific permissions.
 
 from collections.abc import Callable
 from functools import wraps
-from typing import TYPE_CHECKING, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, ParamSpec, TypeVar, cast
+
+import structlog
 
 from app.core.errors import ForbiddenError
 from app.core.permissions.checker import PermissionChecker
 
 
 if TYPE_CHECKING:
+    from fastapi import Request
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.modules.users.models import User
 
 
+logger = structlog.get_logger()
+
 P = ParamSpec("P")
 R = TypeVar("R")
+
+
+async def _check_permissions(
+    user: "User",
+    db: "AsyncSession",
+    permissions: list[tuple[str, str]],
+    require_all: bool,
+    request: "Request | None" = None,
+) -> bool:
+    """Common permission checking logic.
+
+    Args:
+        user: The user to check permissions for
+        db: Database session
+        permissions: List of (resource, action) tuples to check
+        require_all: If True, user must have all permissions; if False, any one
+        request: Optional request for logging context
+
+    Returns:
+        True if permission check passes
+
+    Raises:
+        ForbiddenError: If permission check fails
+    """
+    # Superusers bypass permission checks (with audit logging - P2-6)
+    if user.is_superuser:
+        logger.warning(
+            "superuser_bypass",
+            user_id=str(user.id),
+            tenant_id=str(user.tenant_id),
+            permissions=[f"{r}:{a}" for r, a in permissions],
+            endpoint=request.url.path if request else "unknown",
+        )
+        return True
+
+    checker = PermissionChecker(db)
+
+    if require_all:
+        has_perm = await checker.has_all_permissions(
+            user.id,
+            user.tenant_id,
+            permissions,
+        )
+    elif len(permissions) == 1:
+        resource, action = permissions[0]
+        has_perm = await checker.has_permission(
+            user.id,
+            user.tenant_id,
+            resource,
+            action,
+        )
+    else:
+        has_perm = await checker.has_any_permission(
+            user.id,
+            user.tenant_id,
+            permissions,
+        )
+
+    return has_perm
+
+
+def _get_user_and_db(
+    kwargs: dict,
+) -> tuple["User | None", "AsyncSession | None", "Request | None"]:
+    """Extract user, db session, and request from kwargs.
+
+    Args:
+        kwargs: Function keyword arguments
+
+    Returns:
+        Tuple of (user, db, request)
+    """
+    user = cast("User | None", kwargs.get("current_user"))
+    db = cast("AsyncSession | None", kwargs.get("db"))
+    request = cast("Request | None", kwargs.get("request"))
+    return user, db, request
 
 
 def require_permission(resource: str, action: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
@@ -41,54 +122,7 @@ def require_permission(resource: str, action: str) -> Callable[[Callable[P, R]],
     Raises:
         ForbiddenError: If user lacks the required permission
     """
-
-    def decorator(func: Callable[P, R]) -> Callable[P, R]:
-        @wraps(func)
-        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            # Extract user and session from kwargs
-            # These should be injected by FastAPI's dependency system
-            user: User | None = kwargs.get("current_user")
-            db: AsyncSession | None = kwargs.get("db")
-
-            if not user:
-                raise ForbiddenError(
-                    "Authentication required",
-                    error_code="auth_required",
-                )
-
-            # Superusers bypass permission checks
-            if user.is_superuser:
-                return await func(*args, **kwargs)
-
-            if not db:
-                raise ForbiddenError(
-                    "Permission check failed",
-                    error_code="permission_check_failed",
-                )
-
-            # Check permission
-            checker = PermissionChecker(db)
-            has_perm = await checker.has_permission(
-                user.id,
-                user.tenant_id,
-                resource,
-                action,
-            )
-
-            if not has_perm:
-                raise ForbiddenError(
-                    f"Missing required permission: {resource}:{action}",
-                    error_code="permission_denied",
-                    details={
-                        "required_permission": f"{resource}:{action}",
-                    },
-                )
-
-            return await func(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
+    return require_all_permissions([(resource, action)])
 
 
 def require_any_permission(
@@ -112,8 +146,7 @@ def require_any_permission(
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
         @wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            user: User | None = kwargs.get("current_user")
-            db: AsyncSession | None = kwargs.get("db")
+            user, db, request = _get_user_and_db(kwargs)
 
             if not user:
                 raise ForbiddenError(
@@ -121,30 +154,22 @@ def require_any_permission(
                     error_code="auth_required",
                 )
 
-            if user.is_superuser:
-                return await func(*args, **kwargs)
-
             if not db:
                 raise ForbiddenError(
                     "Permission check failed",
                     error_code="permission_check_failed",
                 )
 
-            checker = PermissionChecker(db)
-            has_any = await checker.has_any_permission(
-                user.id,
-                user.tenant_id,
-                permissions,
+            has_perm = await _check_permissions(
+                user, db, permissions, require_all=False, request=request
             )
 
-            if not has_any:
+            if not has_perm:
                 perm_strs = [f"{r}:{a}" for r, a in permissions]
                 raise ForbiddenError(
                     f"Missing required permission. Need one of: {', '.join(perm_strs)}",
                     error_code="permission_denied",
-                    details={
-                        "required_permissions": perm_strs,
-                    },
+                    details={"required_permissions": perm_strs},
                 )
 
             return await func(*args, **kwargs)
@@ -175,8 +200,7 @@ def require_all_permissions(
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
         @wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            user: User | None = kwargs.get("current_user")
-            db: AsyncSession | None = kwargs.get("db")
+            user, db, request = _get_user_and_db(kwargs)
 
             if not user:
                 raise ForbiddenError(
@@ -184,30 +208,22 @@ def require_all_permissions(
                     error_code="auth_required",
                 )
 
-            if user.is_superuser:
-                return await func(*args, **kwargs)
-
             if not db:
                 raise ForbiddenError(
                     "Permission check failed",
                     error_code="permission_check_failed",
                 )
 
-            checker = PermissionChecker(db)
-            has_all = await checker.has_all_permissions(
-                user.id,
-                user.tenant_id,
-                permissions,
+            has_perm = await _check_permissions(
+                user, db, permissions, require_all=True, request=request
             )
 
-            if not has_all:
+            if not has_perm:
                 perm_strs = [f"{r}:{a}" for r, a in permissions]
                 raise ForbiddenError(
                     f"Missing required permissions: {', '.join(perm_strs)}",
                     error_code="permission_denied",
-                    details={
-                        "required_permissions": perm_strs,
-                    },
+                    details={"required_permissions": perm_strs},
                 )
 
             return await func(*args, **kwargs)
@@ -215,4 +231,3 @@ def require_all_permissions(
         return wrapper
 
     return decorator
-
