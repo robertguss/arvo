@@ -39,14 +39,14 @@ just migrate
 just dev
 ```
 
-The API will be available at http://localhost:8000
+The API will be available at <http://localhost:8000>
 
-- API Docs: http://localhost:8000/docs
-- Health Check: http://localhost:8000/health/live
+- API Docs: <http://localhost:8000/docs>
+- Health Check: <http://localhost:8000/health/live>
 
 ## Project Structure
 
-```
+```console
 src/app/
 ├── main.py           # Application factory
 ├── config.py         # Settings (pydantic-settings)
@@ -99,18 +99,18 @@ cp .env.example .env
 
 Key environment variables:
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql://postgres:postgres@localhost:5432/agency_standard` |
-| `REDIS_URL` | Redis connection string | `redis://localhost:6379` |
-| `SECRET_KEY` | JWT signing key | (generate with `just secret`) |
-| `ENVIRONMENT` | development/staging/production | `development` |
+| Variable       | Description                    | Default                                                         |
+| -------------- | ------------------------------ | --------------------------------------------------------------- |
+| `DATABASE_URL` | PostgreSQL connection string   | `postgresql://postgres:postgres@localhost:5432/agency_standard` |
+| `REDIS_URL`    | Redis connection string        | `redis://localhost:6379`                                        |
+| `SECRET_KEY`   | JWT signing key                | (generate with `just secret`)                                   |
+| `ENVIRONMENT`  | development/staging/production | `development`                                                   |
 
 ## Architecture
 
 This project follows a **Modular Monolith** architecture with strict layering:
 
-```
+```text
 Routes → Services → Repositories → Models
 ```
 
@@ -159,4 +159,3 @@ docker compose -f deploy/docker-compose.yml up -d
 ## License
 
 MIT
-
