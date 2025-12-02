@@ -5,9 +5,6 @@ from fastapi import APIRouter
 
 router = APIRouter(prefix="/users", tags=["users"])
 
-# Import routes to register them (must be after router is defined)
-from app.modules.users import routes  # noqa: F401, E402
-
 
 # Module metadata
 __module__ = {
@@ -16,3 +13,8 @@ __module__ = {
     "description": "User management and authentication",
     "dependencies": ["tenants"],
 }
+
+
+def register_routes() -> None:
+    """Register routes - called after all imports are complete."""
+    from app.modules.users import routes  # noqa: F401

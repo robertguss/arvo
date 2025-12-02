@@ -26,6 +26,9 @@ def discover_modules() -> list[APIRouter]:
         if path.is_dir() and not path.name.startswith("_"):
             try:
                 module = import_module(f"app.modules.{path.name}")
+                # Call register_routes if it exists (deferred route loading)
+                if hasattr(module, "register_routes"):
+                    module.register_routes()
                 if hasattr(module, "router"):
                     routers.append(module.router)
                     logger.info(f"Loaded module: {path.name}")

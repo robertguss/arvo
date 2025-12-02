@@ -9,7 +9,8 @@ from sqlalchemy import text
 
 from app.api.dependencies import DBSession
 from app.config import settings
-from app.core.auth import auth_router, oauth_router
+from app.core.auth.routes import router as auth_router
+from app.core.auth.oauth_routes import router as oauth_router
 from app.core.cache.redis import redis_client
 from app.modules import discover_modules
 

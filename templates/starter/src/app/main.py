@@ -8,9 +8,9 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import api_router
+from app.api.router import api_router
 from app.config import settings
-from app.core.auth import RequestIdMiddleware, TenantContextMiddleware
+from app.core.auth.middleware import RequestIdMiddleware, TenantContextMiddleware
 from app.core.cache.redis import close_redis_pool
 from app.core.errors import register_exception_handlers
 from app.core.jobs.registry import close_arq_pool, init_arq_pool
