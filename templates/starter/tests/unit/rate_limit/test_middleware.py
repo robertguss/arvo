@@ -113,9 +113,7 @@ class TestRateLimitMiddlewareDispatch:
         mock_response = MagicMock()
         call_next = AsyncMock(return_value=mock_response)
 
-        with patch(
-            "app.core.rate_limit.middleware.rate_limiter"
-        ) as mock_limiter:
+        with patch("app.core.rate_limit.middleware.rate_limiter") as mock_limiter:
             result = await middleware.dispatch(request, call_next)
 
             mock_limiter.is_allowed.assert_not_called()
@@ -141,9 +139,7 @@ class TestRateLimitMiddlewareDispatch:
         )
 
         with (
-            patch(
-                "app.core.rate_limit.middleware.rate_limiter"
-            ) as mock_limiter,
+            patch("app.core.rate_limit.middleware.rate_limiter") as mock_limiter,
             patch("app.core.rate_limit.middleware.settings") as mock_settings,
         ):
             mock_limiter.is_allowed = AsyncMock(return_value=rate_result)
@@ -175,9 +171,7 @@ class TestRateLimitMiddlewareDispatch:
         )
 
         with (
-            patch(
-                "app.core.rate_limit.middleware.rate_limiter"
-            ) as mock_limiter,
+            patch("app.core.rate_limit.middleware.rate_limiter") as mock_limiter,
             patch("app.core.rate_limit.middleware.settings") as mock_settings,
         ):
             mock_limiter.is_allowed = AsyncMock(return_value=rate_result)

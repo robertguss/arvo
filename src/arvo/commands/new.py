@@ -1,22 +1,25 @@
 """Command: arvo new - Create a new Arvo project."""
 
-import secrets
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from rich.console import Console
 from rich.panel import Panel
+
 
 console = Console()
 
 
 def new(
     project_name: str = typer.Argument(..., help="Name of the project to create"),
-    output_dir: Path = typer.Option(
-        Path("."), "--output", "-o", help="Directory to create project in"
-    ),
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Directory to create project in"),
+    ] = None,
     no_git: bool = typer.Option(False, "--no-git", help="Skip git initialization"),
-    no_install: bool = typer.Option(
+    # no_install reserved for future use
+    no_install: bool = typer.Option(  # noqa: ARG001
         False, "--no-install", help="Skip dependency installation"
     ),
 ) -> None:
@@ -26,15 +29,19 @@ def new(
     authentication, and all the production-ready features.
     """
     from copier import run_copy
-    from arvo.utils import get_template_path, init_git, generate_secret_key
 
-    target = output_dir / project_name
+    from arvo.utils import generate_secret_key, get_template_path, init_git
+
+    base_dir = output_dir if output_dir is not None else Path()
+    target = base_dir / project_name
 
     if target.exists():
         console.print(f"[red]Error:[/red] Directory '{target}' already exists")
         raise typer.Exit(1)
 
-    console.print(f"\n[bold cyan]Creating new Arvo project:[/bold cyan] {project_name}\n")
+    console.print(
+        f"\n[bold cyan]Creating new Arvo project:[/bold cyan] {project_name}\n"
+    )
 
     # Generate data for template
     data = {
@@ -64,7 +71,7 @@ def new(
 
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     # Display next steps
     console.print("\n")
@@ -83,4 +90,3 @@ Your API will be available at [link=http://localhost:8000]http://localhost:8000[
             border_style="green",
         )
     )
-

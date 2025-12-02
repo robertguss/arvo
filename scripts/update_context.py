@@ -133,7 +133,7 @@ def generate_openapi() -> bool:
         sys.path.insert(0, str(src_path))
 
         # Import and create the app (deferred import to avoid issues when app unavailable)
-        from app.main import create_app  # noqa: PLC0415
+        from app.main import create_app
 
         app = create_app()
         openapi_spec = app.openapi()

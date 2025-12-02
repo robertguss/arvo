@@ -23,6 +23,7 @@ from .schemas import (
 from .services import BillingService
 from .webhooks import webhook_router
 
+
 router = APIRouter(prefix="/billing", tags=["billing"])
 
 # Include webhook router (no auth required for Stripe webhooks)
@@ -217,4 +218,3 @@ async def list_invoices(
         page=page,
         page_size=page_size,
     )
-

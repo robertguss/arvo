@@ -90,9 +90,7 @@ class TestGetTokenData:
 
         with (
             patch("app.core.auth.dependencies.decode_token") as mock_decode,
-            patch(
-                "app.modules.users.repos.RevokedTokenRepository"
-            ) as mock_repo_class,
+            patch("app.modules.users.repos.RevokedTokenRepository") as mock_repo_class,
         ):
             mock_decode.return_value = token_data
             mock_repo = AsyncMock()
@@ -113,9 +111,7 @@ class TestGetTokenData:
 
         with (
             patch("app.core.auth.dependencies.decode_token") as mock_decode,
-            patch(
-                "app.modules.users.repos.RevokedTokenRepository"
-            ) as mock_repo_class,
+            patch("app.modules.users.repos.RevokedTokenRepository") as mock_repo_class,
         ):
             mock_decode.return_value = expected_token_data
             mock_repo = AsyncMock()
@@ -289,9 +285,7 @@ class TestGetOptionalUser:
 
         with (
             patch("app.core.auth.dependencies.decode_token") as mock_decode,
-            patch(
-                "app.modules.users.repos.RevokedTokenRepository"
-            ) as mock_repo_class,
+            patch("app.modules.users.repos.RevokedTokenRepository") as mock_repo_class,
         ):
             mock_decode.return_value = token_data
             mock_repo = AsyncMock()

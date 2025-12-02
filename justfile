@@ -77,6 +77,22 @@ typecheck:
 archcheck:
     uv run tach check
 
+# Install pre-commit hooks
+hooks-install:
+    uv run pre-commit install
+
+# Uninstall pre-commit hooks
+hooks-uninstall:
+    uv run pre-commit uninstall
+
+# Run pre-commit on all files
+hooks:
+    uv run pre-commit run --all-files
+
+# Update pre-commit hook versions
+hooks-update:
+    uv run pre-commit autoupdate
+
 # ============================================================
 # DATABASE
 # ============================================================

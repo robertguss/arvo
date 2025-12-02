@@ -158,7 +158,7 @@ def auth_headers(user: User, tenant: Tenant) -> dict[str, str]:
         Dictionary with Authorization header
     """
     # Import here to avoid circular import at module load time
-    from app.core.auth.backend import create_access_token  # noqa: PLC0415
+    from app.core.auth.backend import create_access_token
 
     token = create_access_token(user_id=user.id, tenant_id=tenant.id)
     return {"Authorization": f"Bearer {token}"}

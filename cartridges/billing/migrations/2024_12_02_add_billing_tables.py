@@ -1,22 +1,24 @@
 """Add billing tables for Stripe integration.
 
 Revision ID: billing_001
-Revises: 
+Revises:
 Create Date: 2024-12-02
 
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
+
+
 # revision identifiers, used by Alembic.
 revision: str = "billing_001"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -48,9 +50,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        "ix_stripe_customers_tenant_id", "stripe_customers", ["tenant_id"]
-    )
+    op.create_index("ix_stripe_customers_tenant_id", "stripe_customers", ["tenant_id"])
     op.create_index(
         "ix_stripe_customers_stripe_customer_id",
         "stripe_customers",
@@ -69,7 +69,9 @@ def upgrade() -> None:
         sa.Column("status", sa.String(50), nullable=False, server_default="incomplete"),
         sa.Column("current_period_start", sa.DateTime(timezone=True), nullable=True),
         sa.Column("current_period_end", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("cancel_at_period_end", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column(
+            "cancel_at_period_end", sa.Boolean(), nullable=False, server_default="false"
+        ),
         sa.Column("canceled_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("trial_start", sa.DateTime(timezone=True), nullable=True),
         sa.Column("trial_end", sa.DateTime(timezone=True), nullable=True),
@@ -210,4 +212,3 @@ def downgrade() -> None:
     op.drop_table("invoices")
     op.drop_table("subscriptions")
     op.drop_table("stripe_customers")
-

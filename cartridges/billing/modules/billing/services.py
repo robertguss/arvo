@@ -1,12 +1,12 @@
 """Billing service for business logic."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
 
-from .models import StripeCustomer, Subscription, Invoice, UsageRecord
+from .models import Invoice, StripeCustomer, Subscription, UsageRecord
 from .repos import BillingRepository
 from .schemas import (
     CheckoutSessionCreate,
@@ -150,7 +150,7 @@ class BillingService:
         # Update local record
         update_data = {
             "cancel_at_period_end": not data.cancel_immediately,
-            "canceled_at": datetime.now(timezone.utc),
+            "canceled_at": datetime.now(UTC),
         }
         if data.cancel_immediately:
             update_data["status"] = "canceled"
@@ -174,9 +174,7 @@ class BillingService:
                 return existing
 
         # Get subscription
-        subscription = await self.repo.get_subscription(
-            data.subscription_id, tenant_id
-        )
+        subscription = await self.repo.get_subscription(data.subscription_id, tenant_id)
 
         if not subscription:
             raise HTTPException(
@@ -204,7 +202,7 @@ class BillingService:
         subscription_item_id = stripe_sub.items.data[0].id
 
         # Report to Stripe
-        timestamp = data.timestamp or datetime.now(timezone.utc)
+        timestamp = data.timestamp or datetime.now(UTC)
         await stripe_client.create_usage_record(
             subscription_item_id=subscription_item_id,
             quantity=data.quantity,
@@ -234,4 +232,3 @@ class BillingService:
         """List invoices for a tenant."""
         offset = (page - 1) * page_size
         return await self.repo.list_invoices(tenant_id, page_size, offset)
-

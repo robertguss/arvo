@@ -36,7 +36,9 @@ dev = [
     # Code Quality
     "ruff>=0.8.0",
     "mypy>=1.13.0",
-    
+    "tach>=0.16.0",
+    "pre-commit>=4.0.0",
+
     # Type Stubs
     "types-pyyaml>=6.0.0",
 ]

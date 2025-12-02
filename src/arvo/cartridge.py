@@ -2,6 +2,7 @@
 
 import shutil
 from pathlib import Path
+from typing import Any, cast
 
 import tomlkit
 from rich.console import Console
@@ -77,16 +78,17 @@ def add_dependencies(deps: list[str]) -> None:
     """
     pyproject_path = Path("pyproject.toml")
 
-    with open(pyproject_path) as f:
+    with pyproject_path.open() as f:
         doc = tomlkit.load(f)
 
     # Get or create dependencies list
     if "project" not in doc:
         doc["project"] = {}
-    if "dependencies" not in doc["project"]:
-        doc["project"]["dependencies"] = []
+    project = cast(dict[str, Any], doc["project"])
+    if "dependencies" not in project:
+        project["dependencies"] = []
 
-    project_deps = doc["project"]["dependencies"]
+    project_deps = cast(list[str], project["dependencies"])
 
     # Add each dependency if not already present
     for dep in deps:
@@ -102,7 +104,7 @@ def add_dependencies(deps: list[str]) -> None:
         if not already_present:
             project_deps.append(dep)
 
-    with open(pyproject_path, "w") as f:
+    with pyproject_path.open("w") as f:
         tomlkit.dump(doc, f)
 
 
@@ -113,11 +115,7 @@ def update_env_example(cartridge: CartridgeSpec) -> None:
         cartridge: The cartridge specification.
     """
     env_path = Path(".env.example")
-
-    if not env_path.exists():
-        content = ""
-    else:
-        content = env_path.read_text()
+    content = "" if not env_path.exists() else env_path.read_text()
 
     # Add section header
     section = f"\n# {cartridge.name.title()} Cartridge\n"
@@ -180,7 +178,4 @@ def remove_cartridge(name: str, console: Console) -> None:
     console.print("[green]✓[/green] Updated project configuration")
 
     # Note: We don't remove dependencies or migrations for safety
-    console.print(
-        "[dim]Note: Dependencies and migrations preserved for safety.[/dim]"
-    )
-
+    console.print("[dim]Note: Dependencies and migrations preserved for safety.[/dim]")

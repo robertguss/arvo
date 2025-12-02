@@ -4,7 +4,8 @@ import typer
 from rich.console import Console
 
 from arvo import __version__
-from arvo.commands import new, add, list_cmd, remove, update
+from arvo.commands import add, list_cmd, new, remove, update
+
 
 console = Console()
 
@@ -42,4 +43,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

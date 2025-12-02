@@ -218,9 +218,9 @@ class TestAuditContextAsyncIsolation:
 
         # Verify each task saw its own context
         for task_id, result in results.items():
-            assert result["expected_tenant"] == result["actual_tenant"], (
-                f"Task {task_id} saw wrong tenant"
-            )
-            assert result["expected_request"] == result["actual_request"], (
-                f"Task {task_id} saw wrong request_id"
-            )
+            assert (
+                result["expected_tenant"] == result["actual_tenant"]
+            ), f"Task {task_id} saw wrong tenant"
+            assert (
+                result["expected_request"] == result["actual_request"]
+            ), f"Task {task_id} saw wrong request_id"

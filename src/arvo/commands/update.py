@@ -1,9 +1,46 @@
 """Command: arvo update - Update cartridges in the current project."""
 
+from typing import TYPE_CHECKING
+
 import typer
 from rich.console import Console
 
+
+if TYPE_CHECKING:
+    from arvo.registry import CartridgeRegistry
+
 console = Console()
+
+
+def _get_installed_version(name: str, installed: list[str]) -> str | None:
+    """Find installed version for a cartridge."""
+    for c in installed:
+        if c.startswith(f"{name}@"):
+            return c.split("@")[1]
+    return None
+
+
+def _check_cartridge_update(
+    name: str,
+    installed: list[str],
+    registry: "CartridgeRegistry",
+) -> tuple[str, str, str] | None:
+    """Check if a cartridge has an update available."""
+    installed_version = _get_installed_version(name, installed)
+
+    if not registry.exists(name):
+        console.print(f"  [cyan]{name}[/cyan]: [yellow]not found in registry[/yellow]")
+        return None
+
+    latest = registry.get(name)
+    if installed_version and installed_version != latest.version:
+        console.print(
+            f"  [cyan]{name}[/cyan]: {installed_version} → [green]{latest.version}[/green]"
+        )
+        return (name, installed_version, latest.version)
+
+    console.print(f"  [cyan]{name}[/cyan]: [dim]up to date[/dim]")
+    return None
 
 
 def update(
@@ -18,9 +55,8 @@ def update(
 
     If no cartridge name is provided, checks/updates all installed cartridges.
     """
-    from arvo.utils import is_arvo_project, load_project_config
     from arvo.registry import CartridgeRegistry
-    from arvo.utils import get_cartridges_path
+    from arvo.utils import get_cartridges_path, is_arvo_project, load_project_config
 
     # Check we're in an arvo project
     if not is_arvo_project():
@@ -32,7 +68,7 @@ def update(
 
     # Load project config
     project_config = load_project_config()
-    installed = project_config.get("cartridges", [])
+    installed: list[str] = project_config.get("cartridges", [])
 
     if not installed:
         console.print("[yellow]No cartridges installed.[/yellow]")
@@ -41,44 +77,44 @@ def update(
     # Load registry
     registry = CartridgeRegistry(get_cartridges_path())
 
-    # If specific cartridge specified, check it's installed
+    # Determine which cartridges to check
+    cartridges_to_check = _get_cartridges_to_check(cartridge_name, installed)
+    if cartridges_to_check is None:
+        raise typer.Exit(1)
+
+    console.print("\n[bold cyan]Checking for updates...[/bold cyan]\n")
+
+    # Check each cartridge for updates
+    updates_available = [
+        update_info
+        for name in cartridges_to_check
+        if (update_info := _check_cartridge_update(name, installed, registry))
+    ]
+
+    _display_update_results(updates_available, check)
+
+
+def _get_cartridges_to_check(
+    cartridge_name: str | None, installed: list[str]
+) -> list[str] | None:
+    """Get list of cartridges to check for updates."""
+    installed_names = [c.split("@")[0] for c in installed]
+
     if cartridge_name:
-        installed_names = [c.split("@")[0] for c in installed]
         if cartridge_name not in installed_names:
             console.print(
                 f"[red]Error:[/red] Cartridge '{cartridge_name}' is not installed."
             )
-            raise typer.Exit(1)
-        cartridges_to_check = [cartridge_name]
-    else:
-        cartridges_to_check = [c.split("@")[0] for c in installed]
+            return None
+        return [cartridge_name]
 
-    console.print("\n[bold cyan]Checking for updates...[/bold cyan]\n")
+    return installed_names
 
-    updates_available = []
-    for name in cartridges_to_check:
-        # Find installed version
-        installed_version = None
-        for c in installed:
-            if c.startswith(f"{name}@"):
-                installed_version = c.split("@")[1]
-                break
 
-        # Get latest version from registry
-        if registry.exists(name):
-            latest = registry.get(name)
-            if installed_version and installed_version != latest.version:
-                updates_available.append((name, installed_version, latest.version))
-                console.print(
-                    f"  [cyan]{name}[/cyan]: {installed_version} → [green]{latest.version}[/green]"
-                )
-            else:
-                console.print(f"  [cyan]{name}[/cyan]: [dim]up to date[/dim]")
-        else:
-            console.print(
-                f"  [cyan]{name}[/cyan]: [yellow]not found in registry[/yellow]"
-            )
-
+def _display_update_results(
+    updates_available: list[tuple[str, str, str]], check: bool
+) -> None:
+    """Display update check results."""
     if not updates_available:
         console.print("\n[green]All cartridges are up to date.[/green]")
         return
@@ -97,4 +133,3 @@ def update(
         f"  arvo remove {updates_available[0][0]}\n"
         f"  arvo add {updates_available[0][0]}"
     )
-

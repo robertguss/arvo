@@ -3,14 +3,13 @@
 import typer
 from rich.console import Console
 
+
 console = Console()
 
 
 def remove(
     cartridge_name: str = typer.Argument(..., help="Name of the cartridge to remove"),
-    force: bool = typer.Option(
-        False, "--force", "-f", help="Skip confirmation prompt"
-    ),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
 ) -> None:
     """Remove a cartridge from the current project.
 
@@ -61,5 +60,4 @@ def remove(
 
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
-
+        raise typer.Exit(1) from None

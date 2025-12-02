@@ -41,7 +41,9 @@ class TestAuthServiceRegister:
         with (
             patch.object(AuthService, "__init__", lambda self, db: None),
             patch("app.core.auth.service.UserRepository") as mock_user_repo_cls,
-            patch("app.core.auth.service.RefreshTokenRepository") as mock_token_repo_cls,
+            patch(
+                "app.core.auth.service.RefreshTokenRepository"
+            ) as mock_token_repo_cls,
             patch("app.core.auth.service.hash_password") as mock_hash_pwd,
             patch("app.core.auth.service.generate_slug") as mock_slug,
             patch("app.core.auth.service.create_access_token") as mock_access,
@@ -91,7 +93,9 @@ class TestAuthServiceRegister:
         with (
             patch.object(AuthService, "__init__", lambda self, db: None),
             patch("app.core.auth.service.UserRepository") as mock_user_repo_cls,
-            patch("app.core.auth.service.RefreshTokenRepository") as mock_token_repo_cls,
+            patch(
+                "app.core.auth.service.RefreshTokenRepository"
+            ) as mock_token_repo_cls,
         ):
             mock_user_repo = AsyncMock()
             mock_user_repo.get_by_email_system.return_value = existing_user
@@ -126,11 +130,11 @@ class TestAuthServiceLogin:
         mock_user = make_mock_user(password_hash="hashed_password")
 
         with (
-            patch.object(
-                AuthService, "__init__", lambda self, db: None
-            ),
+            patch.object(AuthService, "__init__", lambda self, db: None),
             patch("app.core.auth.service.UserRepository") as mock_user_repo_cls,
-            patch("app.core.auth.service.RefreshTokenRepository") as mock_token_repo_cls,
+            patch(
+                "app.core.auth.service.RefreshTokenRepository"
+            ) as mock_token_repo_cls,
             patch("app.core.auth.service.verify_password") as mock_verify,
             patch("app.core.auth.service.create_access_token") as mock_access,
             patch("app.core.auth.service.create_refresh_token") as mock_refresh,
@@ -169,7 +173,9 @@ class TestAuthServiceLogin:
         with (
             patch.object(AuthService, "__init__", lambda self, db: None),
             patch("app.core.auth.service.UserRepository") as mock_user_repo_cls,
-            patch("app.core.auth.service.RefreshTokenRepository") as mock_token_repo_cls,
+            patch(
+                "app.core.auth.service.RefreshTokenRepository"
+            ) as mock_token_repo_cls,
             patch("app.core.auth.service.verify_password"),
             patch("app.core.auth.service.hash_password"),
         ):
@@ -199,7 +205,9 @@ class TestAuthServiceLogin:
         with (
             patch.object(AuthService, "__init__", lambda self, db: None),
             patch("app.core.auth.service.UserRepository") as mock_user_repo_cls,
-            patch("app.core.auth.service.RefreshTokenRepository") as mock_token_repo_cls,
+            patch(
+                "app.core.auth.service.RefreshTokenRepository"
+            ) as mock_token_repo_cls,
             patch("app.core.auth.service.verify_password") as mock_verify,
         ):
             mock_user_repo = AsyncMock()
@@ -230,7 +238,9 @@ class TestAuthServiceLogin:
         with (
             patch.object(AuthService, "__init__", lambda self, db: None),
             patch("app.core.auth.service.UserRepository") as mock_user_repo_cls,
-            patch("app.core.auth.service.RefreshTokenRepository") as mock_token_repo_cls,
+            patch(
+                "app.core.auth.service.RefreshTokenRepository"
+            ) as mock_token_repo_cls,
             patch("app.core.auth.service.verify_password") as mock_verify,
         ):
             mock_user_repo = AsyncMock()
@@ -268,7 +278,9 @@ class TestAuthServiceRefreshTokens:
         with (
             patch.object(AuthService, "__init__", lambda self, db: None),
             patch("app.core.auth.service.UserRepository") as mock_user_repo_cls,
-            patch("app.core.auth.service.RefreshTokenRepository") as mock_token_repo_cls,
+            patch(
+                "app.core.auth.service.RefreshTokenRepository"
+            ) as mock_token_repo_cls,
             patch("app.core.auth.service.hash_token") as mock_hash,
             patch("app.core.auth.service.create_access_token") as mock_access,
             patch("app.core.auth.service.create_refresh_token") as mock_refresh,
@@ -306,7 +318,9 @@ class TestAuthServiceRefreshTokens:
         with (
             patch.object(AuthService, "__init__", lambda self, db: None),
             patch("app.core.auth.service.UserRepository") as mock_user_repo_cls,
-            patch("app.core.auth.service.RefreshTokenRepository") as mock_token_repo_cls,
+            patch(
+                "app.core.auth.service.RefreshTokenRepository"
+            ) as mock_token_repo_cls,
             patch("app.core.auth.service.hash_token") as mock_hash,
         ):
             mock_user_repo = AsyncMock()
@@ -338,7 +352,9 @@ class TestAuthServiceRefreshTokens:
         with (
             patch.object(AuthService, "__init__", lambda self, db: None),
             patch("app.core.auth.service.UserRepository") as mock_user_repo_cls,
-            patch("app.core.auth.service.RefreshTokenRepository") as mock_token_repo_cls,
+            patch(
+                "app.core.auth.service.RefreshTokenRepository"
+            ) as mock_token_repo_cls,
             patch("app.core.auth.service.hash_token") as mock_hash,
         ):
             mock_user_repo = AsyncMock()
@@ -371,7 +387,9 @@ class TestAuthServiceRefreshTokens:
         with (
             patch.object(AuthService, "__init__", lambda self, db: None),
             patch("app.core.auth.service.UserRepository") as mock_user_repo_cls,
-            patch("app.core.auth.service.RefreshTokenRepository") as mock_token_repo_cls,
+            patch(
+                "app.core.auth.service.RefreshTokenRepository"
+            ) as mock_token_repo_cls,
             patch("app.core.auth.service.hash_token") as mock_hash,
         ):
             mock_user_repo = AsyncMock()
@@ -406,7 +424,9 @@ class TestAuthServiceRefreshTokens:
         with (
             patch.object(AuthService, "__init__", lambda self, db: None),
             patch("app.core.auth.service.UserRepository") as mock_user_repo_cls,
-            patch("app.core.auth.service.RefreshTokenRepository") as mock_token_repo_cls,
+            patch(
+                "app.core.auth.service.RefreshTokenRepository"
+            ) as mock_token_repo_cls,
             patch("app.core.auth.service.hash_token") as mock_hash,
         ):
             mock_user_repo = AsyncMock()
@@ -442,7 +462,9 @@ class TestAuthServiceLogout:
         with (
             patch.object(AuthService, "__init__", lambda self, db: None),
             patch("app.core.auth.service.UserRepository") as mock_user_repo_cls,
-            patch("app.core.auth.service.RefreshTokenRepository") as mock_token_repo_cls,
+            patch(
+                "app.core.auth.service.RefreshTokenRepository"
+            ) as mock_token_repo_cls,
             patch("app.core.auth.service.hash_token") as mock_hash,
         ):
             mock_user_repo = AsyncMock()
@@ -471,7 +493,9 @@ class TestAuthServiceLogout:
         with (
             patch.object(AuthService, "__init__", lambda self, db: None),
             patch("app.core.auth.service.UserRepository") as mock_user_repo_cls,
-            patch("app.core.auth.service.RefreshTokenRepository") as mock_token_repo_cls,
+            patch(
+                "app.core.auth.service.RefreshTokenRepository"
+            ) as mock_token_repo_cls,
             patch("app.core.auth.service.hash_token") as mock_hash,
         ):
             mock_user_repo = AsyncMock()
@@ -506,7 +530,9 @@ class TestAuthServiceLogoutAll:
         with (
             patch.object(AuthService, "__init__", lambda self, db: None),
             patch("app.core.auth.service.UserRepository") as mock_user_repo_cls,
-            patch("app.core.auth.service.RefreshTokenRepository") as mock_token_repo_cls,
+            patch(
+                "app.core.auth.service.RefreshTokenRepository"
+            ) as mock_token_repo_cls,
         ):
             mock_user_repo = AsyncMock()
             mock_user_repo_cls.return_value = mock_user_repo

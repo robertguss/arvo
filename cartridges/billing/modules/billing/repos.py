@@ -8,7 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from .models import StripeCustomer, Subscription, Invoice, UsageRecord
+
+from .models import Invoice, StripeCustomer, Subscription, UsageRecord
 
 
 class BillingRepository:
@@ -189,4 +190,3 @@ class BillingRepository:
             select(UsageRecord).where(UsageRecord.idempotency_key == idempotency_key)
         )
         return result.scalar_one_or_none()
-

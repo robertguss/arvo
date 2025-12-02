@@ -110,7 +110,9 @@ class TestCreateOAuthUser:
         result = await service.create_oauth_user(data=data, tenant_id=tenant_id)
 
         assert result == created_user
-        mock_repo.get_by_oauth.assert_awaited_once_with("google", "google123", tenant_id)
+        mock_repo.get_by_oauth.assert_awaited_once_with(
+            "google", "google123", tenant_id
+        )
         mock_repo.create.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -342,9 +344,7 @@ class TestUpdateUser:
         service = UserService(repo=mock_repo)
         data = UserUpdate(email="new@example.com")
 
-        result = await service.update_user(
-            user_id=user_id, data=data, tenant_id=tenant_id
-        )
+        await service.update_user(user_id=user_id, data=data, tenant_id=tenant_id)
 
         assert existing_user.email == "new@example.com"
         mock_repo.update.assert_awaited_once_with(existing_user)
@@ -393,9 +393,7 @@ class TestUpdateUser:
         service = UserService(repo=mock_repo)
         data = UserUpdate(full_name="New Name")
 
-        result = await service.update_user(
-            user_id=user_id, data=data, tenant_id=tenant_id
-        )
+        await service.update_user(user_id=user_id, data=data, tenant_id=tenant_id)
 
         assert existing_user.full_name == "New Name"
         mock_repo.get_by_email.assert_not_awaited()
@@ -472,7 +470,7 @@ class TestDeactivateUser:
         mock_repo.update.return_value = user
 
         service = UserService(repo=mock_repo)
-        result = await service.deactivate_user(user_id=user_id, tenant_id=tenant_id)
+        await service.deactivate_user(user_id=user_id, tenant_id=tenant_id)
 
         assert user.is_active is False
         mock_repo.update.assert_awaited_once_with(user)
@@ -495,7 +493,7 @@ class TestActivateUser:
         mock_repo.update.return_value = user
 
         service = UserService(repo=mock_repo)
-        result = await service.activate_user(user_id=user_id, tenant_id=tenant_id)
+        await service.activate_user(user_id=user_id, tenant_id=tenant_id)
 
         assert user.is_active is True
         mock_repo.update.assert_awaited_once_with(user)

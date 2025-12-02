@@ -3,7 +3,8 @@
     "allow": [
       "Bash(just test-cov:*)",
       "Bash(xargs:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []

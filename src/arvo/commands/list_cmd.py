@@ -4,6 +4,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+
 console = Console()
 
 
@@ -67,4 +68,3 @@ def list_cartridges(
     console.print()
     console.print(table)
     console.print()
-

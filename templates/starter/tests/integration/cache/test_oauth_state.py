@@ -4,10 +4,10 @@ import pytest
 
 from app.core.cache.oauth_state import (
     OAuthStateData,
+    _oauth_cache,
     get_oauth_state,
     store_oauth_state,
     verify_oauth_state,
-    _oauth_cache,
 )
 from app.core.cache.redis import RedisPoolHolder
 

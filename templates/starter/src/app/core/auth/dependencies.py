@@ -63,7 +63,7 @@ async def get_token_data(
 
     # Check if token has been revoked
     if token_data.jti:
-        from app.modules.users.repos import RevokedTokenRepository  # noqa: PLC0415
+        from app.modules.users.repos import RevokedTokenRepository
 
         revoked_repo = RevokedTokenRepository(db)
         if await revoked_repo.is_revoked(token_data.jti):
@@ -91,7 +91,7 @@ async def get_current_user(
     Raises:
         UnauthorizedError: If user not found or inactive
     """
-    from app.modules.users.repos import UserRepository  # noqa: PLC0415
+    from app.modules.users.repos import UserRepository
 
     repo = UserRepository(db)
     # Use tenant-scoped lookup for security
@@ -197,13 +197,13 @@ async def get_optional_user(
 
     # Check if token has been revoked
     if token_data.jti:
-        from app.modules.users.repos import RevokedTokenRepository  # noqa: PLC0415
+        from app.modules.users.repos import RevokedTokenRepository
 
         revoked_repo = RevokedTokenRepository(db)
         if await revoked_repo.is_revoked(token_data.jti):
             return None
 
-    from app.modules.users.repos import UserRepository  # noqa: PLC0415
+    from app.modules.users.repos import UserRepository
 
     repo = UserRepository(db)
     # Use tenant-scoped lookup for security

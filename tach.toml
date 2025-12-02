@@ -1,51 +1,19 @@
 # Tach - Architecture boundary enforcement
-# Ensures proper layering: Routes -> Services -> Repos -> Models
+# For the Arvo CLI (src/arvo/)
 
 exact = true
 source_roots = ["src"]
 exclude = [
     "tests",
-    "alembic",
-    "scripts",
+    "templates",
+    "cartridges",
 ]
 
+# Arvo CLI module - simple structure, no strict layering needed
 [[modules]]
-path = "app.api"
-depends_on = [
-    "app.core",
-    "app.modules",
-    "app.config",
-]
+path = "arvo"
+depends_on = ["arvo.commands"]
 
 [[modules]]
-path = "app.core"
-depends_on = [
-    "app.config", "app.modules.tenants", "app.api", "app.modules.users",
-]
-
-[[modules]]
-path = "app.modules"
-depends_on = [
-]
-
-[[modules]]
-path = "app.config"
-depends_on = ["app.core"]
-
-# Module-specific rules
-# Routes can import: schemas, services (NOT repos directly)
-# Services can import: repos, schemas, other services
-# Repos can import: models
-# Models import nothing (pure data)
-
-[[modules]]
-path = "app.modules.tenants"
-depends_on = [
-    "app.core",
-]
-
-[[modules]]
-path = "app.modules.users"
-depends_on = [
-    "app.core", "app.api",
-]
+path = "arvo.commands"
+depends_on = ["arvo"]

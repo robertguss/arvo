@@ -94,9 +94,7 @@ class TestRateLimitDecorator:
         async def endpoint(request: Request):
             return {"status": "ok"}
 
-        with patch(
-            "app.core.rate_limit.decorators.rate_limiter"
-        ) as mock_limiter:
+        with patch("app.core.rate_limit.decorators.rate_limiter") as mock_limiter:
             mock_limiter.is_allowed = AsyncMock(return_value=mock_result)
 
             result = await endpoint(request)
@@ -116,9 +114,7 @@ class TestRateLimitDecorator:
         async def endpoint(request: Request):
             return {"status": "ok"}
 
-        with patch(
-            "app.core.rate_limit.decorators.rate_limiter"
-        ) as mock_limiter:
+        with patch("app.core.rate_limit.decorators.rate_limiter") as mock_limiter:
             mock_limiter.is_allowed = AsyncMock(return_value=mock_result)
 
             result = await endpoint(request=request)
@@ -134,9 +130,7 @@ class TestRateLimitDecorator:
         async def endpoint(data: dict):
             return {"received": data}
 
-        with patch(
-            "app.core.rate_limit.decorators.rate_limiter"
-        ) as mock_limiter:
+        with patch("app.core.rate_limit.decorators.rate_limiter") as mock_limiter:
             mock_limiter.is_allowed = AsyncMock()
             result = await endpoint({"key": "value"})
 
@@ -158,9 +152,7 @@ class TestRateLimitDecorator:
         async def endpoint(request: Request):
             return {"status": "ok"}
 
-        with patch(
-            "app.core.rate_limit.decorators.rate_limiter"
-        ) as mock_limiter:
+        with patch("app.core.rate_limit.decorators.rate_limiter") as mock_limiter:
             mock_limiter.is_allowed = AsyncMock(return_value=mock_result)
 
             await endpoint(request)
@@ -188,9 +180,7 @@ class TestRateLimitDecorator:
         async def endpoint(request: Request):
             return {"status": "ok"}
 
-        with patch(
-            "app.core.rate_limit.decorators.rate_limiter"
-        ) as mock_limiter:
+        with patch("app.core.rate_limit.decorators.rate_limiter") as mock_limiter:
             mock_limiter.is_allowed = AsyncMock(return_value=mock_result)
 
             result = await endpoint(request)
@@ -214,9 +204,7 @@ class TestRateLimitDecorator:
         async def endpoint(request: Request):
             return {"status": "ok"}
 
-        with patch(
-            "app.core.rate_limit.decorators.rate_limiter"
-        ) as mock_limiter:
+        with patch("app.core.rate_limit.decorators.rate_limiter") as mock_limiter:
             mock_limiter.is_allowed = AsyncMock(return_value=mock_result)
 
             result = await endpoint(request)
@@ -238,9 +226,7 @@ class TestRateLimitDecorator:
         async def endpoint(request: Request):
             return {"status": "ok"}
 
-        with patch(
-            "app.core.rate_limit.decorators.rate_limiter"
-        ) as mock_limiter:
+        with patch("app.core.rate_limit.decorators.rate_limiter") as mock_limiter:
             mock_limiter.is_allowed = AsyncMock(return_value=mock_result)
 
             await endpoint(request)

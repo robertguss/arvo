@@ -10,11 +10,14 @@ from pydantic import BaseModel, ConfigDict, Field
 # Checkout
 # ============================================================
 
+
 class CheckoutSessionCreate(BaseModel):
     """Request to create a Stripe Checkout session."""
 
     price_id: str = Field(..., description="Stripe Price ID")
-    success_url: str = Field(..., description="URL to redirect after successful payment")
+    success_url: str = Field(
+        ..., description="URL to redirect after successful payment"
+    )
     cancel_url: str = Field(..., description="URL to redirect if checkout is cancelled")
     mode: str = Field(
         "subscription", description="Checkout mode: subscription or payment"
@@ -33,6 +36,7 @@ class CheckoutSessionResponse(BaseModel):
 # Customer Portal
 # ============================================================
 
+
 class PortalSessionCreate(BaseModel):
     """Request to create a Stripe Customer Portal session."""
 
@@ -48,6 +52,7 @@ class PortalSessionResponse(BaseModel):
 # ============================================================
 # Subscription
 # ============================================================
+
 
 class SubscriptionResponse(BaseModel):
     """Subscription details response."""
@@ -79,6 +84,7 @@ class SubscriptionCancelRequest(BaseModel):
 # Usage
 # ============================================================
 
+
 class UsageReportCreate(BaseModel):
     """Request to report metered usage."""
 
@@ -87,9 +93,7 @@ class UsageReportCreate(BaseModel):
     timestamp: datetime | None = Field(
         None, description="Timestamp for the usage (defaults to now)"
     )
-    action: str = Field(
-        "increment", description="Action: increment or set"
-    )
+    action: str = Field("increment", description="Action: increment or set")
     idempotency_key: str | None = Field(
         None, description="Idempotency key to prevent duplicate reports"
     )
@@ -109,6 +113,7 @@ class UsageReportResponse(BaseModel):
 # ============================================================
 # Invoice
 # ============================================================
+
 
 class InvoiceResponse(BaseModel):
     """Invoice details response."""
@@ -142,6 +147,7 @@ class InvoiceListResponse(BaseModel):
 # Customer
 # ============================================================
 
+
 class CustomerResponse(BaseModel):
     """Stripe customer details response."""
 
@@ -152,4 +158,3 @@ class CustomerResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
-

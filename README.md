@@ -129,13 +129,30 @@ git clone https://github.com/your-org/arvo
 cd arvo
 
 # Install dependencies
-uv sync
+uv sync --all-extras
+
+# Install pre-commit hooks (recommended)
+just hooks-install
 
 # Run CLI in development
 uv run arvo --help
 
 # Run tests
 uv run pytest
+```
+
+### Pre-commit Hooks
+
+This project uses pre-commit hooks to enforce code quality before every commit:
+
+- **Ruff** - Linting and formatting
+- **Mypy** - Type checking (strict mode)
+- **Tach** - Architecture boundary enforcement
+
+```bash
+just hooks-install   # Install hooks (run once after cloning)
+just hooks           # Run all hooks manually
+just hooks-update    # Update hook versions
 ```
 
 ### Installing Locally as a Global CLI

@@ -89,14 +89,14 @@ def _serialize_value(value: Any) -> Any:
         JSON-serializable representation of the value
     """
     # Pass through JSON primitives
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if value is None or isinstance(value, str | int | float | bool):
         return value
 
     # Handle specific types that need conversion
     result: Any
     if isinstance(value, UUID):
         result = str(value)
-    elif isinstance(value, (datetime, date)):
+    elif isinstance(value, datetime | date):
         result = value.isoformat()
     elif isinstance(value, Decimal):
         result = str(value)
@@ -104,7 +104,7 @@ def _serialize_value(value: Any) -> Any:
         result = value.value
     elif isinstance(value, dict):
         result = {k: _serialize_value(v) for k, v in value.items()}
-    elif isinstance(value, (list, tuple, set, frozenset)):
+    elif isinstance(value, list | tuple | set | frozenset):
         result = [_serialize_value(item) for item in value]
     else:
         # Fallback: convert to string

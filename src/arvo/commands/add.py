@@ -1,12 +1,10 @@
 """Command: arvo add - Add a cartridge to the current project."""
 
-import shutil
 import subprocess
-from pathlib import Path
 
 import typer
 from rich.console import Console
-from rich.panel import Panel
+
 
 console = Console()
 
@@ -24,8 +22,8 @@ def add(
 
     This installs the cartridge's module, dependencies, and migrations.
     """
-    from arvo.registry import CartridgeRegistry
     from arvo.cartridge import install_cartridge
+    from arvo.registry import CartridgeRegistry
     from arvo.utils import get_cartridges_path, is_arvo_project, load_project_config
 
     # Check we're in an arvo project
@@ -75,7 +73,7 @@ def add(
 
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     # Show required config
     if cartridge.config:
@@ -86,10 +84,9 @@ def add(
 
     # Show post-install instructions
     if cartridge.post_install:
-        console.print(f"\n[bold]Next steps:[/bold]")
+        console.print("\n[bold]Next steps:[/bold]")
         console.print(cartridge.post_install)
     elif not no_migrate:
         console.print("\n[bold]Next steps:[/bold]")
         console.print("  1. Set the required config values in .env")
         console.print("  2. Run: [cyan]just migrate[/cyan]")
-

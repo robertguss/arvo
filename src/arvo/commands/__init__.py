@@ -1,2 +1,1 @@
 """Arvo CLI commands."""
-

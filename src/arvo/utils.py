@@ -1,6 +1,8 @@
 """Utility functions for Arvo CLI."""
 
+import importlib.resources
 import secrets
+from importlib.resources import as_file
 from pathlib import Path
 from typing import Any
 
@@ -15,17 +17,15 @@ def get_template_path() -> Path:
         return source_path
 
     # Otherwise, look for installed package location
-    import importlib.resources
-
     try:
-        with importlib.resources.files("arvo").joinpath("templates/starter") as p:
+        ref = importlib.resources.files("arvo").joinpath("templates/starter")
+        with as_file(ref) as p:
             return Path(p)
     except (TypeError, FileNotFoundError):
         pass
 
     raise FileNotFoundError(
-        "Could not find template directory. "
-        "Make sure Arvo is installed correctly."
+        "Could not find template directory. " "Make sure Arvo is installed correctly."
     )
 
 
@@ -37,17 +37,15 @@ def get_cartridges_path() -> Path:
         return source_path
 
     # Otherwise, look for installed package location
-    import importlib.resources
-
     try:
-        with importlib.resources.files("arvo").joinpath("cartridges") as p:
+        ref = importlib.resources.files("arvo").joinpath("cartridges")
+        with as_file(ref) as p:
             return Path(p)
     except (TypeError, FileNotFoundError):
         pass
 
     raise FileNotFoundError(
-        "Could not find cartridges directory. "
-        "Make sure Arvo is installed correctly."
+        "Could not find cartridges directory. " "Make sure Arvo is installed correctly."
     )
 
 
@@ -132,12 +130,11 @@ def load_project_config() -> dict[str, Any]:
     if not config_path.exists():
         return {}
 
-    with open(config_path) as f:
+    with config_path.open() as f:
         return yaml.safe_load(f) or {}
 
 
 def save_project_config(config: dict[str, Any]) -> None:
     """Save the project's .arvo.yaml configuration."""
-    with open(".arvo.yaml", "w") as f:
+    with Path(".arvo.yaml").open("w") as f:
         yaml.dump(config, f, default_flow_style=False)
-

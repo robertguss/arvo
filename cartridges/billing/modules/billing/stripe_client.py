@@ -1,14 +1,15 @@
 """Stripe client wrapper for async operations."""
 
 import asyncio
-from functools import wraps
-from typing import Any, Callable, TypeVar, ParamSpec
 import logging
+from collections.abc import Callable
+from functools import wraps
+from typing import Any, ParamSpec, TypeVar
 
 import stripe
-from stripe import StripeError
 
 from app.config import settings
+
 
 logger = logging.getLogger(__name__)
 
@@ -61,13 +62,9 @@ class StripeClient:
         """Retrieve a Stripe customer."""
         return await asyncio.to_thread(stripe.Customer.retrieve, customer_id)
 
-    async def update_customer(
-        self, customer_id: str, **kwargs: Any
-    ) -> stripe.Customer:
+    async def update_customer(self, customer_id: str, **kwargs: Any) -> stripe.Customer:
         """Update a Stripe customer."""
-        return await asyncio.to_thread(
-            stripe.Customer.modify, customer_id, **kwargs
-        )
+        return await asyncio.to_thread(stripe.Customer.modify, customer_id, **kwargs)
 
     # ============================================================
     # Checkout Sessions
@@ -114,18 +111,14 @@ class StripeClient:
 
     async def get_subscription(self, subscription_id: str) -> stripe.Subscription:
         """Retrieve a Stripe subscription."""
-        return await asyncio.to_thread(
-            stripe.Subscription.retrieve, subscription_id
-        )
+        return await asyncio.to_thread(stripe.Subscription.retrieve, subscription_id)
 
     async def cancel_subscription(
         self, subscription_id: str, cancel_immediately: bool = False
     ) -> stripe.Subscription:
         """Cancel a Stripe subscription."""
         if cancel_immediately:
-            return await asyncio.to_thread(
-                stripe.Subscription.cancel, subscription_id
-            )
+            return await asyncio.to_thread(stripe.Subscription.cancel, subscription_id)
         else:
             return await asyncio.to_thread(
                 stripe.Subscription.modify,
@@ -203,4 +196,3 @@ class StripeClient:
 
 # Global client instance
 stripe_client = StripeClient()
-

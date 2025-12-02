@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.tenants.models import Tenant
-from app.modules.users.models import RefreshToken, RevokedToken, User
+from app.modules.users.models import RefreshToken, User
 from app.modules.users.repos import (
     RefreshTokenRepository,
     RevokedTokenRepository,
@@ -85,9 +85,7 @@ class TestUserRepositoryGetById:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_get_by_id_nonexistent(
-        self, db: AsyncSession, tenant: Tenant
-    ):
+    async def test_get_by_id_nonexistent(self, db: AsyncSession, tenant: Tenant):
         """Verify None returned for non-existent user."""
         repo = UserRepository(db)
 
@@ -124,9 +122,7 @@ class TestUserRepositoryGetByEmail:
     """Tests for UserRepository.get_by_email method."""
 
     @pytest.mark.asyncio
-    async def test_get_by_email_found(
-        self, db: AsyncSession, tenant: Tenant
-    ):
+    async def test_get_by_email_found(self, db: AsyncSession, tenant: Tenant):
         """Verify user is found by email in tenant."""
         user = await create_test_user(db, tenant, "findme@example.com")
         repo = UserRepository(db)
@@ -137,9 +133,7 @@ class TestUserRepositoryGetByEmail:
         assert result.email == user.email
 
     @pytest.mark.asyncio
-    async def test_get_by_email_wrong_tenant(
-        self, db: AsyncSession, tenant: Tenant
-    ):
+    async def test_get_by_email_wrong_tenant(self, db: AsyncSession, tenant: Tenant):
         """Verify user is not found in wrong tenant."""
         user = await create_test_user(db, tenant, "wrongtenant2@example.com")
         repo = UserRepository(db)
@@ -155,8 +149,12 @@ class TestUserRepositoryGetByOAuth:
     @pytest.mark.asyncio
     async def test_get_by_oauth_found(self, db: AsyncSession, tenant: Tenant):
         """Verify OAuth user is found."""
-        user = await create_test_user(
-            db, tenant, "oauth@example.com", oauth_provider="google", oauth_id="google123"
+        await create_test_user(
+            db,
+            tenant,
+            "oauth@example.com",
+            oauth_provider="google",
+            oauth_id="google123",
         )
         repo = UserRepository(db)
 
@@ -194,9 +192,7 @@ class TestUserRepositoryListByTenant:
         assert total == 5
 
     @pytest.mark.asyncio
-    async def test_list_by_tenant_second_page(
-        self, db: AsyncSession, tenant: Tenant
-    ):
+    async def test_list_by_tenant_second_page(self, db: AsyncSession, tenant: Tenant):
         """Verify second page returns remaining users."""
         # Create 5 users
         for i in range(5):

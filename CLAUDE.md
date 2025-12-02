@@ -18,6 +18,9 @@ just test-cov         # Run with coverage report
 just lint             # Lint (ruff) + type check (mypy)
 just fix              # Auto-fix linting issues
 just typecheck        # Type check only
+just hooks-install    # Install pre-commit hooks (run once)
+just hooks            # Run all pre-commit hooks manually
+just hooks-update     # Update hook versions
 just services         # Start PostgreSQL + Redis via Docker
 just services-down    # Stop services
 just migrate          # Run database migrations
@@ -99,7 +102,9 @@ Use `Annotated[X, Depends()]` for all dependencies.
 
 - **uv**: Package manager (use `uv run` prefix)
 - **Ruff**: Linting and formatting
-- **Mypy**: Type checking
+- **Mypy**: Type checking (strict mode)
+- **Tach**: Architecture boundary enforcement
+- **pre-commit**: Git hooks for code quality (run `just hooks-install`)
 - **Alembic**: Database migrations
 - **ARQ**: Background jobs (Redis-based)
 - **structlog**: Structured logging

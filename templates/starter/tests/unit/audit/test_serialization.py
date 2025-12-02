@@ -5,8 +5,6 @@ from decimal import Decimal
 from enum import Enum
 from uuid import uuid4
 
-import pytest
-
 from app.core.audit.middleware import _serialize_value
 
 

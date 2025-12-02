@@ -56,9 +56,7 @@ class CartridgeSpec(BaseModel):
     )
 
     # Documentation file
-    docs: str | None = Field(
-        None, description="Path to README.md documentation file"
-    )
+    docs: str | None = Field(None, description="Path to README.md documentation file")
 
 
 class ProjectConfig(BaseModel):
@@ -70,4 +68,3 @@ class ProjectConfig(BaseModel):
         default_factory=list,
         description="Installed cartridges (e.g., ['billing@1.0.0'])",
     )
-

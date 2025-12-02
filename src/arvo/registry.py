@@ -1,5 +1,6 @@
 """Cartridge registry for discovering and managing cartridges."""
 
+import contextlib
 from pathlib import Path
 
 import yaml
@@ -25,18 +26,15 @@ class CartridgeRegistry:
         Returns:
             List of CartridgeSpec objects for all available cartridges.
         """
-        cartridges = []
+        cartridges: list[CartridgeSpec] = []
 
         if not self.cartridges_dir.exists():
             return cartridges
 
         for path in sorted(self.cartridges_dir.iterdir()):
             if path.is_dir() and (path / "cartridge.yaml").exists():
-                try:
+                with contextlib.suppress(Exception):
                     cartridges.append(self.get(path.name))
-                except Exception:
-                    # Skip invalid cartridges
-                    pass
 
         return cartridges
 
@@ -73,7 +71,7 @@ class CartridgeRegistry:
         if not spec_path.exists():
             raise FileNotFoundError(f"Cartridge '{name}' not found")
 
-        with open(spec_path) as f:
+        with spec_path.open() as f:
             data = yaml.safe_load(f)
 
         try:
@@ -94,4 +92,3 @@ class CartridgeRegistry:
             Path to the cartridge directory.
         """
         return self.cartridges_dir / name
-

@@ -155,7 +155,7 @@ def _generate_key(
         # Check if first arg looks like 'self' (has class attributes)
         first_arg = args[0]
         if hasattr(first_arg, "__dict__") and not isinstance(
-            first_arg, (str, int, float, bool, list, dict, tuple)
+            first_arg, str | int | float | bool | list | dict | tuple
         ):
             filtered_args = args[1:]
 
@@ -187,11 +187,11 @@ def _arg_to_string(arg: Any) -> str:
     """
     if arg is None:
         return "none"
-    if isinstance(arg, (str, int, float, bool)):
+    if isinstance(arg, str | int | float | bool):
         return str(arg)
     if hasattr(arg, "hex"):  # UUID
         return str(arg.hex)
-    if isinstance(arg, (list, tuple)):
+    if isinstance(arg, list | tuple):
         return f"[{','.join(_arg_to_string(x) for x in arg)}]"
     if isinstance(arg, dict):
         pairs = [f"{k}:{_arg_to_string(v)}" for k, v in sorted(arg.items())]

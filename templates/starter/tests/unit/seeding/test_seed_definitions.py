@@ -82,9 +82,9 @@ class TestStandardPermissions:
         combinations = [
             (p["resource"], p["action"]) for p in seed_module.STANDARD_PERMISSIONS
         ]
-        assert len(combinations) == len(set(combinations)), (
-            "Permission combinations should be unique"
-        )
+        assert len(combinations) == len(
+            set(combinations)
+        ), "Permission combinations should be unique"
 
     def test_has_user_crud_permissions(self):
         """Should include full CRUD permissions for users."""
@@ -265,9 +265,9 @@ class TestDataConsistency:
 
         for user in seed_module.DEMO_USERS:
             for role in user["roles"]:
-                assert role in defined_roles, (
-                    f"User role '{role}' not in role definitions"
-                )
+                assert (
+                    role in defined_roles
+                ), f"User role '{role}' not in role definitions"
 
     def test_role_permissions_match_permission_definitions(self):
         """Role permission references should match defined permissions."""
@@ -277,9 +277,9 @@ class TestDataConsistency:
 
         for role_name, role_data in seed_module.ROLE_DEFINITIONS.items():
             for perm in role_data["permissions"]:
-                assert perm in defined_perms, (
-                    f"Role '{role_name}' has undefined permission: {perm}"
-                )
+                assert (
+                    perm in defined_perms
+                ), f"Role '{role_name}' has undefined permission: {perm}"
 
     def test_at_least_three_demo_tenants(self):
         """Should have at least 3 demo tenants for variety."""

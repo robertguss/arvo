@@ -1,16 +1,18 @@
 """Stripe webhook handlers."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 import stripe
+from fastapi import APIRouter, Header, HTTPException, Request, status
 
 from app.config import settings
-from .models import StripeCustomer, Subscription, Invoice
+
+from .models import Invoice, Subscription
 from .repos import BillingRepository
 from .stripe_client import StripeClient
+
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +51,10 @@ async def stripe_webhook(
         )
     except ValueError as e:
         logger.error(f"Invalid payload: {e}")
-        raise HTTPException(status_code=400, detail="Invalid payload")
+        raise HTTPException(status_code=400, detail="Invalid payload") from None
     except stripe.SignatureVerificationError as e:
         logger.error(f"Invalid signature: {e}")
-        raise HTTPException(status_code=400, detail="Invalid signature")
+        raise HTTPException(status_code=400, detail="Invalid signature") from None
 
     # Get repository
     repo = await get_repo()
@@ -102,7 +104,8 @@ async def stripe_webhook(
 
 
 async def handle_checkout_completed(
-    repo: BillingRepository, session: stripe.checkout.Session
+    repo: BillingRepository,  # noqa: ARG001
+    session: stripe.checkout.Session,
 ) -> None:
     """Handle checkout.session.completed event."""
     logger.info(f"Checkout completed: {session.id}")
@@ -144,20 +147,16 @@ async def handle_subscription_created(
         stripe_subscription_id=sub.id,
         stripe_price_id=sub.items.data[0].price.id if sub.items.data else "",
         status=sub.status,
-        current_period_start=datetime.fromtimestamp(
-            sub.current_period_start, tz=timezone.utc
-        ),
-        current_period_end=datetime.fromtimestamp(
-            sub.current_period_end, tz=timezone.utc
-        ),
+        current_period_start=datetime.fromtimestamp(sub.current_period_start, tz=UTC),
+        current_period_end=datetime.fromtimestamp(sub.current_period_end, tz=UTC),
         cancel_at_period_end=sub.cancel_at_period_end,
-        canceled_at=datetime.fromtimestamp(sub.canceled_at, tz=timezone.utc)
+        canceled_at=datetime.fromtimestamp(sub.canceled_at, tz=UTC)
         if sub.canceled_at
         else None,
-        trial_start=datetime.fromtimestamp(sub.trial_start, tz=timezone.utc)
+        trial_start=datetime.fromtimestamp(sub.trial_start, tz=UTC)
         if sub.trial_start
         else None,
-        trial_end=datetime.fromtimestamp(sub.trial_end, tz=timezone.utc)
+        trial_end=datetime.fromtimestamp(sub.trial_end, tz=UTC)
         if sub.trial_end
         else None,
     )
@@ -179,13 +178,11 @@ async def handle_subscription_updated(
     update_data = {
         "status": sub.status,
         "current_period_start": datetime.fromtimestamp(
-            sub.current_period_start, tz=timezone.utc
+            sub.current_period_start, tz=UTC
         ),
-        "current_period_end": datetime.fromtimestamp(
-            sub.current_period_end, tz=timezone.utc
-        ),
+        "current_period_end": datetime.fromtimestamp(sub.current_period_end, tz=UTC),
         "cancel_at_period_end": sub.cancel_at_period_end,
-        "canceled_at": datetime.fromtimestamp(sub.canceled_at, tz=timezone.utc)
+        "canceled_at": datetime.fromtimestamp(sub.canceled_at, tz=UTC)
         if sub.canceled_at
         else None,
     }
@@ -208,7 +205,7 @@ async def handle_subscription_deleted(
         subscription,
         {
             "status": "canceled",
-            "canceled_at": datetime.now(timezone.utc),
+            "canceled_at": datetime.now(UTC),
         },
     )
 
@@ -218,9 +215,7 @@ async def handle_subscription_deleted(
 # ============================================================
 
 
-async def handle_invoice_created(
-    repo: BillingRepository, inv: stripe.Invoice
-) -> None:
+async def handle_invoice_created(repo: BillingRepository, inv: stripe.Invoice) -> None:
     """Handle invoice.created event."""
     logger.info(f"Invoice created: {inv.id}")
 
@@ -247,9 +242,7 @@ async def handle_invoice_created(
         currency=inv.currency,
         hosted_invoice_url=inv.hosted_invoice_url,
         invoice_pdf=inv.invoice_pdf,
-        due_date=datetime.fromtimestamp(inv.due_date, tz=timezone.utc)
-        if inv.due_date
-        else None,
+        due_date=datetime.fromtimestamp(inv.due_date, tz=UTC) if inv.due_date else None,
     )
     await repo.create_invoice(invoice)
 
@@ -269,7 +262,7 @@ async def handle_invoice_paid(repo: BillingRepository, inv: stripe.Invoice) -> N
             "status": "paid",
             "amount_paid": inv.amount_paid,
             "amount_remaining": inv.amount_remaining,
-            "paid_at": datetime.now(timezone.utc),
+            "paid_at": datetime.now(UTC),
         },
     )
 
@@ -293,4 +286,3 @@ async def handle_invoice_payment_failed(
     )
 
     # TODO: Trigger notification to tenant about failed payment
-

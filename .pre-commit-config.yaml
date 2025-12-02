@@ -1,0 +1,31 @@
+fail_fast: false
+
+repos:
+  # Ruff - official hooks (fast native binary)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.0
+    hooks:
+      - id: ruff
+        name: ruff (lint)
+        args: [--fix]
+      - id: ruff-format
+        name: ruff (format)
+
+  # Local hooks using uv run
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (type check)
+        entry: uv run mypy src
+        language: system
+        types: [python]
+        pass_filenames: false
+        files: ^src/
+
+      - id: tach
+        name: tach (architecture check)
+        entry: uv run tach check
+        language: system
+        types: [python]
+        pass_filenames: false
+        files: ^src/
