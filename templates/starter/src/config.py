@@ -112,6 +112,13 @@ class Settings(BaseSettings):
     otlp_endpoint: str | None = None
     log_level: str = "INFO"
 
+    # Stripe (Billing Cartridge)
+    stripe_secret_key: str | None = None
+    stripe_publishable_key: str | None = None
+    stripe_webhook_secret: str | None = None
+    stripe_price_id_monthly: str | None = None
+    stripe_price_id_yearly: str | None = None
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def async_database_url(self) -> str:

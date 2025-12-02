@@ -1,0 +1,36 @@
+# Development Dockerfile with hot-reload
+FROM python:3.12-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Set environment
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV UV_COMPILE_BYTECODE=1
+
+WORKDIR /app
+
+# Install dependencies
+COPY pyproject.toml uv.lock* ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project || uv sync --no-install-project
+
+# Copy application
+COPY . .
+
+# Install project
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen || uv sync
+
+# Expose port
+EXPOSE 8000
+
+# Run with hot-reload
+CMD ["uv", "run", "uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
