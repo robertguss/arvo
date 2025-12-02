@@ -230,4 +230,3 @@ async def test_create_item_api(client: AsyncClient, auth_headers: dict):
     data = response.json()
     assert data["name"] == "Test Item"
 ```
-

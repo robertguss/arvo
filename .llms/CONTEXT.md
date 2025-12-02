@@ -6,16 +6,16 @@ A multi-tenant SaaS backend built with FastAPI and PostgreSQL. This is a product
 
 ## Technology Stack
 
-| Component | Technology |
-|-----------|------------|
-| Language | Python 3.12+ |
-| Framework | FastAPI 0.111+ |
-| ORM | SQLAlchemy 2.0 (async) |
-| Database | PostgreSQL 16+ |
-| Cache | Redis 7 |
-| Background Jobs | ARQ |
-| Validation | Pydantic v2 |
-| Package Manager | uv |
+| Component       | Technology             |
+| --------------- | ---------------------- |
+| Language        | Python 3.12+           |
+| Framework       | FastAPI 0.111+         |
+| ORM             | SQLAlchemy 2.0 (async) |
+| Database        | PostgreSQL 16+         |
+| Cache           | Redis 7                |
+| Background Jobs | ARQ                    |
+| Validation      | Pydantic v2            |
+| Package Manager | uv                     |
 
 ## Key Patterns
 
@@ -82,8 +82,8 @@ just services     # Start PostgreSQL + Redis
 See `.env.example` for all configuration options.
 
 Key variables:
+
 - `DATABASE_URL` - PostgreSQL connection string
 - `REDIS_URL` - Redis connection string
 - `SECRET_KEY` - JWT signing key
 - `ENVIRONMENT` - development/staging/production
-

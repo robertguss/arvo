@@ -26,14 +26,14 @@ The application is a single deployable unit with strict internal boundaries. Mod
 
 ### Layer Responsibilities
 
-| Layer | Responsibility | Can Import |
-|-------|----------------|------------|
-| **Routes** | HTTP handling, request/response transformation | Services, Schemas |
-| **Schemas** | Request/response validation, serialization | Nothing (pure data) |
-| **Services** | Business logic, orchestration | Repos, Core Services, other Services |
-| **Repositories** | Data access, query building | Models, Database |
-| **Models** | Table definitions, relationships | Nothing (pure data) |
-| **Core** | Cross-cutting concerns | Database, Config |
+| Layer            | Responsibility                                 | Can Import                           |
+| ---------------- | ---------------------------------------------- | ------------------------------------ |
+| **Routes**       | HTTP handling, request/response transformation | Services, Schemas                    |
+| **Schemas**      | Request/response validation, serialization     | Nothing (pure data)                  |
+| **Services**     | Business logic, orchestration                  | Repos, Core Services, other Services |
+| **Repositories** | Data access, query building                    | Models, Database                     |
+| **Models**       | Table definitions, relationships               | Nothing (pure data)                  |
+| **Core**         | Cross-cutting concerns                         | Database, Config                     |
 
 ### Import Rules (Enforced by Tach)
 
@@ -70,12 +70,12 @@ Request → Auth Middleware → Tenant Middleware → Route Handler
 
 ### Tenant Isolation Guarantees
 
-| Scenario | Behavior |
-|----------|----------|
-| Query without tenant context | Raises `TenantContextRequired` exception |
-| Cross-tenant data access | Impossible via normal repository methods |
-| Admin/superuser access | Explicit `bypass_tenant=True` parameter required |
-| Tenant deletion | Cascading delete of all tenant data |
+| Scenario                     | Behavior                                         |
+| ---------------------------- | ------------------------------------------------ |
+| Query without tenant context | Raises `TenantContextRequired` exception         |
+| Cross-tenant data access     | Impossible via normal repository methods         |
+| Admin/superuser access       | Explicit `bypass_tenant=True` parameter required |
+| Tenant deletion              | Cascading delete of all tenant data              |
 
 ## Database Design
 
@@ -116,4 +116,3 @@ All errors return RFC 7807 Problem Details format:
   "trace_id": "abc123"
 }
 ```
-

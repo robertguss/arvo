@@ -16,40 +16,40 @@ paths:
   /health/live:
     get:
       tags:
-      - health
+        - health
       summary: Liveness probe
       description: Kubernetes liveness probe. Returns 200 if the process is running.
       operationId: liveness_health_live_get
       responses:
-        '200':
+        "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HealthResponse'
+                $ref: "#/components/schemas/HealthResponse"
   /health/ready:
     get:
       tags:
-      - health
+        - health
       summary: Readiness probe
       description: Kubernetes readiness probe. Checks database and cache connectivity.
       operationId: readiness_health_ready_get
       responses:
-        '200':
+        "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ReadinessResponse'
+                $ref: "#/components/schemas/ReadinessResponse"
   /info:
     get:
       tags:
-      - health
+        - health
       summary: Application info
       description: Returns application metadata.
       operationId: info_info_get
       responses:
-        '200':
+        "200":
           description: Successful Response
           content:
             application/json:
@@ -60,88 +60,91 @@ paths:
   /api/v1/auth/register:
     post:
       tags:
-      - auth
+        - auth
       summary: Register new user and tenant
-      description: Creates a new tenant and user account. The user becomes the tenant's
+      description:
+        Creates a new tenant and user account. The user becomes the tenant's
         superuser.
       operationId: register_api_v1_auth_register_post
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RegisterRequest'
+              $ref: "#/components/schemas/RegisterRequest"
         required: true
       responses:
-        '201':
+        "201":
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RegisterResponse'
-        '422':
+                $ref: "#/components/schemas/RegisterResponse"
+        "422":
           description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/HTTPValidationError"
   /api/v1/auth/login:
     post:
       tags:
-      - auth
+        - auth
       summary: Login with email and password
-      description: Authenticate with email and password to receive access and refresh
+      description:
+        Authenticate with email and password to receive access and refresh
         tokens.
       operationId: login_api_v1_auth_login_post
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/LoginRequest'
+              $ref: "#/components/schemas/LoginRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TokenResponse'
-        '422':
+                $ref: "#/components/schemas/TokenResponse"
+        "422":
           description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/HTTPValidationError"
   /api/v1/auth/refresh:
     post:
       tags:
-      - auth
+        - auth
       summary: Refresh access token
-      description: Use a refresh token to obtain a new access token. The old refresh
+      description:
+        Use a refresh token to obtain a new access token. The old refresh
         token is revoked.
       operationId: refresh_token_api_v1_auth_refresh_post
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RefreshTokenRequest'
+              $ref: "#/components/schemas/RefreshTokenRequest"
         required: true
       responses:
-        '200':
+        "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TokenResponse'
-        '422':
+                $ref: "#/components/schemas/TokenResponse"
+        "422":
           description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/HTTPValidationError"
   /api/v1/auth/logout:
     post:
       tags:
-      - auth
+        - auth
       summary: Logout
       description: Revoke the refresh token to logout from the current session.
       operationId: logout_api_v1_auth_logout_post
@@ -149,180 +152,180 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RefreshTokenRequest'
+              $ref: "#/components/schemas/RefreshTokenRequest"
         required: true
       responses:
-        '204':
+        "204":
           description: Successful Response
-        '422':
+        "422":
           description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/HTTPValidationError"
   /api/v1/auth/logout-all:
     post:
       tags:
-      - auth
+        - auth
       summary: Logout from all devices
       description: Revoke all refresh tokens to logout from all devices.
       operationId: logout_all_api_v1_auth_logout_all_post
       responses:
-        '204':
+        "204":
           description: Successful Response
       security:
-      - HTTPBearer: []
+        - HTTPBearer: []
   /api/v1/auth/me:
     get:
       tags:
-      - auth
+        - auth
       summary: Get current user
       description: Returns the currently authenticated user's profile.
       operationId: get_me_api_v1_auth_me_get
       responses:
-        '200':
+        "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserResponse'
+                $ref: "#/components/schemas/UserResponse"
       security:
-      - HTTPBearer: []
+        - HTTPBearer: []
   /api/v1/auth/oauth/providers:
     get:
       tags:
-      - oauth
+        - oauth
       summary: List OAuth providers
       description: Returns list of configured OAuth providers.
       operationId: list_providers_api_v1_auth_oauth_providers_get
       responses:
-        '200':
+        "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthProvidersResponse'
+                $ref: "#/components/schemas/OAuthProvidersResponse"
   /api/v1/auth/oauth/{provider}/authorize:
     get:
       tags:
-      - oauth
+        - oauth
       summary: Get OAuth authorization URL
       description: Returns the URL to redirect the user to for OAuth authorization.
       operationId: authorize_api_v1_auth_oauth__provider__authorize_get
       parameters:
-      - name: provider
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Provider
-      - name: redirect_uri
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            title: Provider
+        - name: redirect_uri
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: string
+              - type: "null"
+            description: Custom redirect URI (defaults to callback endpoint)
+            title: Redirect Uri
           description: Custom redirect URI (defaults to callback endpoint)
-          title: Redirect Uri
-        description: Custom redirect URI (defaults to callback endpoint)
       responses:
-        '200':
+        "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAuthorizeResponse'
-        '422':
+                $ref: "#/components/schemas/OAuthAuthorizeResponse"
+        "422":
           description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/HTTPValidationError"
   /api/v1/auth/oauth/{provider}/callback:
     get:
       tags:
-      - oauth
+        - oauth
       summary: OAuth callback
       description: Handle OAuth provider callback after authorization.
       operationId: oauth_callback_api_v1_auth_oauth__provider__callback_get
       parameters:
-      - name: provider
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Provider
-      - name: code
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            title: Provider
+        - name: code
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: string
+              - type: "null"
+            description: Authorization code from provider
+            title: Code
           description: Authorization code from provider
-          title: Code
-        description: Authorization code from provider
-      - name: state
-        in: query
-        required: true
-        schema:
-          type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+            description: State parameter for CSRF verification
+            title: State
           description: State parameter for CSRF verification
-          title: State
-        description: State parameter for CSRF verification
-      - name: error
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
+        - name: error
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: string
+              - type: "null"
+            description: Error from provider
+            title: Error
           description: Error from provider
-          title: Error
-        description: Error from provider
-      - name: error_description
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
+        - name: error_description
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: string
+              - type: "null"
+            description: Error description
+            title: Error Description
           description: Error description
-          title: Error Description
-        description: Error description
       responses:
-        '200':
+        "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TokenResponse'
-        '422':
+                $ref: "#/components/schemas/TokenResponse"
+        "422":
           description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/HTTPValidationError"
   /api/v1/users/me:
     get:
       tags:
-      - users
+        - users
       summary: Get current user
       description: Returns the currently authenticated user's profile.
       operationId: get_me_api_v1_users_me_get
       responses:
-        '200':
+        "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserResponse'
+                $ref: "#/components/schemas/UserResponse"
       security:
-      - HTTPBearer: []
+        - HTTPBearer: []
     patch:
       tags:
-      - users
+        - users
       summary: Update current user
       description: Update the currently authenticated user's profile.
       operationId: update_me_api_v1_users_me_patch
@@ -330,200 +333,201 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UserUpdate'
+              $ref: "#/components/schemas/UserUpdate"
         required: true
       responses:
-        '200':
+        "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserResponse'
-        '422':
+                $ref: "#/components/schemas/UserResponse"
+        "422":
           description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/HTTPValidationError"
       security:
-      - HTTPBearer: []
+        - HTTPBearer: []
   /api/v1/users:
     get:
       tags:
-      - users
+        - users
       summary: List users
       description: List all users in the current tenant. Requires admin permissions.
       operationId: list_users_api_v1_users_get
       security:
-      - HTTPBearer: []
+        - HTTPBearer: []
       parameters:
-      - name: page
-        in: query
-        required: false
-        schema:
-          type: integer
-          minimum: 1
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            description: Page number
+            default: 1
+            title: Page
           description: Page number
-          default: 1
-          title: Page
-        description: Page number
-      - name: page_size
-        in: query
-        required: false
-        schema:
-          type: integer
-          maximum: 100
-          minimum: 1
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            maximum: 100
+            minimum: 1
+            description: Items per page
+            default: 20
+            title: Page Size
           description: Items per page
-          default: 20
-          title: Page Size
-        description: Items per page
       responses:
-        '200':
+        "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserListResponse'
-        '422':
+                $ref: "#/components/schemas/UserListResponse"
+        "422":
           description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/HTTPValidationError"
   /api/v1/users/{user_id}:
     get:
       tags:
-      - users
+        - users
       summary: Get user by ID
       description: Get a specific user by their ID. Requires admin permissions.
       operationId: get_user_api_v1_users__user_id__get
       security:
-      - HTTPBearer: []
+        - HTTPBearer: []
       parameters:
-      - name: user_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: User Id
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: User Id
       responses:
-        '200':
+        "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserResponse'
-        '422':
+                $ref: "#/components/schemas/UserResponse"
+        "422":
           description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/HTTPValidationError"
     patch:
       tags:
-      - users
+        - users
       summary: Update user
       description: Update a user's profile. Requires admin permissions.
       operationId: update_user_api_v1_users__user_id__patch
       security:
-      - HTTPBearer: []
+        - HTTPBearer: []
       parameters:
-      - name: user_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: User Id
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: User Id
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UserUpdate'
+              $ref: "#/components/schemas/UserUpdate"
       responses:
-        '200':
+        "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserResponse'
-        '422':
+                $ref: "#/components/schemas/UserResponse"
+        "422":
           description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/HTTPValidationError"
   /api/v1/users/{user_id}/deactivate:
     post:
       tags:
-      - users
+        - users
       summary: Deactivate user
       description: Deactivate a user account. Requires admin permissions.
       operationId: deactivate_user_api_v1_users__user_id__deactivate_post
       security:
-      - HTTPBearer: []
+        - HTTPBearer: []
       parameters:
-      - name: user_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: User Id
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: User Id
       responses:
-        '200':
+        "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserResponse'
-        '422':
+                $ref: "#/components/schemas/UserResponse"
+        "422":
           description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/HTTPValidationError"
   /api/v1/users/{user_id}/activate:
     post:
       tags:
-      - users
+        - users
       summary: Activate user
-      description: Activate a previously deactivated user account. Requires admin
+      description:
+        Activate a previously deactivated user account. Requires admin
         permissions.
       operationId: activate_user_api_v1_users__user_id__activate_post
       security:
-      - HTTPBearer: []
+        - HTTPBearer: []
       parameters:
-      - name: user_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: User Id
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: User Id
       responses:
-        '200':
+        "200":
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserResponse'
-        '422':
+                $ref: "#/components/schemas/UserResponse"
+        "422":
           description: Validation Error
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: "#/components/schemas/HTTPValidationError"
 components:
   schemas:
     HTTPValidationError:
       properties:
         detail:
           items:
-            $ref: '#/components/schemas/ValidationError'
+            $ref: "#/components/schemas/ValidationError"
           type: array
           title: Detail
       type: object
@@ -535,7 +539,7 @@ components:
           title: Status
       type: object
       required:
-      - status
+        - status
       title: HealthResponse
       description: Health check response schema.
     LoginRequest:
@@ -549,8 +553,8 @@ components:
           title: Password
       type: object
       required:
-      - email
-      - password
+        - email
+        - password
       title: LoginRequest
       description: Schema for email/password login.
     OAuthAuthorizeResponse:
@@ -563,8 +567,8 @@ components:
           title: State
       type: object
       required:
-      - url
-      - state
+        - url
+        - state
       title: OAuthAuthorizeResponse
       description: Response with authorization URL.
     OAuthProvidersResponse:
@@ -576,7 +580,7 @@ components:
           title: Providers
       type: object
       required:
-      - providers
+        - providers
       title: OAuthProvidersResponse
       description: List of available OAuth providers.
     ReadinessResponse:
@@ -591,8 +595,8 @@ components:
           title: Checks
       type: object
       required:
-      - status
-      - checks
+        - status
+        - checks
       title: ReadinessResponse
       description: Readiness check response schema.
     RefreshTokenRequest:
@@ -602,7 +606,7 @@ components:
           title: Refresh Token
       type: object
       required:
-      - refresh_token
+        - refresh_token
       title: RefreshTokenRequest
       description: Schema for refreshing access token.
     RegisterRequest:
@@ -628,19 +632,19 @@ components:
           title: Tenant Name
       type: object
       required:
-      - email
-      - password
-      - full_name
-      - tenant_name
+        - email
+        - password
+        - full_name
+        - tenant_name
       title: RegisterRequest
-      description: 'Schema for user registration.
+      description: "Schema for user registration.
 
 
-        Creates both a new tenant and user in one request.'
+        Creates both a new tenant and user in one request."
     RegisterResponse:
       properties:
         user:
-          $ref: '#/components/schemas/UserResponse'
+          $ref: "#/components/schemas/UserResponse"
         access_token:
           type: string
           title: Access Token
@@ -656,10 +660,10 @@ components:
           title: Expires In
       type: object
       required:
-      - user
-      - access_token
-      - refresh_token
-      - expires_in
+        - user
+        - access_token
+        - refresh_token
+        - expires_in
       title: RegisterResponse
       description: Schema for registration response.
     TokenResponse:
@@ -680,16 +684,16 @@ components:
           description: Access token expiration in seconds
       type: object
       required:
-      - access_token
-      - refresh_token
-      - expires_in
+        - access_token
+        - refresh_token
+        - expires_in
       title: TokenResponse
       description: Schema for authentication token response.
     UserListResponse:
       properties:
         items:
           items:
-            $ref: '#/components/schemas/UserResponse'
+            $ref: "#/components/schemas/UserResponse"
           type: array
           title: Items
         total:
@@ -703,10 +707,10 @@ components:
           title: Page Size
       type: object
       required:
-      - items
-      - total
-      - page
-      - page_size
+        - items
+        - total
+        - page
+        - page_size
       title: UserListResponse
       description: Schema for listing users.
     UserResponse:
@@ -736,8 +740,8 @@ components:
           title: Is Superuser
         oauth_provider:
           anyOf:
-          - type: string
-          - type: 'null'
+            - type: string
+            - type: "null"
           title: Oauth Provider
         created_at:
           type: string
@@ -749,30 +753,30 @@ components:
           title: Updated At
       type: object
       required:
-      - email
-      - full_name
-      - id
-      - tenant_id
-      - is_active
-      - is_superuser
-      - created_at
-      - updated_at
+        - email
+        - full_name
+        - id
+        - tenant_id
+        - is_active
+        - is_superuser
+        - created_at
+        - updated_at
       title: UserResponse
       description: Schema for user response data.
     UserUpdate:
       properties:
         email:
           anyOf:
-          - type: string
-            format: email
-          - type: 'null'
+            - type: string
+              format: email
+            - type: "null"
           title: Email
         full_name:
           anyOf:
-          - type: string
-            maxLength: 255
-            minLength: 1
-          - type: 'null'
+            - type: string
+              maxLength: 255
+              minLength: 1
+            - type: "null"
           title: Full Name
       type: object
       title: UserUpdate
@@ -782,8 +786,8 @@ components:
         loc:
           items:
             anyOf:
-            - type: string
-            - type: integer
+              - type: string
+              - type: integer
           type: array
           title: Location
         msg:
@@ -794,9 +798,9 @@ components:
           title: Error Type
       type: object
       required:
-      - loc
-      - msg
-      - type
+        - loc
+        - msg
+        - type
       title: ValidationError
   securitySchemes:
     HTTPBearer:
