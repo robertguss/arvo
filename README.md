@@ -58,11 +58,11 @@ just seed-full
 
 Demo credentials after running `just seed-full`:
 
-| Email | Password | Role |
-|-------|----------|------|
-| admin@acme.example.com | admin123!@# | Admin |
-| member@acme.example.com | member123!@# | Member |
-| viewer@acme.example.com | viewer123!@# | Viewer |
+| Email                     | Password     | Role   |
+| ------------------------- | ------------ | ------ |
+| <admin@acme.example.com>  | admin123!@#  | Admin  |
+| <member@acme.example.com> | member123!@# | Member |
+| <viewer@acme.example.com> | viewer123!@# | Viewer |
 
 ## Project Structure
 
@@ -203,6 +203,7 @@ just test-integration
    ```
 
 2. **Set required values in `.env.prod`:**
+
    - `SECRET_KEY` - Generate with `just secret`
    - `DB_PASSWORD` - Strong database password
    - `DOMAIN` - Your API domain (e.g., api.example.com)
