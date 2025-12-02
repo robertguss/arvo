@@ -154,7 +154,7 @@ class ProductRepository:
         )
         if active_only:
             query = query.where(Product.is_active == True)  # noqa: E712
-        
+
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
@@ -467,4 +467,3 @@ When creating a new module, verify:
 - [API Overview](../api/overview.md) - API design standards
 - [Authentication](../api/authentication.md) - Protecting endpoints
 - [Error Handling](../api/errors.md) - RFC 7807 errors
-

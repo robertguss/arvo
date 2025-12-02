@@ -4,10 +4,10 @@ The Agency Standard uses **row-level tenant isolation**. Every tenant's data liv
 
 ## Why Row-Level Isolation?
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| **Separate Databases** | Complete isolation | Complex migrations, high cost |
-| **Separate Schemas** | Good isolation | Migration complexity |
+| Approach                   | Pros                           | Cons                            |
+| -------------------------- | ------------------------------ | ------------------------------- |
+| **Separate Databases**     | Complete isolation             | Complex migrations, high cost   |
+| **Separate Schemas**       | Good isolation                 | Migration complexity            |
 | **Row-Level (our choice)** | Simple migrations, scales well | Requires careful query handling |
 
 Row-level isolation is the right choice for most SaaS applications:
@@ -52,7 +52,7 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         # Extract tenant from authenticated user
         if hasattr(request.state, "user") and request.state.user:
             request.state.tenant_id = request.state.user.tenant_id
-        
+
         return await call_next(request)
 ```
 
@@ -112,22 +112,22 @@ class Tenant(Base, UUIDMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True)
-    
+
     # Settings stored as JSONB
     settings: Mapped[dict] = mapped_column(JSONB, default=dict)
-    
+
     # Relationships
     users: Mapped[list["User"]] = relationship(back_populates="tenant")
 ```
 
 ## Isolation Guarantees
 
-| Scenario | Behavior |
-|----------|----------|
-| Query without tenant context | Must explicitly pass `tenant_id` |
-| Cross-tenant data access | Impossible via normal repository methods |
-| Admin/superuser access | Use `bypass_tenant=True` parameter |
-| Tenant deletion | Cascading delete of all tenant data |
+| Scenario                     | Behavior                                 |
+| ---------------------------- | ---------------------------------------- |
+| Query without tenant context | Must explicitly pass `tenant_id`         |
+| Cross-tenant data access     | Impossible via normal repository methods |
+| Admin/superuser access       | Use `bypass_tenant=True` parameter       |
+| Tenant deletion              | Cascading delete of all tenant data      |
 
 ## Best Practices
 
@@ -189,14 +189,14 @@ When a tenant is deleted, all associated data is cascade-deleted:
 
 ```sql
 -- The foreign key with ON DELETE CASCADE handles this
-ALTER TABLE items 
-ADD CONSTRAINT fk_items_tenant 
-FOREIGN KEY (tenant_id) REFERENCES tenants(id) 
+ALTER TABLE items
+ADD CONSTRAINT fk_items_tenant
+FOREIGN KEY (tenant_id) REFERENCES tenants(id)
 ON DELETE CASCADE;
 ```
 
 !!! warning "Soft Deletes Recommended"
-    For production, consider soft deletes instead of hard deletes. Add an `is_deleted` flag and filter it out in queries.
+For production, consider soft deletes instead of hard deletes. Add an `is_deleted` flag and filter it out in queries.
 
 ## Testing Multi-Tenancy
 
@@ -207,16 +207,16 @@ async def test_tenant_isolation(db: AsyncSession):
     # Create two tenants
     tenant_a = await TenantFactory.create_async(db)
     tenant_b = await TenantFactory.create_async(db)
-    
+
     # Create item for tenant A
     item = Item(tenant_id=tenant_a.id, name="Secret Item")
     db.add(item)
     await db.flush()
-    
+
     # Query as tenant B should return nothing
     repo = ItemRepository(db)
     items = await repo.list(tenant_id=tenant_b.id)
-    
+
     assert len(items) == 0  # Tenant B can't see Tenant A's data
 ```
 
@@ -225,4 +225,3 @@ async def test_tenant_isolation(db: AsyncSession):
 - [Modules](modules.md) - Creating feature modules
 - [Authentication](../api/authentication.md) - How users authenticate
 - [Permissions](../api/authentication.md#permissions) - Role-based access control
-

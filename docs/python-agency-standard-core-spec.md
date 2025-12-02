@@ -79,7 +79,7 @@ The codebase is structured for LLM comprehension: consistent patterns, strict ty
 
 The application is a single deployable unit with strict internal boundaries. Modules communicate through well-defined interfaces, not direct imports.
 
-```
+```text
 ┌─────────────────────────────────────────────────────────┐
 │                      FastAPI App                        │
 ├─────────────────────────────────────────────────────────┤
@@ -112,7 +112,7 @@ The application is a single deployable unit with strict internal boundaries. Mod
 
 ### 4.3 Directory Structure
 
-```
+```text
 /
 ├── .github/
 │   └── workflows/
@@ -280,7 +280,7 @@ Every tenant's data lives in the same tables but is isolated by `tenant_id`. A m
 
 ### 5.2 Tenant Context Flow
 
-```
+```text
 Request → Auth Middleware → Tenant Middleware → Route Handler
                                     │
                                     ▼
@@ -2075,22 +2075,18 @@ def discover_modules():
 The core is complete when:
 
 1. **Scaffold to authenticated endpoint in < 30 minutes**
-
    - Run copier, configure env, start Docker, create migration, hit authenticated API
 
 2. **All tests pass**
-
    - Unit, integration, and architecture tests green
    - Coverage > 80%
 
 3. **Documentation complete**
-
    - Getting started guide
    - Architecture documentation
    - API reference (auto-generated)
 
 4. **Production deployable**
-
    - Single `docker compose up` deploys full stack
    - HTTPS working via Caddy
    - Health checks passing

@@ -4,13 +4,13 @@ The Agency Standard follows a **Modular Monolith** architecture pattern. It's a 
 
 ## Why Modular Monolith?
 
-| Aspect | Microservices | Modular Monolith |
-|--------|--------------|------------------|
-| **Deployment** | Complex orchestration | Single container |
-| **Development** | Team coordination overhead | Fast iteration |
-| **Debugging** | Distributed tracing required | Stack traces work |
-| **Scaling** | Per-service scaling | Horizontal scaling |
-| **Refactoring** | Contract negotiations | IDE refactoring |
+| Aspect          | Microservices                | Modular Monolith   |
+| --------------- | ---------------------------- | ------------------ |
+| **Deployment**  | Complex orchestration        | Single container   |
+| **Development** | Team coordination overhead   | Fast iteration     |
+| **Debugging**   | Distributed tracing required | Stack traces work  |
+| **Scaling**     | Per-service scaling          | Horizontal scaling |
+| **Refactoring** | Contract negotiations        | IDE refactoring    |
 
 A modular monolith gives you **microservice-like boundaries** with **monolith simplicity**. You can always extract modules to services later if needed.
 
@@ -179,18 +179,18 @@ depends_on = ["app.modules.*.repos", "app.core"]
 
 The `core/` directory contains cross-cutting concerns used by all modules:
 
-| Service | Purpose |
-|---------|---------|
-| `core/auth/` | JWT authentication, OAuth2, tenant context |
-| `core/permissions/` | RBAC permission checking |
-| `core/database/` | Async sessions, base models, mixins |
-| `core/cache/` | Redis caching with decorators |
-| `core/jobs/` | ARQ background job processing |
-| `core/rate_limit/` | Sliding window rate limiting |
-| `core/audit/` | Audit log tracking |
-| `core/errors/` | RFC 7807 error responses |
-| `core/logging/` | Structured logging middleware |
-| `core/observability/` | OpenTelemetry tracing |
+| Service               | Purpose                                    |
+| --------------------- | ------------------------------------------ |
+| `core/auth/`          | JWT authentication, OAuth2, tenant context |
+| `core/permissions/`   | RBAC permission checking                   |
+| `core/database/`      | Async sessions, base models, mixins        |
+| `core/cache/`         | Redis caching with decorators              |
+| `core/jobs/`          | ARQ background job processing              |
+| `core/rate_limit/`    | Sliding window rate limiting               |
+| `core/audit/`         | Audit log tracking                         |
+| `core/errors/`        | RFC 7807 error responses                   |
+| `core/logging/`       | Structured logging middleware              |
+| `core/observability/` | OpenTelemetry tracing                      |
 
 ## Directory Structure
 
@@ -253,4 +253,3 @@ Here's how a typical request flows through the system:
 - [Multi-Tenancy](multi-tenancy.md) - How tenant isolation works
 - [Modules](modules.md) - Creating new feature modules
 - [Authentication](../api/authentication.md) - Auth flow details
-

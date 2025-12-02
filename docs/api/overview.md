@@ -23,18 +23,18 @@ Interactive documentation is available in development:
 - **OpenAPI JSON**: [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json)
 
 !!! note "Production"
-    API documentation is disabled in production by default. Set `ENVIRONMENT=development` to enable.
+API documentation is disabled in production by default. Set `ENVIRONMENT=development` to enable.
 
 ## Endpoint Requirements
 
 All endpoints must have these attributes:
 
-| Attribute | Purpose | Example |
-|-----------|---------|---------|
-| `response_model` | Pydantic schema for response | `response_model=UserResponse` |
-| `summary` | Brief description for OpenAPI | `summary="Create a new user"` |
-| `tags` | Categorization for docs | `tags=["users"]` |
-| `status_code` | HTTP status on success | `status_code=201` |
+| Attribute        | Purpose                       | Example                       |
+| ---------------- | ----------------------------- | ----------------------------- |
+| `response_model` | Pydantic schema for response  | `response_model=UserResponse` |
+| `summary`        | Brief description for OpenAPI | `summary="Create a new user"` |
+| `tags`           | Categorization for docs       | `tags=["users"]`              |
+| `status_code`    | HTTP status on success        | `status_code=201`             |
 
 ```python
 @router.post(
@@ -46,7 +46,7 @@ All endpoints must have these attributes:
 )
 async def create_user(data: UserCreate) -> UserResponse:
     """Create a new user in the current tenant.
-    
+
     This endpoint requires authentication and creates a user
     associated with the authenticated user's tenant.
     """
@@ -55,29 +55,29 @@ async def create_user(data: UserCreate) -> UserResponse:
 
 ## HTTP Methods
 
-| Method | Purpose | Idempotent | Success Code |
-|--------|---------|------------|--------------|
-| `GET` | Retrieve resource(s) | Yes | 200 |
-| `POST` | Create resource | No | 201 |
-| `PUT` | Replace resource | Yes | 200 |
-| `PATCH` | Partial update | No | 200 |
-| `DELETE` | Remove resource | Yes | 204 |
+| Method   | Purpose              | Idempotent | Success Code |
+| -------- | -------------------- | ---------- | ------------ |
+| `GET`    | Retrieve resource(s) | Yes        | 200          |
+| `POST`   | Create resource      | No         | 201          |
+| `PUT`    | Replace resource     | Yes        | 200          |
+| `PATCH`  | Partial update       | No         | 200          |
+| `DELETE` | Remove resource      | Yes        | 204          |
 
 ## Request Headers
 
 ### Required Headers
 
-| Header | Value | Purpose |
-|--------|-------|---------|
-| `Authorization` | `Bearer <token>` | JWT authentication |
-| `Content-Type` | `application/json` | Request body format |
+| Header          | Value              | Purpose             |
+| --------------- | ------------------ | ------------------- |
+| `Authorization` | `Bearer <token>`   | JWT authentication  |
+| `Content-Type`  | `application/json` | Request body format |
 
 ### Optional Headers
 
-| Header | Value | Purpose |
-|--------|-------|---------|
-| `X-Request-ID` | UUID | Request tracing (auto-generated if missing) |
-| `Accept-Language` | `en-US` | Localization (future) |
+| Header            | Value   | Purpose                                     |
+| ----------------- | ------- | ------------------------------------------- |
+| `X-Request-ID`    | UUID    | Request tracing (auto-generated if missing) |
+| `Accept-Language` | `en-US` | Localization (future)                       |
 
 ## Response Format
 
@@ -97,8 +97,8 @@ async def create_user(data: UserCreate) -> UserResponse:
 ```json
 {
   "items": [
-    {"id": "...", "name": "Item 1"},
-    {"id": "...", "name": "Item 2"}
+    { "id": "...", "name": "Item 1" },
+    { "id": "...", "name": "Item 2" }
   ],
   "total": 42,
   "page": 1,
@@ -134,10 +134,10 @@ List endpoints support pagination:
 GET /api/v1/items?page=1&page_size=20
 ```
 
-| Parameter | Default | Max | Description |
-|-----------|---------|-----|-------------|
-| `page` | 1 | - | Page number (1-indexed) |
-| `page_size` | 20 | 100 | Items per page |
+| Parameter   | Default | Max | Description             |
+| ----------- | ------- | --- | ----------------------- |
+| `page`      | 1       | -   | Page number (1-indexed) |
+| `page_size` | 20      | 100 | Items per page          |
 
 ### Pagination Response Schema
 
@@ -170,10 +170,10 @@ Some endpoints support sorting:
 GET /api/v1/items?sort_by=created_at&sort_order=desc
 ```
 
-| Parameter | Values | Default |
-|-----------|--------|---------|
-| `sort_by` | Field name | `created_at` |
-| `sort_order` | `asc`, `desc` | `desc` |
+| Parameter    | Values        | Default      |
+| ------------ | ------------- | ------------ |
+| `sort_by`    | Field name    | `created_at` |
+| `sort_order` | `asc`, `desc` | `desc`       |
 
 ## Versioning
 
@@ -215,10 +215,10 @@ See configuration for tier-based limits.
 
 ## Health Endpoints
 
-| Endpoint | Purpose | Auth Required |
-|----------|---------|---------------|
-| `/health/live` | Liveness probe | No |
-| `/health/ready` | Readiness probe | No |
+| Endpoint        | Purpose         | Auth Required |
+| --------------- | --------------- | ------------- |
+| `/health/live`  | Liveness probe  | No            |
+| `/health/ready` | Readiness probe | No            |
 
 ```bash
 # Liveness (is the process running?)
@@ -268,4 +268,3 @@ Response: `204 No Content`
 - [Authentication](authentication.md) - JWT and OAuth2
 - [Error Handling](errors.md) - RFC 7807 error format
 - [Architecture](../architecture/overview.md) - System design
-

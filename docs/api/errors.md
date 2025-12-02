@@ -19,15 +19,15 @@ Every error response follows this structure:
 
 ### Fields
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | URI | Error type identifier (link to documentation) |
-| `title` | string | Human-readable error title |
-| `status` | integer | HTTP status code |
-| `detail` | string | Specific error message |
-| `instance` | string | Request path that caused the error |
-| `trace_id` | string | Request trace ID for debugging |
-| `errors` | array | Field-level errors (validation only) |
+| Field      | Type    | Description                                   |
+| ---------- | ------- | --------------------------------------------- |
+| `type`     | URI     | Error type identifier (link to documentation) |
+| `title`    | string  | Human-readable error title                    |
+| `status`   | integer | HTTP status code                              |
+| `detail`   | string  | Specific error message                        |
+| `instance` | string  | Request path that caused the error            |
+| `trace_id` | string  | Request trace ID for debugging                |
+| `errors`   | array   | Field-level errors (validation only)          |
 
 ## Common Error Types
 
@@ -171,7 +171,7 @@ Unexpected server error.
 ```
 
 !!! note "Error Details"
-    In production, internal error details are hidden. Use the `trace_id` to find details in logs.
+In production, internal error details are hidden. Use the `trace_id` to find details in logs.
 
 ## Raising Errors
 
@@ -323,10 +323,10 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         request_id = request.headers.get("X-Request-ID") or str(uuid4())
         request.state.request_id = request_id
-        
+
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
-        
+
         return response
 ```
 
@@ -347,10 +347,10 @@ interface ProblemDetail {
 
 async function apiCall(url: string): Promise<Response> {
   const response = await fetch(url);
-  
+
   if (!response.ok) {
     const problem: ProblemDetail = await response.json();
-    
+
     switch (problem.status) {
       case 401:
         // Redirect to login
@@ -366,10 +366,10 @@ async function apiCall(url: string): Promise<Response> {
         // Show generic error with trace_id
         console.error(`Error ${problem.trace_id}: ${problem.detail}`);
     }
-    
+
     throw new Error(problem.detail);
   }
-  
+
   return response;
 }
 ```
@@ -382,17 +382,17 @@ import httpx
 async def api_call(url: str) -> dict:
     async with httpx.AsyncClient() as client:
         response = await client.get(url)
-        
+
         if not response.is_success:
             problem = response.json()
-            
+
             if problem["status"] == 422:
                 # Handle validation errors
                 for error in problem.get("errors", []):
                     print(f"Field {error['field']}: {error['message']}")
-            
+
             raise Exception(f"API Error [{problem['trace_id']}]: {problem['detail']}")
-        
+
         return response.json()
 ```
 
@@ -441,4 +441,3 @@ else:
 - [API Overview](overview.md) - API conventions
 - [Authentication](authentication.md) - Auth and permissions
 - [Architecture](../architecture/overview.md) - System design
-

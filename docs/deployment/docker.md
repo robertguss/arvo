@@ -183,12 +183,12 @@ The Dockerfile is structured to maximize cache hits:
 
 ### Size Optimization
 
-| Optimization | Benefit |
-|--------------|---------|
-| Multi-stage build | Only runtime files in final image |
-| Alpine-based images | Smaller base image |
-| `--no-dev` flag | Exclude dev dependencies |
-| `.dockerignore` | Exclude unnecessary files |
+| Optimization        | Benefit                           |
+| ------------------- | --------------------------------- |
+| Multi-stage build   | Only runtime files in final image |
+| Alpine-based images | Smaller base image                |
+| `--no-dev` flag     | Exclude dev dependencies          |
+| `.dockerignore`     | Exclude unnecessary files         |
 
 Create a `.dockerignore` file:
 
@@ -290,7 +290,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ../src:/app/src  # Hot-reload
+      - ../src:/app/src # Hot-reload
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/agency_standard
       - REDIS_URL=redis://redis:6379
@@ -343,4 +343,3 @@ docker compose -f deploy/docker-compose.dev.yml up
 - [Production Deployment](production.md) - Full production setup
 - [Architecture](../architecture/overview.md) - System design
 - [Getting Started](../getting-started.md) - Local development
-

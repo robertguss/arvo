@@ -156,7 +156,7 @@ api.yourdomain.com {
         X-XSS-Protection "1; mode=block"
         Referrer-Policy strict-origin-when-cross-origin
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
-        
+
         # Remove server header
         -Server
     }
@@ -180,17 +180,17 @@ cp env.prod.example .env.prod
 
 Key variables to configure:
 
-| Variable | Description |
-|----------|-------------|
-| `SECRET_KEY` | JWT signing key (generate with `just secret`) |
-| `DB_PASSWORD` | Strong database password |
-| `DOMAIN` | Your API domain (e.g., `api.example.com`) |
-| `ACME_EMAIL` | Email for Let's Encrypt notifications |
+| Variable      | Description                                   |
+| ------------- | --------------------------------------------- |
+| `SECRET_KEY`  | JWT signing key (generate with `just secret`) |
+| `DB_PASSWORD` | Strong database password                      |
+| `DOMAIN`      | Your API domain (e.g., `api.example.com`)     |
+| `ACME_EMAIL`  | Email for Let's Encrypt notifications         |
 
 See `deploy/env.prod.example` for all available options.
 
 !!! warning "Security"
-    Never commit `.env.prod` to version control. Use secrets management in CI/CD.
+Never commit `.env.prod` to version control. Use secrets management in CI/CD.
 
 ## Deployment Steps
 
@@ -270,15 +270,15 @@ curl https://api.yourdomain.com/health/ready
 
 The justfile provides convenient commands for production management:
 
-| Command | Description |
-|---------|-------------|
-| `just build` | Build production Docker image |
-| `just prod-up` | Start production stack |
-| `just prod-down` | Stop production stack |
-| `just prod-logs` | View production logs (app by default) |
-| `just prod-logs postgres` | View specific service logs |
-| `just prod-restart app` | Restart a specific service |
-| `just prod-migrate` | Run database migrations |
+| Command                   | Description                           |
+| ------------------------- | ------------------------------------- |
+| `just build`              | Build production Docker image         |
+| `just prod-up`            | Start production stack                |
+| `just prod-down`          | Stop production stack                 |
+| `just prod-logs`          | View production logs (app by default) |
+| `just prod-logs postgres` | View specific service logs            |
+| `just prod-restart app`   | Restart a specific service            |
+| `just prod-migrate`       | Run database migrations               |
 
 ## Updates and Rollbacks
 
@@ -343,10 +343,10 @@ services:
 
 ### Health Checks
 
-| Endpoint | Purpose |
-|----------|---------|
-| `/health/live` | Is the process running? |
-| `/health/ready` | Can we serve traffic? |
+| Endpoint        | Purpose                 |
+| --------------- | ----------------------- |
+| `/health/live`  | Is the process running? |
+| `/health/ready` | Can we serve traffic?   |
 
 ### Logs
 
@@ -458,4 +458,3 @@ dig api.yourdomain.com
 - [Docker Setup](docker.md) - Development Docker setup
 - [Architecture](../architecture/overview.md) - System design
 - [API Overview](../api/overview.md) - API documentation
-

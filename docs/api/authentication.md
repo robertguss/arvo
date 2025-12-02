@@ -4,11 +4,11 @@ The Agency Standard supports multiple authentication methods: JWT tokens, HTTP-o
 
 ## Authentication Methods
 
-| Method | Use Case | Token Location |
-|--------|----------|----------------|
-| JWT Bearer | API clients, mobile apps | `Authorization` header |
-| HTTP-Only Cookie | Browser-based apps | Cookie |
-| OAuth2 | Social login | Redirects |
+| Method           | Use Case                 | Token Location         |
+| ---------------- | ------------------------ | ---------------------- |
+| JWT Bearer       | API clients, mobile apps | `Authorization` header |
+| HTTP-Only Cookie | Browser-based apps       | Cookie                 |
+| OAuth2           | Social login             | Redirects              |
 
 ## JWT Authentication
 
@@ -86,11 +86,11 @@ This invalidates the refresh token.
 
 ### Supported Providers
 
-| Provider | Environment Variables |
-|----------|----------------------|
-| Google | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
+| Provider  | Environment Variables                            |
+| --------- | ------------------------------------------------ |
+| Google    | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`       |
 | Microsoft | `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET` |
-| GitHub | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` |
+| GitHub    | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`       |
 
 ### OAuth2 Flow
 
@@ -223,11 +223,11 @@ def require_permission(resource: str, action: str):
 
 ### Default Roles
 
-| Role | Permissions |
-|------|-------------|
-| `admin` | All permissions |
+| Role     | Permissions              |
+| -------- | ------------------------ |
+| `admin`  | All permissions          |
 | `member` | Read/write own resources |
-| `viewer` | Read-only access |
+| `viewer` | Read-only access         |
 
 ## Configuration
 
@@ -271,10 +271,10 @@ GITHUB_CLIENT_SECRET=...
 
 ## Error Responses
 
-| Status | Meaning |
-|--------|---------|
-| 401 | Missing or invalid token |
-| 403 | Valid token but insufficient permissions |
+| Status | Meaning                                  |
+| ------ | ---------------------------------------- |
+| 401    | Missing or invalid token                 |
+| 403    | Valid token but insufficient permissions |
 
 ```json
 {
@@ -297,7 +297,7 @@ from httpx import AsyncClient
 async def auth_headers(client: AsyncClient, user: User) -> dict:
     """Get authentication headers for a test user."""
     from app.core.auth import create_access_token
-    
+
     token = create_access_token(user)
     return {"Authorization": f"Bearer {token}"}
 
@@ -312,4 +312,3 @@ async def test_protected_endpoint(client: AsyncClient, auth_headers: dict):
 - [Error Handling](errors.md) - RFC 7807 error format
 - [API Overview](overview.md) - API conventions
 - [Multi-Tenancy](../architecture/multi-tenancy.md) - Tenant context
-

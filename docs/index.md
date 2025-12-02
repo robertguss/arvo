@@ -8,46 +8,46 @@ A production-ready Python backend kit for software agencies. Built with FastAPI,
 
 <div class="grid cards" markdown>
 
--   :material-rocket-launch:{ .lg .middle } **Production Ready**
+- :material-rocket-launch:{ .lg .middle } **Production Ready**
 
-    ---
+  ***
 
-    Not a boilerplate. A complete, deployable backend with authentication, permissions, caching, and background jobs.
+  Not a boilerplate. A complete, deployable backend with authentication, permissions, caching, and background jobs.
 
--   :material-account-group:{ .lg .middle } **Multi-Tenant First**
+- :material-account-group:{ .lg .middle } **Multi-Tenant First**
 
-    ---
+  ***
 
-    Row-level tenant isolation baked in from day one. Every query automatically scopes to the current tenant.
+  Row-level tenant isolation baked in from day one. Every query automatically scopes to the current tenant.
 
--   :material-robot:{ .lg .middle } **AI-Assisted Development**
+- :material-robot:{ .lg .middle } **AI-Assisted Development**
 
-    ---
+  ***
 
-    Structured for LLM comprehension with context files, strict typing, and consistent patterns.
+  Structured for LLM comprehension with context files, strict typing, and consistent patterns.
 
--   :material-speedometer:{ .lg .middle } **Modern Python Tooling**
+- :material-speedometer:{ .lg .middle } **Modern Python Tooling**
 
-    ---
+  ***
 
-    "Rust-era" tools: uv for packages (10-100x faster), Ruff for linting, strict Mypy typing.
+  "Rust-era" tools: uv for packages (10-100x faster), Ruff for linting, strict Mypy typing.
 
 </div>
 
 ## Core Features
 
-| Feature | Description |
-|---------|-------------|
-| **FastAPI** | Async-native, automatic OpenAPI docs, Pydantic v2 validation |
-| **SQLAlchemy 2.0** | Async PostgreSQL, type-safe queries, mature ecosystem |
-| **Multi-Tenancy** | Row-level isolation with automatic tenant context |
-| **Authentication** | JWT tokens, OAuth2 (Google, Microsoft, GitHub), refresh tokens |
-| **Permissions** | RBAC with roles and fine-grained permissions |
-| **Background Jobs** | ARQ (async Redis queue) for background processing |
-| **Caching** | Redis with decorator-based caching and invalidation |
-| **Rate Limiting** | Sliding window rate limiting per user/tenant |
-| **Audit Logging** | Automatic tracking of who did what, when |
-| **Observability** | OpenTelemetry tracing, structured logging |
+| Feature             | Description                                                    |
+| ------------------- | -------------------------------------------------------------- |
+| **FastAPI**         | Async-native, automatic OpenAPI docs, Pydantic v2 validation   |
+| **SQLAlchemy 2.0**  | Async PostgreSQL, type-safe queries, mature ecosystem          |
+| **Multi-Tenancy**   | Row-level isolation with automatic tenant context              |
+| **Authentication**  | JWT tokens, OAuth2 (Google, Microsoft, GitHub), refresh tokens |
+| **Permissions**     | RBAC with roles and fine-grained permissions                   |
+| **Background Jobs** | ARQ (async Redis queue) for background processing              |
+| **Caching**         | Redis with decorator-based caching and invalidation            |
+| **Rate Limiting**   | Sliding window rate limiting per user/tenant                   |
+| **Audit Logging**   | Automatic tracking of who did what, when                       |
+| **Observability**   | OpenTelemetry tracing, structured logging                      |
 
 ## Quick Start
 
@@ -108,4 +108,3 @@ See [Architecture Overview](architecture/overview.md) for details.
 - [Architecture](architecture/overview.md) - Understand the system design
 - [API Design](api/overview.md) - API conventions and standards
 - [Deployment](deployment/docker.md) - Docker and production deployment
-

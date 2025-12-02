@@ -321,19 +321,19 @@ just migrate
 
 ## Available Commands
 
-| Command | Description |
-|---------|-------------|
-| `just dev` | Start development server with hot-reload |
-| `just test` | Run all tests |
-| `just test-unit` | Run unit tests only |
-| `just test-integration` | Run integration tests only |
-| `just lint` | Lint and type-check |
-| `just fix` | Auto-fix linting issues |
-| `just migrate` | Run database migrations |
-| `just migration "name"` | Create new migration |
-| `just seed` | Generate demo data |
-| `just services` | Start PostgreSQL + Redis |
-| `just services-down` | Stop services |
+| Command                 | Description                              |
+| ----------------------- | ---------------------------------------- |
+| `just dev`              | Start development server with hot-reload |
+| `just test`             | Run all tests                            |
+| `just test-unit`        | Run unit tests only                      |
+| `just test-integration` | Run integration tests only               |
+| `just lint`             | Lint and type-check                      |
+| `just fix`              | Auto-fix linting issues                  |
+| `just migrate`          | Run database migrations                  |
+| `just migration "name"` | Create new migration                     |
+| `just seed`             | Generate demo data                       |
+| `just services`         | Start PostgreSQL + Redis                 |
+| `just services-down`    | Stop services                            |
 
 ## Next Steps
 
@@ -341,4 +341,3 @@ just migrate
 - [Multi-Tenancy](architecture/multi-tenancy.md) - How tenant isolation works
 - [Authentication](api/authentication.md) - JWT and OAuth2 setup
 - [Deployment](deployment/docker.md) - Deploy to production
-
