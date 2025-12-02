@@ -138,6 +138,24 @@ uv run arvo --help
 uv run pytest
 ```
 
+### Installing Locally as a Global CLI
+
+To test the CLI from any directory (simulating a real installation):
+
+```bash
+# Install as a global tool (editable mode - changes reflect immediately)
+uv tool install --editable .
+
+# Now you can run arvo from anywhere
+cd /tmp/my-test-app
+arvo add billing
+
+# Useful commands
+uv tool list              # Check installed tools
+uv tool uninstall arvo    # Remove when done
+uv tool install --editable . --force  # Reinstall after major changes
+```
+
 ## License
 
 MIT
