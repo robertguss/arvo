@@ -4,7 +4,10 @@
       "Bash(just test-cov:*)",
       "Bash(xargs:*)",
       "Bash(tree:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:www.convex.dev)",
+      "WebFetch(domain:docs.convex.dev)"
     ],
     "deny": [],
     "ask": []
