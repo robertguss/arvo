@@ -22,6 +22,7 @@ source = { editable = "." }
 dependencies = [
     { name = "copier" },
     { name = "gitpython" },
+    { name = "pre-commit" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "rich" },
@@ -32,7 +33,6 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "mypy" },
-    { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -46,7 +46,7 @@ requires-dist = [
     { name = "copier", specifier = ">=9.0" },
     { name = "gitpython", specifier = ">=3.1" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13.0" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.0.0" },
+    { name = "pre-commit", specifier = ">=4.0.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
