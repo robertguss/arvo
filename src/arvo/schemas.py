@@ -55,6 +55,11 @@ class CartridgeSpec(BaseModel):
         None, description="Instructions to show after installation"
     )
 
+    # Documentation file
+    docs: str | None = Field(
+        None, description="Path to README.md documentation file"
+    )
+
 
 class ProjectConfig(BaseModel):
     """Configuration for an Arvo project (.arvo.yaml)."""

@@ -32,6 +32,15 @@ def install_cartridge(cartridge: CartridgeSpec, console: Console) -> None:
             shutil.copytree(src_modules, dst_modules)
             console.print(f"[green]✓[/green] Added {cartridge.name} module")
 
+    # 1b. Copy documentation if present
+    if cartridge.docs:
+        src_docs = cartridge_path / cartridge.docs
+        dst_docs = Path("src/app/modules") / cartridge.name / "README.md"
+
+        if src_docs.exists() and dst_docs.parent.exists():
+            shutil.copy(src_docs, dst_docs)
+            console.print(f"[green]✓[/green] Added documentation: {dst_docs}")
+
     # 2. Add dependencies to pyproject.toml
     if cartridge.dependencies:
         add_dependencies(cartridge.dependencies)

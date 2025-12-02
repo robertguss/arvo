@@ -34,9 +34,14 @@ files:
   modules: modules/billing
   migrations: migrations
 
+docs: README.md
+
 post_install: |
-  1. Set the required config values in .env
-  2. Run: just migrate
-  3. Configure Stripe webhook to POST to /api/v1/billing/webhooks
-  4. Create products and prices in your Stripe dashboard
+  See full setup guide: src/app/modules/billing/README.md
+
+  Quick start:
+    1. Add Stripe keys to .env (get from dashboard.stripe.com)
+    2. Run: just migrate
+    3. Start webhook forwarding: stripe listen --forward-to localhost:8000/api/v1/billing/webhooks
+    4. Create products/prices in Stripe Dashboard
 
