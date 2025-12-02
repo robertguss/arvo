@@ -1,0 +1,42 @@
+name: billing
+version: 1.0.0
+description: Stripe billing with subscriptions, invoices, and metered usage
+author: Arvo Team
+
+requires:
+  arvo: ">=0.1.0"
+
+dependencies:
+  - stripe>=10.0.0
+
+config:
+  - key: STRIPE_SECRET_KEY
+    description: Your Stripe secret key
+    required: true
+  - key: STRIPE_PUBLISHABLE_KEY
+    description: Your Stripe publishable key
+    required: true
+  - key: STRIPE_WEBHOOK_SECRET
+    description: Stripe webhook signing secret
+    required: true
+  - key: STRIPE_PRICE_ID_MONTHLY
+    description: Default monthly subscription price ID
+    required: false
+  - key: STRIPE_PRICE_ID_YEARLY
+    description: Default yearly subscription price ID
+    required: false
+
+routes:
+  prefix: /billing
+  tags: [billing]
+
+files:
+  modules: modules/billing
+  migrations: migrations
+
+post_install: |
+  1. Set the required config values in .env
+  2. Run: just migrate
+  3. Configure Stripe webhook to POST to /api/v1/billing/webhooks
+  4. Create products and prices in your Stripe dashboard
+

@@ -1,0 +1,106 @@
+# {{ project_name }}
+
+{{ description }}
+
+Built with [Arvo](https://github.com/your-org/arvo) - A production-ready Python backend kit.
+
+## Features
+
+- **FastAPI** with async support and automatic OpenAPI documentation
+- **SQLAlchemy 2.0** with async PostgreSQL (asyncpg)
+- **Multi-tenancy** - Row-level isolation with automatic tenant filtering
+- **Modern Python** - Python 3.12+, strict typing, Pydantic v2
+- **Production Ready** - Docker, Caddy reverse proxy, automatic HTTPS
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/) (package manager)
+- Docker & Docker Compose
+- [just](https://github.com/casey/just) (command runner)
+
+### Setup
+
+```bash
+# Install dependencies
+uv sync
+
+# Start PostgreSQL and Redis
+just services
+
+# Run database migrations
+just migrate
+
+# Start development server
+just dev
+```
+
+The API will be available at <http://localhost:8000>
+
+- API Docs: <http://localhost:8000/docs>
+- Health Check: <http://localhost:8000/health/live>
+
+## Commands
+
+```bash
+just              # Show all available commands
+
+# Development
+just dev          # Start server with hot-reload
+just worker       # Start background worker
+just services     # Start PostgreSQL + Redis
+just services-down # Stop services
+
+# Database
+just migrate      # Run migrations
+just migration "add users table"  # Create new migration
+just rollback     # Rollback last migration
+
+# Testing
+just test         # Run all tests
+just test-cov     # Run with coverage
+
+# Code Quality
+just lint         # Lint + type check
+just fix          # Auto-fix linting issues
+```
+
+## Adding Cartridges
+
+Extend your project with cartridges (plugins):
+
+```bash
+# List available cartridges
+arvo list
+
+# Add a cartridge
+arvo add billing
+arvo add storage
+
+# Remove a cartridge
+arvo remove billing
+```
+
+## Project Structure
+
+```
+src/app/
+├── main.py           # Application factory
+├── config.py         # Settings (pydantic-settings)
+├── core/             # Cross-cutting concerns
+│   ├── auth/         # JWT, OAuth, authentication
+│   ├── database/     # Session, base models, mixins
+│   └── ...
+├── modules/          # Feature modules
+│   ├── tenants/      # Multi-tenancy module
+│   └── users/        # User management
+└── api/
+    └── router.py     # Health endpoints, module mounting
+```
+
+## License
+
+MIT
+

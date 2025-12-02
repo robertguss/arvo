@@ -1,0 +1,43 @@
+_min_copier_version: "9.0.0"
+_subdirectory: ""
+_templates_suffix: .jinja
+_skip_if_exists:
+  - ".env"
+
+# Questions
+project_name:
+  type: str
+  help: What is your project name?
+  validator: "{% if not project_name %}Project name is required{% endif %}"
+
+project_slug:
+  type: str
+  default: "{{ project_name | lower | replace(' ', '_') | replace('-', '_') }}"
+  help: Project slug (used for package name, database, etc.)
+
+description:
+  type: str
+  default: "A FastAPI application built with Arvo"
+  help: Short description of your project
+
+database_name:
+  type: str
+  default: "{{ project_slug }}"
+  help: PostgreSQL database name
+
+author_name:
+  type: str
+  default: ""
+  help: Author name (optional)
+
+author_email:
+  type: str
+  default: ""
+  help: Author email (optional)
+
+secret_key:
+  type: str
+  default: ""
+  help: Secret key for JWT (auto-generated if empty)
+  secret: true
+

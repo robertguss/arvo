@@ -1,33 +1,38 @@
-# Agency Standard Python Kit
+# Arvo
 
-A production-ready Python backend kit for software agencies. Built with FastAPI, SQLAlchemy 2.0 async, and multi-tenancy support out of the box.
+A CLI for scaffolding production-ready Python backend projects and managing cartridges (plugins).
 
 ## Features
 
-- **FastAPI** with async support and automatic OpenAPI documentation
-- **SQLAlchemy 2.0** with async PostgreSQL (asyncpg)
-- **Multi-tenancy** - Row-level isolation with automatic tenant filtering
-- **Modern Python** - Python 3.12+, strict typing, Pydantic v2
-- **"Rust-era" Tooling** - uv for packages, Ruff for linting, Mypy for types
-- **Production Ready** - Docker, Caddy reverse proxy, automatic HTTPS
+- **Scaffold Projects** - `arvo new my-app` creates a complete FastAPI application
+- **Cartridges** - Add features like billing, storage, and email with `arvo add`
+- **Production Ready** - Multi-tenancy, authentication, background jobs, and more
+- **Modern Python** - Python 3.12+, async, strict typing
+
+## Installation
+
+```bash
+# Install via pip
+pip install arvo
+
+# Or via uv
+uv tool install arvo
+
+# Or run without installing
+uvx arvo new my-app
+```
 
 ## Quick Start
 
-### Prerequisites
-
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/) (package manager)
-- Docker & Docker Compose
-- [just](https://github.com/casey/just) (command runner)
-
-### Setup
-
 ```bash
-# Clone and enter the project
-cd agency_python_starter_kit
+# Create a new project
+arvo new my-saas-app
+
+# Navigate to the project
+cd my-saas-app
 
 # Install dependencies
-just install
+uv sync
 
 # Start PostgreSQL and Redis
 just services
@@ -39,224 +44,98 @@ just migrate
 just dev
 ```
 
-The API will be available at <http://localhost:8000>
-
-- API Docs: <http://localhost:8000/docs>
-- Health Check: <http://localhost:8000/health/live>
-
-### Demo Data
-
-Seed the database with demo data for testing:
-
-```bash
-# Create default tenant only
-just seed
-
-# Create comprehensive demo (tenants + users + roles + permissions)
-just seed-full
-```
-
-Demo credentials after running `just seed-full`:
-
-| Email                     | Password     | Role   |
-| ------------------------- | ------------ | ------ |
-| <admin@acme.example.com>  | admin123!@#  | Admin  |
-| <member@acme.example.com> | member123!@# | Member |
-| <viewer@acme.example.com> | viewer123!@# | Viewer |
-
-## Project Structure
-
-```console
-src/app/
-├── main.py           # Application factory
-├── config.py         # Settings (pydantic-settings)
-├── core/
-│   ├── auth/         # JWT, OAuth, authentication
-│   ├── permissions/  # RBAC system
-│   ├── database/     # Session, base models, mixins
-│   ├── cache/        # Redis caching
-│   ├── jobs/         # Background tasks (ARQ)
-│   └── ...
-├── modules/          # Feature modules
-│   ├── tenants/      # Multi-tenancy module
-│   └── users/        # User management
-└── api/
-    ├── router.py     # Health endpoints, module mounting
-    └── dependencies.py
-```
+Your API will be available at http://localhost:8000
 
 ## Commands
 
-```bash
-just              # Show all available commands
+### `arvo new <project-name>`
 
-# Development
-just dev          # Start server with hot-reload
-just worker       # Start background worker
-just services     # Start PostgreSQL + Redis
-just services-down # Stop services
-
-# Database
-just migrate      # Run migrations
-just migration "add users table"  # Create new migration
-just rollback     # Rollback last migration
-
-# Seeding
-just seed         # Create default seed data
-just seed-full    # Create full demo (users + roles + permissions)
-
-# Testing
-just test         # Run all tests
-just test-cov     # Run with coverage
-
-# Code Quality
-just lint         # Lint + type check
-just fix          # Auto-fix linting issues
-
-# Production
-just build        # Build Docker image
-just prod-up      # Start production stack
-just prod-down    # Stop production stack
-just prod-logs    # View production logs
-
-# Frontend Integration
-just gen-client   # Generate TypeScript client from OpenAPI
-
-# Utilities
-just clean        # Clean temporary files
-just secret       # Generate secret key
-```
-
-## Configuration
-
-Copy `.env.example` to `.env` and configure:
+Create a new Arvo project with all production-ready features:
 
 ```bash
-cp .env.example .env
+arvo new my-app
+arvo new my-app --output ./projects
+arvo new my-app --no-git
 ```
 
-Key environment variables:
+### `arvo list`
 
-| Variable       | Description                    | Default                                                         |
-| -------------- | ------------------------------ | --------------------------------------------------------------- |
-| `DATABASE_URL` | PostgreSQL connection string   | `postgresql://postgres:postgres@localhost:5432/agency_standard` |
-| `REDIS_URL`    | Redis connection string        | `redis://localhost:6379`                                        |
-| `SECRET_KEY`   | JWT signing key                | (generate with `just secret`)                                   |
-| `ENVIRONMENT`  | development/staging/production | `development`                                                   |
-
-## Architecture
-
-This project follows a **Modular Monolith** architecture with strict layering:
-
-```text
-Routes → Services → Repositories → Models
-```
-
-- **Routes**: HTTP handling, request/response transformation
-- **Services**: Business logic, orchestration
-- **Repositories**: Data access, query building
-- **Models**: SQLAlchemy table definitions
-
-See [docs/architecture/overview.md](docs/architecture/overview.md) for detailed architecture documentation.
-
-## Multi-Tenancy
-
-Every tenant's data is isolated using row-level filtering. Models that need tenant isolation inherit from `TenantMixin`:
-
-```python
-from app.core.database import Base, TenantMixin, UUIDMixin, TimestampMixin
-
-class Item(Base, UUIDMixin, TimestampMixin, TenantMixin):
-    __tablename__ = "items"
-    name: Mapped[str] = mapped_column(String(255))
-```
-
-## Testing
+List available cartridges:
 
 ```bash
-# Run all tests
-just test
-
-# Run with coverage
-just test-cov
-
-# Run specific test file
-just test tests/test_health.py
-
-# Run only unit tests
-just test-unit
-
-# Run only integration tests
-just test-integration
+arvo list
+arvo list --installed  # Show only installed cartridges
 ```
 
-## Production Deployment
+### `arvo add <cartridge>`
 
-### Quick Deploy
+Add a cartridge (plugin) to your project:
 
-1. **Configure environment:**
+```bash
+arvo add billing    # Stripe billing integration
+arvo add storage    # S3/R2 file storage
+arvo add email      # Email templates
+```
 
-   ```bash
-   cd deploy
-   cp env.prod.example .env.prod
-   # Edit .env.prod with your settings
-   ```
+### `arvo remove <cartridge>`
 
-2. **Set required values in `.env.prod`:**
+Remove a cartridge from your project:
 
-   - `SECRET_KEY` - Generate with `just secret`
-   - `DB_PASSWORD` - Strong database password
-   - `DOMAIN` - Your API domain (e.g., api.example.com)
-   - `ACME_EMAIL` - Email for Let's Encrypt
+```bash
+arvo remove billing
+arvo remove billing --force  # Skip confirmation
+```
 
-3. **Deploy:**
+### `arvo update [cartridge]`
 
-   ```bash
-   just build      # Build Docker image
-   just prod-up    # Start production stack
-   ```
+Update installed cartridges:
 
-### Production Stack
+```bash
+arvo update           # Check all for updates
+arvo update billing   # Update specific cartridge
+arvo update --check   # Just check, don't install
+```
 
-The production deployment includes:
+## What's Included in Generated Projects
 
-- **FastAPI App** - Your API with health checks
-- **ARQ Worker** - Background job processing
-- **PostgreSQL 16** - Primary database with persistence
-- **Redis 7** - Caching and job queue
+- **FastAPI** with async support and OpenAPI documentation
+- **SQLAlchemy 2.0** with async PostgreSQL
+- **Multi-tenancy** with row-level isolation
+- **Authentication** - JWT, OAuth2 (Google, Microsoft, GitHub)
+- **RBAC Permissions** - Role-based access control
+- **Background Jobs** - ARQ (async Redis queue)
+- **Caching** - Redis with decorator-based caching
+- **Rate Limiting** - Sliding window rate limiting
+- **Audit Logging** - Track who did what, when
+- **Observability** - OpenTelemetry tracing, structured logging
+- **Docker** - Development and production configurations
 - **Caddy** - Reverse proxy with automatic HTTPS
 
-### Production Commands
+## Available Cartridges
+
+| Cartridge | Description |
+|-----------|-------------|
+| `billing` | Stripe integration with subscriptions, invoices, metered billing |
+| `storage` | S3/R2 file uploads with presigned URLs |
+| `email` | Email templates with MJML |
+| `admin` | SQLAdmin dashboard |
+| `notifications` | Push, SMS, Slack notifications |
+
+## Development
 
 ```bash
-just prod-up              # Start all services
-just prod-down            # Stop all services
-just prod-logs            # View app logs
-just prod-logs postgres   # View specific service logs
-just prod-restart app     # Restart a service
-just prod-migrate         # Run migrations in production
-```
+# Clone the repository
+git clone https://github.com/your-org/arvo
+cd arvo
 
-### Health Checks
+# Install dependencies
+uv sync
 
-- Liveness: `https://your-domain.com/health/live`
-- Readiness: `https://your-domain.com/health/ready`
+# Run CLI in development
+uv run arvo --help
 
-See [docs/deployment/production.md](docs/deployment/production.md) for detailed deployment documentation.
-
-## Frontend Integration
-
-Generate a TypeScript client from the OpenAPI spec:
-
-```bash
-# Start the dev server first
-just dev
-
-# Generate TypeScript types (in another terminal)
-just gen-client
-
-# Or specify a custom output path
-just gen-client output="./my-frontend/src/api"
+# Run tests
+uv run pytest
 ```
 
 ## License

@@ -1,0 +1,99 @@
+# Caddyfile - Production reverse proxy configuration
+# 
+# This configuration provides:
+# - Automatic HTTPS via Let's Encrypt
+# - HTTP/2 and HTTP/3 support
+# - Security headers
+# - Gzip compression
+# - Health check proxying
+# - JSON logging
+#
+# Environment variables (set in docker-compose.prod.yml):
+# - DOMAIN: Your API domain (e.g., api.example.com)
+# - ACME_EMAIL: Email for Let's Encrypt notifications
+
+{
+	# Global options
+	email {$ACME_EMAIL:admin@example.com}
+	
+	# Enable HTTP/3
+	servers {
+		protocols h1 h2 h3
+	}
+}
+
+{$DOMAIN:api.example.com} {
+	# Reverse proxy to FastAPI app
+	reverse_proxy app:8000 {
+		# Health checks
+		health_uri /health/live
+		health_interval 30s
+		health_timeout 5s
+		health_status 200
+		
+		# Load balancing (for future scaling)
+		lb_policy round_robin
+		lb_try_duration 5s
+		lb_try_interval 250ms
+		
+		# Headers
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	# Compression
+	encode gzip zstd
+
+	# Security headers
+	header {
+		# HSTS - enforce HTTPS
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		
+		# Prevent MIME type sniffing
+		X-Content-Type-Options nosniff
+		
+		# Prevent clickjacking
+		X-Frame-Options DENY
+		
+		# XSS protection (legacy, but still useful)
+		X-XSS-Protection "1; mode=block"
+		
+		# Referrer policy
+		Referrer-Policy strict-origin-when-cross-origin
+		
+		# Content Security Policy (adjust as needed)
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-ancestors 'none'"
+		
+		# Permissions Policy
+		Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+		
+		# Remove server header
+		-Server
+	}
+
+	# Logging
+	log {
+		output stdout
+		format json {
+			time_format iso8601
+		}
+		level INFO
+	}
+
+	# Handle errors gracefully
+	handle_errors {
+		respond "{http.error.status_code} {http.error.status_text}" {http.error.status_code}
+	}
+}
+
+# Health check endpoint for load balancers (HTTP only)
+:80 {
+	@health path /health
+	respond @health "OK" 200
+	
+	# Redirect everything else to HTTPS
+	redir https://{$DOMAIN:api.example.com}{uri} permanent
+}
+
