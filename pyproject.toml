@@ -35,14 +35,11 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=6.0.0",
-    
+
     # Code Quality
     "ruff>=0.8.0",
-    "mypy>=1.13.0",
+    "pyrefly>=0.44.0",
     "tach>=0.16.0",
-
-    # Type Stubs
-    "types-pyyaml>=6.0.0",
 ]
 
 [build-system]
@@ -67,7 +64,3 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
-
-[tool.mypy]
-python_version = "3.12"
-strict = true

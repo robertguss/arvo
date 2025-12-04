@@ -22,28 +22,28 @@ class CacheEncoder(json.JSONEncoder):
     - Sets (converted to lists)
     """
 
-    def default(self, obj: Any) -> Any:
+    def default(self, o: Any) -> Any:
         """Encode special types to JSON-serializable format.
 
         Args:
-            obj: Object to encode
+            o: Object to encode
 
         Returns:
             JSON-serializable representation
         """
-        if isinstance(obj, BaseModel):
+        if isinstance(o, BaseModel):
             return {
                 "__pydantic__": True,
-                "__class__": obj.__class__.__name__,
-                "data": obj.model_dump(mode="json"),
+                "__class__": o.__class__.__name__,
+                "data": o.model_dump(mode="json"),
             }
-        if isinstance(obj, UUID):
-            return {"__uuid__": True, "value": str(obj)}
-        if isinstance(obj, datetime):
-            return {"__datetime__": True, "value": obj.isoformat()}
-        if isinstance(obj, set):
-            return {"__set__": True, "value": list(obj)}
-        return super().default(obj)
+        if isinstance(o, UUID):
+            return {"__uuid__": True, "value": str(o)}
+        if isinstance(o, datetime):
+            return {"__datetime__": True, "value": o.isoformat()}
+        if isinstance(o, set):
+            return {"__set__": True, "value": list(o)}
+        return super().default(o)
 
 
 def serialize(value: Any) -> str:

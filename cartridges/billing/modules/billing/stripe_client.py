@@ -2,9 +2,7 @@
 
 import asyncio
 import logging
-from collections.abc import Callable
-from functools import wraps
-from typing import Any, ParamSpec, TypeVar
+from typing import Any
 
 import stripe
 
@@ -13,24 +11,10 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Type variables for generic wrapper
-P = ParamSpec("P")
-R = TypeVar("R")
-
 
 def configure_stripe() -> None:
     """Configure the Stripe SDK with API key."""
     stripe.api_key = settings.stripe_secret_key
-
-
-def async_stripe(func: Callable[P, R]) -> Callable[P, R]:
-    """Decorator to run Stripe SDK calls in a thread pool."""
-
-    @wraps(func)
-    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        return await asyncio.to_thread(func, *args, **kwargs)
-
-    return wrapper  # type: ignore
 
 
 class StripeClient:

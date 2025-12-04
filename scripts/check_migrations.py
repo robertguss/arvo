@@ -4,6 +4,7 @@ Verify that models match migrations.
 Fails CI if there are pending model changes not captured in migrations.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -25,7 +26,7 @@ def main() -> int:
         capture_output=True,
         text=True,
         check=False,
-        env={"PYTHONPATH": "src", **subprocess.os.environ},
+        env={"PYTHONPATH": "src", **os.environ},
     )
 
     # Check if any changes detected

@@ -148,7 +148,7 @@ class BillingService:
         )
 
         # Update local record
-        update_data = {
+        update_data: dict[str, bool | datetime | str] = {
             "cancel_at_period_end": not data.cancel_immediately,
             "canceled_at": datetime.now(UTC),
         }

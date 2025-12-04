@@ -14,13 +14,12 @@ repos:
   # Local hooks using uv run
   - repo: local
     hooks:
-      - id: mypy
-        name: mypy (type check)
-        entry: uv run mypy src
+      - id: pyrefly
+        name: pyrefly (type check)
+        entry: uv run pyrefly check src/ scripts/ cartridges/
         language: system
         types: [python]
         pass_filenames: false
-        files: ^src/
 
       - id: tach
         name: tach (architecture check)
@@ -29,11 +28,3 @@ repos:
         types: [python]
         pass_filenames: false
         files: ^src/
-  # Pyrefly - type checking (https://github.com/facebook/pyrefly-pre-commit#readme)
-  - repo: https://github.com/facebook/pyrefly-pre-commit
-    rev: 0.44.1
-    hooks:
-      - id: pyrefly-check
-        name: Pyrefly (type checking)
-        pass_filenames: false
-        language: system

@@ -1,9 +1,50 @@
 search-path = ["src"]
-python-version = "3.12.0"
+python-version = "3.13"
+python-interpreter = ".venv/bin/python"
 ignore-missing-imports = [
+    # Third-party libraries
     "alembic.*",
     "arq.*",
     "structlog.*",
     "opentelemetry.*",
+    "sqlalchemy.*",
+    "fastapi.*",
+    "starlette.*",
+    "pydantic.*",
+    "pydantic_settings.*",
+    "httpx.*",
+    "redis.*",
+    "asyncpg.*",
+    "uvicorn.*",
+    "passlib.*",
+    "jose.*",
+    "authlib.*",
+    "itsdangerous.*",
+    "stripe.*",
+    "pytest.*",
+    "pytest_asyncio.*",
+    "polyfactory.*",
+    "faker.*",
+    "respx.*",
+    "typer.*",
+    "rich.*",
+    "click.*",
+    "anyio.*",
+    "email_validator.*",
+    "dotenv.*",
+    # Internal app imports (resolvable at runtime but not by pyrefly from outside src/)
+    "app.*",
+    # Relative imports in cartridges (resolvable at runtime)
+    "models",
+    "repos",
+    "routes",
+    "services",
+    "schemas",
+    "stripe_client",
+    "webhooks",
+    "__unknown__.*",
+    # Test imports
+    "tests.*",
+    "seed",
 ]
 untyped-def-behavior = "skip-and-infer-return-any"

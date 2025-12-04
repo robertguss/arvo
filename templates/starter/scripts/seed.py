@@ -16,13 +16,14 @@ Usage:
 import argparse
 import asyncio
 import sys
+from typing import TypedDict
 from uuid import uuid4
-
-from sqlalchemy import select
 
 
 # Add src to path for imports
 sys.path.insert(0, "src")
+
+from sqlalchemy import select
 
 from app.core.auth.backend import hash_password
 from app.core.database import async_session_factory
@@ -32,17 +33,47 @@ from app.modules.users.models import User
 
 
 # ============================================================
+# Type Definitions
+# ============================================================
+
+
+class PermissionData(TypedDict):
+    resource: str
+    action: str
+    description: str
+
+
+class RoleData(TypedDict):
+    description: str
+    is_default: bool
+    permissions: list[tuple[str, str]]
+
+
+class UserData(TypedDict):
+    email: str
+    full_name: str
+    password: str
+    is_superuser: bool
+    roles: list[str]
+
+
+class TenantData(TypedDict):
+    name: str
+    slug: str
+
+
+# ============================================================
 # Demo Data Definitions
 # ============================================================
 
-DEMO_TENANTS = [
+DEMO_TENANTS: list[TenantData] = [
     {"name": "Acme Corporation", "slug": "acme"},
     {"name": "Globex Industries", "slug": "globex"},
     {"name": "Initech", "slug": "initech"},
 ]
 
 # Standard permissions for the platform
-STANDARD_PERMISSIONS = [
+STANDARD_PERMISSIONS: list[PermissionData] = [
     # Users
     {"resource": "users", "action": "read", "description": "View users"},
     {"resource": "users", "action": "create", "description": "Create users"},
@@ -64,7 +95,7 @@ STANDARD_PERMISSIONS = [
 ]
 
 # Role definitions with their permissions
-ROLE_DEFINITIONS = {
+ROLE_DEFINITIONS: dict[str, RoleData] = {
     "admin": {
         "description": "Full access to all resources",
         "is_default": False,
@@ -93,7 +124,7 @@ ROLE_DEFINITIONS = {
 }
 
 # Demo users per tenant
-DEMO_USERS = [
+DEMO_USERS: list[UserData] = [
     {
         "email": "admin@{slug}.example.com",
         "full_name": "Admin User",
