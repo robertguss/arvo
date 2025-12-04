@@ -29,3 +29,11 @@ repos:
         types: [python]
         pass_filenames: false
         files: ^src/
+  # Pyrefly - type checking (https://github.com/facebook/pyrefly-pre-commit#readme)
+  - repo: https://github.com/facebook/pyrefly-pre-commit
+    rev: 0.44.1
+    hooks:
+      - id: pyrefly-check
+        name: Pyrefly (type checking)
+        pass_filenames: false
+        language: system
