@@ -14,7 +14,7 @@ Follow the Service-Repository pattern strictly.
 
 ## Directory Structure
 
-```
+```text
 src/app/
 ├── main.py           # Application factory (create_app)
 ├── config.py         # Settings via pydantic-settings
@@ -50,6 +50,7 @@ async def get_items(
 ### API Endpoints
 
 All endpoints must have:
+
 - `response_model` - Pydantic model for response
 - `summary` - Brief description for OpenAPI
 - `tags` - Categorization
@@ -120,4 +121,3 @@ class ItemResponse(BaseModel):
 - Integration tests: `tests/integration/`
 - Use factories from `tests/factories/`
 - Use `pytest.mark.asyncio` for async tests
-

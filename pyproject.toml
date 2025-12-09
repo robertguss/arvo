@@ -32,14 +32,14 @@ arvo = "arvo.cli:main"
 [project.optional-dependencies]
 dev = [
     # Testing
-    "pytest>=8.3.0",
+    "pytest>=9.0.2",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=6.0.0",
 
     # Code Quality
-    "ruff>=0.8.0",
-    "pyrefly>=0.44.0",
-    "tach>=0.16.0",
+    "ruff>=0.14.8",
+    "pyrefly>=0.45.0",
+    "tach>=0.32.2",
 ]
 
 [build-system]
