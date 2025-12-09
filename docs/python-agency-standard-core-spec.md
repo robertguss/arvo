@@ -62,7 +62,7 @@ The codebase is structured for LLM comprehension: consistent patterns, strict ty
 | **Background Jobs** | ARQ            | Redis-based, async-native, simple                            |
 | **Caching**         | Redis          | Industry standard, ARQ compatibility                         |
 | **Linting**         | Ruff           | Fast, replaces flake8/isort/black                            |
-| **Type Checking**   | Mypy (strict)  | Catch errors before runtime                                  |
+| **Type Checking**   | Pyrefly        | Catch errors before runtime                                  |
 | **Arch Linting**    | Tach           | Enforce module boundaries                                    |
 | **Task Runner**     | Just           | Cross-platform, readable syntax                              |
 | **Scaffolding**     | Copier         | Template updates, conditional generation                     |
@@ -257,7 +257,7 @@ The application is a single deployable unit with strict internal boundaries. Mod
 ├── pyproject.toml                 # Project metadata, dependencies
 ├── tach.toml                      # Architecture boundary rules
 ├── ruff.toml                      # Linter configuration
-├── mypy.ini                       # Type checker configuration
+├── pyrefly.toml                   # Type checker configuration
 ├── .cursorrules                   # AI coding assistant rules
 ├── .env.example                   # Environment template
 └── README.md
@@ -1218,7 +1218,7 @@ jobs:
         run: uv run ruff format --check .
 
       - name: Type check
-        run: uv run mypy src
+        run: uv run pyrefly check src
 
       - name: Architecture check
         run: uv run tach check
@@ -1752,7 +1752,7 @@ test-cov:
 lint:
     ruff check .
     ruff format --check .
-    mypy src
+    pyrefly check src
     tach check
 
 # Fix auto-fixable issues
@@ -1762,7 +1762,7 @@ fix:
 
 # Type check only
 typecheck:
-    mypy src
+    pyrefly check src
 
 # Architecture check only
 archcheck:
@@ -1853,7 +1853,7 @@ docs:
 clean:
     find . -type d -name __pycache__ -exec rm -rf {} +
     find . -type d -name .pytest_cache -exec rm -rf {} +
-    find . -type d -name .mypy_cache -exec rm -rf {} +
+    find . -type d -name .pyrefly_cache -exec rm -rf {} +
     find . -type d -name .ruff_cache -exec rm -rf {} +
     rm -rf htmlcov .coverage coverage.xml
 ```
@@ -2121,7 +2121,7 @@ To validate "Rust-era" tooling claims, measure and document:
 | ---------------------- | ---------------------- | ---- | -------- | ---- | ------- |
 | Dependency resolution  | Poetry                 | TBD  | uv       | TBD  | TBD     |
 | Linting (full project) | Flake8 + isort + black | TBD  | Ruff     | TBD  | TBD     |
-| Type checking          | Mypy                   | TBD  | Mypy     | N/A  | N/A     |
+| Type checking          | Pyrefly                | TBD  | Pyrefly  | N/A  | N/A     |
 
 Populate with real measurements during development.
 

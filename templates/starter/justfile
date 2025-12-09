@@ -62,7 +62,7 @@ test-cov:
 lint:
     uv run ruff check .
     uv run ruff format --check .
-    uv run mypy src
+    uv run pyrefly check src
 
 # Fix auto-fixable issues
 fix:
@@ -71,7 +71,7 @@ fix:
 
 # Type check only
 typecheck:
-    uv run mypy src
+    uv run pyrefly check src
 
 # Architecture check only (requires tach)
 archcheck:
@@ -199,7 +199,7 @@ secret:
 clean:
     find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
     find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
-    find . -type d -name .mypy_cache -exec rm -rf {} + 2>/dev/null || true
+    find . -type d -name .pyrefly_cache -exec rm -rf {} + 2>/dev/null || true
     find . -type d -name .ruff_cache -exec rm -rf {} + 2>/dev/null || true
     rm -rf htmlcov .coverage coverage.xml 2>/dev/null || true
 

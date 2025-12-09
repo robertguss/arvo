@@ -105,7 +105,7 @@ ENV/
 .pytest_cache/
 .coverage
 htmlcov/
-.mypy_cache/
+.pyrefly_cache/
 .ruff_cache/
 
 # Project specific

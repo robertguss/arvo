@@ -37,8 +37,8 @@ jobs:
       - name: Format check
         run: uv run ruff format --check .
 
-      - name: Type check with mypy
-        run: uv run mypy src
+      - name: Type check with pyrefly
+        run: uv run pyrefly check src
 
       - name: Architecture check with tach
         run: uv run tach check

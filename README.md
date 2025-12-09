@@ -12,10 +12,7 @@ A CLI for scaffolding production-ready Python backend projects and managing cart
 ## Installation
 
 ```bash
-# Install via pip
-pip install arvo
-
-# Or via uv
+# Install via uv
 uv tool install arvo
 
 # Or run without installing
@@ -44,7 +41,7 @@ just migrate
 just dev
 ```
 
-Your API will be available at http://localhost:8000
+Your API will be available at <http://localhost:8000>
 
 ## Commands
 
@@ -113,13 +110,13 @@ arvo update --check   # Just check, don't install
 
 ## Available Cartridges
 
-| Cartridge | Description |
-|-----------|-------------|
-| `billing` | Stripe integration with subscriptions, invoices, metered billing |
-| `storage` | S3/R2 file uploads with presigned URLs |
-| `email` | Email templates with MJML |
-| `admin` | SQLAdmin dashboard |
-| `notifications` | Push, SMS, Slack notifications |
+| Cartridge       | Description                                                      |
+| --------------- | ---------------------------------------------------------------- |
+| `billing`       | Stripe integration with subscriptions, invoices, metered billing |
+| `storage`       | S3/R2 file uploads with presigned URLs                           |
+| `email`         | Email templates with MJML                                        |
+| `admin`         | SQLAdmin dashboard                                               |
+| `notifications` | Push, SMS, Slack notifications                                   |
 
 ## Development
 
@@ -146,7 +143,7 @@ uv run pytest
 This project uses pre-commit hooks to enforce code quality before every commit:
 
 - **Ruff** - Linting and formatting
-- **Mypy** - Type checking (strict mode)
+- **Pyrefly** - Type checking
 - **Tach** - Architecture boundary enforcement
 
 ```bash

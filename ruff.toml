@@ -9,7 +9,7 @@ line-length = 88
 # Exclude common directories
 exclude = [
     ".git",
-    ".mypy_cache",
+    ".pyrefly_cache",
     ".ruff_cache",
     ".venv",
     "venv",

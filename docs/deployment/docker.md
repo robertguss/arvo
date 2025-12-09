@@ -201,7 +201,7 @@ __pycache__
 *.pyc
 *.pyo
 .pytest_cache
-.mypy_cache
+.pyrefly_cache
 .ruff_cache
 htmlcov
 .coverage

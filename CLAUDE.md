@@ -15,7 +15,7 @@ just test tests/path  # Run specific test file
 just test-unit        # Run unit tests only
 just test-integration # Run integration tests only
 just test-cov         # Run with coverage report
-just lint             # Lint (ruff) + type check (mypy)
+just lint             # Lint (ruff) + type check (pyrefly)
 just fix              # Auto-fix linting issues
 just typecheck        # Type check only
 just hooks-install    # Install pre-commit hooks (run once)
@@ -102,7 +102,7 @@ Use `Annotated[X, Depends()]` for all dependencies.
 
 - **uv**: Package manager (use `uv run` prefix)
 - **Ruff**: Linting and formatting
-- **Mypy**: Type checking (strict mode)
+- **Pyrefly**: Type checking
 - **Tach**: Architecture boundary enforcement
 - **pre-commit**: Git hooks for code quality (run `just hooks-install`)
 - **Alembic**: Database migrations

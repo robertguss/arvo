@@ -30,7 +30,7 @@ A production-ready Python backend kit for software agencies. Built with FastAPI,
 
   ***
 
-  "Rust-era" tools: uv for packages (10-100x faster), Ruff for linting, strict Mypy typing.
+  "Rust-era" tools: uv for packages (10-100x faster), Ruff for linting, Pyrefly for type checking.
 
 </div>
 
