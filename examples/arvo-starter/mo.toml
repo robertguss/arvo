@@ -1,0 +1,6 @@
+[package]
+name = "arvo-starter"
+version = "0.1.0"
+
+[dependencies]
+arvo = { path = "../.." }

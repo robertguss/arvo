@@ -1,0 +1,22 @@
+# SQLite databases and WAL/SHM sidecars
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Frontend dependencies & build artifacts
+node_modules/
+.vite/
+examples/arvo-starter/public/assets/
+examples/arvo-starter/public/manifest.json
+
+# OS / editor
+.DS_Store
+*.log
