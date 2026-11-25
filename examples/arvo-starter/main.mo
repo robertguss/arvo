@@ -93,7 +93,14 @@ test "starter end-to-end flow via WebTest v2, query budgets, Seed profiles, and 
   app = ApiTest.start(Main, sql, clock, files, env, rng)
   assert sql.open("starter.sqlite") is Ok(db)
 
-  # 0. Contracts manifest covers both pages cleanly
+  # 0. CLI entrypoint, migrations, & contracts manifest cover both pages cleanly
+  assert (Routes.app_migrations().first or stop "migration").version == 1
+  c_contracts = Console.fake()
+  assert main(Args.of(["--arvo-contracts"]), c_contracts) == 0
+  assert (c_contracts.printed.first or "").contains?("\"component\":\"Home\"")
+  c_help = Console.fake()
+  assert main(Args.of([]), c_help) == 0
+  assert (c_help.printed.first or "").contains?("mo serve main.mo")
   assert Routes.contracts().map(fn(c) c.component end) == ["Login", "Home"]
 
   # 1. Static asset ETag / 304 behavior
@@ -134,6 +141,10 @@ test "starter end-to-end flow via WebTest v2, query budgets, Seed profiles, and 
     [("email", "Ada@Household.Local"), ("password", "horse-staple-battery")]
   )
   _ = WebTest.expect_redirect(post_login_res, "/")
+  login_set_cookies = post_login_res.headers.filter(fn(h) h.0.ascii_lowercase == "set-cookie" end)
+    .map(fn(h) h.1 end).join(";")
+  assert login_set_cookies.contains?("Max-Age=1209600")
+  assert not login_set_cookies.contains?("; Secure")
   (s5, home_res) = WebTest.follow_redirect(s4, app)
   _ = WebTest.expect_status(home_res, 200)
   assert home_res.text.contains?("&lt;Utility&gt;")
@@ -193,6 +204,14 @@ test "starter end-to-end flow via WebTest v2, query budgets, Seed profiles, and 
   _ = WebTest.expect_redirect(create_res, "/")
   (s13, created_home) = WebTest.follow_redirect(s12, app)
   WebTest.expect_flash_notice(created_home, "Bill added")
+  created_home_props = WebTest.expect_inertia[Routes.HomeProps](created_home, "Home")
+  assert created_home_props.bills.any?(fn(b) b.name == "Fiber Internet" and b.version == 1 end)
+  assert db.query("SELECT after_json FROM arvo_events WHERE action = 'bill.create' LIMIT 1", []) is
+    Ok(ev_create_q)
+  assert case ev_create_q.rows.first
+    Some([Sqlite.String(aj)]): aj.contains?("\"version\":1")
+    None | Some(_): false
+  end
 
   partial_req = WebTest.prepare(
     s13.client,
@@ -279,6 +298,8 @@ test "starter end-to-end flow via WebTest v2, query budgets, Seed profiles, and 
   assert sql_many.open("s.sqlite") is Ok(db_many)
   assert Seed.run_profile(profiles, "many_bills", db_many, rng, clock, env) == Ok(Unit)
   assert db_many.query("SELECT id FROM bills", []) is Ok(r_many) and r_many.rows.size == 9
+  assert db_many.query("SELECT SUM(amount_cents) FROM bills", []) is Ok(r_sum)
+  assert r_sum.rows.first == Some([Sqlite.Integer(324500)])
 end
 
 test "starter passes zero-config Arvo.SecurityMatrix across all routes"
@@ -330,61 +351,58 @@ enum StarterSimAction
   ViewHome
 end
 
-fn mint_sim_actor(db: Sqlite.Database, rng: SecureRandom, clock: Clock, member_id: Text) : Result(
-  (Text, Text),
-  Text
-)
-  key = Bytes.from_hex("1111111111111111111111111111111122222222222222222222222222222222") or
-    "".bytes
-  scfg = Session.SessionConfig(cookie_name: "arvo_session", ttl_seconds: 1209600, secure?: false)
-  (sess, raw_cookie) = try Session.create(db, rng, clock, key, member_id, scfg).map_error(
-    fn(e) "#{e}" end
-  )
-  Ok((raw_cookie, sess.csrf_token))
-end
-
-fn starter_sim_invariants() : List(Sim.Invariant(StarterSimWorld))
-  base = Sim.default_invariants()
-  bills_inv = Sim.Invariant(
-    name: "starter_bills_valid",
-    check: fn(_w, db, _clk)
-      rows = try db.query("SELECT id, amount_cents, status, version FROM bills", []).map_error(
-        fn(e) "#{e}" end
-      )
-      for row in rows.rows
-        case row
-          [Sqlite.Integer(bid), Sqlite.Integer(amt), Sqlite.String(st), Sqlite.Integer(ver)]:
-            if amt <= 0
-              return Error("bill #{bid} has non-positive amount #{amt}")
-            end
-            if ver < 1 or (st == "in_flight" and ver < 2)
-              return Error("bill #{bid} has invalid version #{ver} for status #{st}")
-            end
-          _: return Error("unexpected bill row shape")
-        end
-      end
-      Ok(Unit)
-    end
-  )
-  flight_inv = Sim.Invariant(
-    name: "starter_single_flight_bill1",
-    check: fn(_w, db, _clk)
-      rows = try db.query(
-        "SELECT id FROM arvo_events WHERE action = 'bill.mark_in_flight' AND entity_id = '1'",
-        []
-      ).map_error(fn(e) "#{e}" end)
-      if rows.rows.size > 1
-        Error("bill 1 marked in flight #{rows.rows.size} times")
-      else
-        Ok(Unit)
-      end
-    end
-  )
-  base.append(bills_inv).append(flight_inv)
-end
-
 test "starter passes Arvo.Sim multi-user concurrent bill-payment and session simulation"
   t0 = Time.parse("2026-11-22T09:00:00Z") or stop "t0"
+
+  mint_sim_actor = fn(db, rng, clock, member_id)
+    key = Bytes.from_hex("1111111111111111111111111111111122222222222222222222222222222222") or
+      "".bytes
+    scfg = Session.default_config(false)
+    (sess, raw_cookie) = try Session.create(db, rng, clock, key, member_id, scfg).map_error(
+      fn(e) "#{e}" end
+    )
+    Ok((raw_cookie, sess.csrf_token))
+  end
+
+  starter_sim_invariants = fn()
+    base = Sim.default_invariants()
+    bills_inv = Sim.Invariant(
+      name: "starter_bills_valid",
+      check: fn(_w, db, _clk)
+        rows = try db.query("SELECT id, amount_cents, status, version FROM bills", []).map_error(
+          fn(e) "#{e}" end
+        )
+        for row in rows.rows
+          case row
+            [Sqlite.Integer(bid), Sqlite.Integer(amt), Sqlite.String(st), Sqlite.Integer(ver)]:
+              if amt <= 0
+                return Error("bill #{bid} has non-positive amount #{amt}")
+              end
+              if ver < 1 or (st == "in_flight" and ver < 2)
+                return Error("bill #{bid} has invalid version #{ver} for status #{st}")
+              end
+            _: return Error("unexpected bill row shape")
+          end
+        end
+        Ok(Unit)
+      end
+    )
+    flight_inv = Sim.Invariant(
+      name: "starter_single_flight_bill1",
+      check: fn(_w, db, _clk)
+        rows = try db.query(
+          "SELECT id FROM arvo_events WHERE action = 'bill.mark_in_flight' AND entity_id = '1'",
+          []
+        ).map_error(fn(e) "#{e}" end)
+        if rows.rows.size > 1
+          Error("bill 1 marked in flight #{rows.rows.size} times")
+        else
+          Ok(Unit)
+        end
+      end
+    )
+    base.append(bills_inv).append(flight_inv)
+  end
 
   init_world = fn(seed)
     files = Files.in_memory(test_asset_map()).read_only
@@ -586,20 +604,191 @@ struct FeatWorld
   last_home: Option(Routes.HomeProps)
 end
 
-fn feature_login_actor(app: ApiTest.App, email: Text) : Result(WebTest.Session, Text)
-  s0 = WebTest.start().with_header("Host", "localhost:8080")
-  (s1, res) = WebTest.post_form(
-    s0,
-    app,
-    "/login",
-    [("email", email), ("password", "horse-staple-battery")]
-  )
-  _ = try WebTest.check_redirect(res, "/")
-  Ok(s1)
-end
+auth_feature_spec = """
+# Authentication and sessions
 
-fn starter_feature_bindings() : List(Feature.StepBinding(FeatWorld))
-  [
+Household members sign in with an allowlisted email and passphrase to receive an encrypted session cookie and readable CSRF cookie, and revoke their server session when signing out.
+
+## Sub-features
+
+- `auth-guest-gate`: redirects unauthenticated browsers visiting `/` to `/login` and rejects API endpoints with `401`.
+
+## How to get to it (user POV)
+
+- Visit `/login` in a browser, enter `Email` and `Password`, and click `Sign in`.
+
+## Scenarios
+
+```gherkin
+Feature: Authentication and sessions
+  Background:
+    Given seed profile "baseline"
+
+  @smoke @browser @mobile @aria @screenshot
+  Scenario: Guest visiting home is redirected to login and signs in successfully
+    When I visit "/"
+    Then the response redirects to "/login"
+    When I visit "/login"
+    Then the Inertia component is "Login"
+    When I submit login form with email "Ada@Household.Local" and password "horse-staple-battery"
+    Then the response redirects to "/"
+    When I follow the redirect
+    Then the Inertia component is "Home"
+    And the flash notice is "Signed in"
+    And the page shows heading "Ada & Household <Team>"
+
+  @smoke @db-check
+  Scenario: Sign out revokes session and blocks cookie replay
+    Given signed in as "ada@household.local"
+    When I sign out
+    Then the response redirects to "/login"
+    When I replay the previous session on "/"
+    Then the response redirects to "/login"
+    And audit trail contains action "auth.login" by "ada@household.local" for "members"
+
+  @smoke
+  Scenario: Non-allowlisted email shows validation error on login
+    When I submit login form with email "intruder@evil.test" and password "anything"
+    Then the response redirects to "/login"
+    When I follow the redirect
+    Then validation error for "email" contains "allowlist"
+```
+
+## Gotchas
+
+- Signing out must delete the server session row, not merely clear browser cookies.
+"""
+
+bills_feature_spec = """
+# Paycheck bills and optimistic concurrency
+
+Signed-in household members view due paycheck bills, create new bills with field validation, and mark a bill in flight with optimistic version checking.
+
+## Sub-features
+
+- `bill-create`: validates name, category, and positive amount before persisting and logging an audit event.
+
+## How to get to it (user POV)
+
+- Sign in at `/login`, open `/` (`Home`), and submit the `Add Bill` form or click `Mark paid` beside a due bill.
+
+## Scenarios
+
+```gherkin
+Feature: Paycheck bills and optimistic concurrency
+  Background:
+    Given seed profile "baseline"
+    And signed in as "ada@household.local"
+
+  @smoke @browser @mobile @aria @screenshot @db-check
+  Scenario: Member creates a new bill and sees updated total due
+    When I visit "/"
+    Then the Inertia component is "Home"
+    And the bill "Electric & Gas <Utility>" shows status "due"
+    When I submit new bill name "Fiber Internet" category "utilities" amount_cents "7500"
+    Then the response redirects to "/"
+    When I follow the redirect
+    Then the flash notice is "Bill added"
+    And the bill "Fiber Internet" shows status "due"
+    And total due cents is 22000
+    And audit trail contains action "bill.create" by "ada@household.local" for "bills"
+
+  @smoke @browser @db-check
+  Scenario: Member marks a due bill in flight and stale version conflicts with 409
+    When actor "ada" marks bill 1 in flight with expected version 1
+    Then the response status is 200
+    And the bill "Electric & Gas <Utility>" shows status "in_flight"
+    When actor "grace" marks bill 1 in flight with expected version 1
+    Then the response status is 409
+    And audit trail contains action "bill.mark_in_flight" by "ada@household.local" for "bills"
+
+  @smoke
+  Scenario: Blank bill name and zero amount flash validation errors across redirect
+    When I submit new bill name "" category "bad_cat" amount_cents "0"
+    Then the response redirects to "/"
+    When I follow the redirect
+    Then validation error for "name" contains "blank"
+    And validation error for "amount_cents" contains "greater than 0"
+```
+
+## Gotchas
+
+- Concurrent partners must see `409 Conflict` when paying with a stale `expected_version`.
+"""
+
+csv_feature_spec = """
+# CSV statement import
+
+Signed-in members upload a bank or utility CSV statement (`name,category,amount_cents`) via multipart form data to bulk-create due bills with a single audit event.
+
+## Sub-features
+
+- `csv-import-happy`: parses CSV rows, applies `default_category` when category is blank, inserts bills, and logs `bills.csv_import`.
+
+## How to get to it (user POV)
+
+- Send `POST /imports/csv` with multipart field `statement` and active session + CSRF header.
+
+## Scenarios
+
+```gherkin
+Feature: CSV statement import
+  Background:
+    Given seed profile "baseline"
+    And signed in as "ada@household.local"
+
+  @smoke @db-check
+  Scenario: Valid CSV upload creates multiple bills and writes audit entry
+    When I upload CSV bills with default category "utilities":
+      | name | category | amount_cents |
+      | City Water | utilities | 3800 |
+      | Rent | housing | 185000 |
+    Then the response status is 200
+    And the bill "City Water" shows status "due"
+    And the bill "Rent" shows status "due"
+    And audit trail contains action "bills.csv_import" by "ada@household.local" for "bills"
+
+  @smoke
+  Scenario: Malformed CSV row returns 422
+    When I upload raw CSV "BrokenRowOnlyOneColumn\\n"
+    Then the response status is 422
+```
+
+## Gotchas
+
+- CSV uploads require valid `X-XSRF-TOKEN` and UTF-8 bytes.
+"""
+
+test "starter Executable Feature Maps pass all auth, bills, and csv scenarios in-memory"
+  init_feat_world = fn()
+    files = Files.in_memory(test_asset_map()).read_only
+    sql = Sqlite.in_memory()
+    rng = SecureRandom.seeded(4242)
+    t0 = Time.parse("2026-11-22T09:00:00Z") or stop "t0"
+    clk = Clock.fixed(t0)
+    env = Env.of(test_env_map())
+    app = ApiTest.start(Main, sql, clk, files, env, rng)
+    db = case sql.open("starter.sqlite")
+      Ok(d): d
+      Error(_): stop "open starter.sqlite"
+    end
+    sess = WebTest.start().with_header("Host", "localhost:8080")
+    (
+      FeatWorld(captured_cookie: None, grace_session: None, last_home: None),
+      sess,
+      db,
+      clk,
+      rng,
+      env,
+      app
+    )
+  end
+
+  assert Feature.parse("specs/features/auth.feature.md", auth_feature_spec) is Ok(auth_doc)
+  assert Feature.parse("specs/features/bills.feature.md", bills_feature_spec) is Ok(bills_doc)
+  assert Feature.parse("specs/features/csv-import.feature.md", csv_feature_spec) is Ok(csv_doc)
+
+  bindings = [
     Feature.StepBinding(
       kind: Some(Feature.Given),
       pattern: "seed profile \"{name}\"",
@@ -614,9 +803,20 @@ fn starter_feature_bindings() : List(Feature.StepBinding(FeatWorld))
       pattern: "signed in as \"{email}\"",
       handler: fn(w, _sess, params, _tbl, _db, _clk, _rng, _env, app)
         email = params.get("email") or ""
-        authed = try feature_login_actor(app, email)
+        do_login = fn(cur_app, em)
+          s0 = WebTest.start().with_header("Host", "localhost:8080")
+          (s1, res) = WebTest.post_form(
+            s0,
+            cur_app,
+            "/login",
+            [("email", em), ("password", "horse-staple-battery")]
+          )
+          _ = try WebTest.check_redirect(res, "/")
+          Ok(s1)
+        end
+        authed = try do_login(app, email)
         grace_opt = if email == "ada@household.local"
-          Some(try feature_login_actor(app, "grace@household.local"))
+          Some(try do_login(app, "grace@household.local"))
         else
           None
         end
@@ -933,193 +1133,6 @@ fn starter_feature_bindings() : List(Feature.StepBinding(FeatWorld))
       end
     )
   ]
-end
-
-auth_feature_spec = """
-# Authentication and sessions
-
-Household members sign in with an allowlisted email and passphrase to receive an encrypted session cookie and readable CSRF cookie, and revoke their server session when signing out.
-
-## Sub-features
-
-- `auth-guest-gate`: redirects unauthenticated browsers visiting `/` to `/login` and rejects API endpoints with `401`.
-
-## How to get to it (user POV)
-
-- Visit `/login` in a browser, enter `Email` and `Password`, and click `Sign in`.
-
-## Scenarios
-
-```gherkin
-Feature: Authentication and sessions
-  Background:
-    Given seed profile "baseline"
-
-  @smoke @browser @mobile @aria @screenshot
-  Scenario: Guest visiting home is redirected to login and signs in successfully
-    When I visit "/"
-    Then the response redirects to "/login"
-    When I visit "/login"
-    Then the Inertia component is "Login"
-    When I submit login form with email "Ada@Household.Local" and password "horse-staple-battery"
-    Then the response redirects to "/"
-    When I follow the redirect
-    Then the Inertia component is "Home"
-    And the flash notice is "Signed in"
-    And the page shows heading "Ada & Household <Team>"
-
-  @smoke @db-check
-  Scenario: Sign out revokes session and blocks cookie replay
-    Given signed in as "ada@household.local"
-    When I sign out
-    Then the response redirects to "/login"
-    When I replay the previous session on "/"
-    Then the response redirects to "/login"
-    And audit trail contains action "auth.login" by "ada@household.local" for "members"
-
-  @smoke
-  Scenario: Non-allowlisted email shows validation error on login
-    When I submit login form with email "intruder@evil.test" and password "anything"
-    Then the response redirects to "/login"
-    When I follow the redirect
-    Then validation error for "email" contains "allowlist"
-```
-
-## Gotchas
-
-- Signing out must delete the server session row, not merely clear browser cookies.
-"""
-
-bills_feature_spec = """
-# Paycheck bills and optimistic concurrency
-
-Signed-in household members view due paycheck bills, create new bills with field validation, and mark a bill in flight with optimistic version checking.
-
-## Sub-features
-
-- `bill-create`: validates name, category, and positive amount before persisting and logging an audit event.
-
-## How to get to it (user POV)
-
-- Sign in at `/login`, open `/` (`Home`), and submit the `Add Bill` form or click `Mark paid` beside a due bill.
-
-## Scenarios
-
-```gherkin
-Feature: Paycheck bills and optimistic concurrency
-  Background:
-    Given seed profile "baseline"
-    And signed in as "ada@household.local"
-
-  @smoke @browser @mobile @aria @screenshot @db-check
-  Scenario: Member creates a new bill and sees updated total due
-    When I visit "/"
-    Then the Inertia component is "Home"
-    And the bill "Electric & Gas <Utility>" shows status "due"
-    When I submit new bill name "Fiber Internet" category "utilities" amount_cents "7500"
-    Then the response redirects to "/"
-    When I follow the redirect
-    Then the flash notice is "Bill added"
-    And the bill "Fiber Internet" shows status "due"
-    And total due cents is 22000
-    And audit trail contains action "bill.create" by "ada@household.local" for "bills"
-
-  @smoke @browser @db-check
-  Scenario: Member marks a due bill in flight and stale version conflicts with 409
-    When actor "ada" marks bill 1 in flight with expected version 1
-    Then the response status is 200
-    And the bill "Electric & Gas <Utility>" shows status "in_flight"
-    When actor "grace" marks bill 1 in flight with expected version 1
-    Then the response status is 409
-    And audit trail contains action "bill.mark_in_flight" by "ada@household.local" for "bills"
-
-  @smoke
-  Scenario: Blank bill name and zero amount flash validation errors across redirect
-    When I submit new bill name "" category "bad_cat" amount_cents "0"
-    Then the response redirects to "/"
-    When I follow the redirect
-    Then validation error for "name" contains "blank"
-    And validation error for "amount_cents" contains "greater than 0"
-```
-
-## Gotchas
-
-- Concurrent partners must see `409 Conflict` when paying with a stale `expected_version`.
-"""
-
-csv_feature_spec = """
-# CSV statement import
-
-Signed-in members upload a bank or utility CSV statement (`name,category,amount_cents`) via multipart form data to bulk-create due bills with a single audit event.
-
-## Sub-features
-
-- `csv-import-happy`: parses CSV rows, applies `default_category` when category is blank, inserts bills, and logs `bills.csv_import`.
-
-## How to get to it (user POV)
-
-- Send `POST /imports/csv` with multipart field `statement` and active session + CSRF header.
-
-## Scenarios
-
-```gherkin
-Feature: CSV statement import
-  Background:
-    Given seed profile "baseline"
-    And signed in as "ada@household.local"
-
-  @smoke @db-check
-  Scenario: Valid CSV upload creates multiple bills and writes audit entry
-    When I upload CSV bills with default category "utilities":
-      | name | category | amount_cents |
-      | City Water | utilities | 3800 |
-      | Rent | housing | 185000 |
-    Then the response status is 200
-    And the bill "City Water" shows status "due"
-    And the bill "Rent" shows status "due"
-    And audit trail contains action "bills.csv_import" by "ada@household.local" for "bills"
-
-  @smoke
-  Scenario: Malformed CSV row returns 422
-    When I upload raw CSV "BrokenRowOnlyOneColumn\\n"
-    Then the response status is 422
-```
-
-## Gotchas
-
-- CSV uploads require valid `X-XSRF-TOKEN` and UTF-8 bytes.
-"""
-
-test "starter Executable Feature Maps pass all auth, bills, and csv scenarios in-memory"
-  init_feat_world = fn()
-    files = Files.in_memory(test_asset_map()).read_only
-    sql = Sqlite.in_memory()
-    rng = SecureRandom.seeded(4242)
-    t0 = Time.parse("2026-11-22T09:00:00Z") or stop "t0"
-    clk = Clock.fixed(t0)
-    env = Env.of(test_env_map())
-    app = ApiTest.start(Main, sql, clk, files, env, rng)
-    db = case sql.open("starter.sqlite")
-      Ok(d): d
-      Error(_): stop "open starter.sqlite"
-    end
-    sess = WebTest.start().with_header("Host", "localhost:8080")
-    (
-      FeatWorld(captured_cookie: None, grace_session: None, last_home: None),
-      sess,
-      db,
-      clk,
-      rng,
-      env,
-      app
-    )
-  end
-
-  assert Feature.parse("specs/features/auth.feature.md", auth_feature_spec) is Ok(auth_doc)
-  assert Feature.parse("specs/features/bills.feature.md", bills_feature_spec) is Ok(bills_doc)
-  assert Feature.parse("specs/features/csv-import.feature.md", csv_feature_spec) is Ok(csv_doc)
-
-  bindings = starter_feature_bindings()
   docs = [auth_doc, bills_doc, csv_doc]
   assert Feature.browser_manifest(docs).size == 3
 
@@ -1130,4 +1143,224 @@ test "starter Executable Feature Maps pass all auth, bills, and csv scenarios in
       assert Feature.format_report(rep) == "OK"
     end
   end
+end
+
+test "starter covers route boundaries, config, audit limit, and CSV edge cases"
+  t0 = Time.parse("2026-11-22T09:00:00Z") or stop "t0"
+
+  # 1. Secure cookies flag & VITE_DEV_URL config branches
+  sec_env = Env.of(
+    test_env_map().set("ARVO_INSECURE_COOKIES", "0").set("VITE_DEV_URL", "http://127.0.0.1:5173")
+  )
+  app_sec = ApiTest.start(
+    Main,
+    Sqlite.in_memory(),
+    Clock.fixed(t0),
+    Files.in_memory(test_asset_map()).read_only,
+    sec_env,
+    SecureRandom.seeded(101)
+  )
+  (sl0, sec_login_page) = WebTest.get(
+    WebTest.start().with_header("Host", "localhost:8080"),
+    app_sec,
+    "/login"
+  )
+  _ = WebTest.expect_status(sec_login_page, 200)
+  assert sec_login_page.text.contains?("http://127.0.0.1:5173/src/main.tsx")
+  (_sl1, sec_post) = WebTest.post_form(
+    sl0,
+    app_sec,
+    "/login",
+    [("email", "ada@household.local"), ("password", "horse-staple-battery")]
+  )
+  sec_cookies = sec_post.headers.filter(fn(h) h.0.ascii_lowercase == "set-cookie" end).map(
+    fn(h) h.1 end
+  ).join(";")
+  assert sec_cookies.contains?("; Secure")
+
+  blank_dev_env = Env.of(test_env_map().set("VITE_DEV_URL", "   "))
+  app_blank = ApiTest.start(
+    Main,
+    Sqlite.in_memory(),
+    Clock.fixed(t0),
+    Files.in_memory(test_asset_map()).read_only,
+    blank_dev_env,
+    SecureRandom.seeded(102)
+  )
+  (_sb, blank_res) = WebTest.get(
+    WebTest.start().with_header("Host", "localhost:8080"),
+    app_blank,
+    "/login"
+  )
+  assert blank_res.text.contains?("/assets/main-a1b2c3d4.js")
+
+  # 2. Main app for create_bill boundaries, home LIMIT 20, and import_csv edge cases
+  sql = Sqlite.in_memory()
+  app = ApiTest.start(
+    Main,
+    sql,
+    Clock.fixed(t0),
+    Files.in_memory(test_asset_map()).read_only,
+    Env.of(test_env_map()),
+    SecureRandom.seeded(202)
+  )
+  assert sql.open("starter.sqlite") is Ok(db)
+  (s_auth, login_redir) = WebTest.post_form(
+    WebTest.start().with_header("Host", "localhost:8080"),
+    app,
+    "/login",
+    [("email", "ada@household.local"), ("password", "horse-staple-battery")]
+  )
+  _ = WebTest.expect_redirect(login_redir, "/")
+  s0 = WebTest.with_inertia(s_auth, Inertia.version_from_manifest(test_manifest_json().bytes))
+
+  # 2a. Non-int amount -> 0 -> fails > 0 (kills `or 0` -> `or 1`)
+  (s1, r_bad_int) = WebTest.post_form(
+    s0,
+    app,
+    "/bills",
+    [("name", "Water"), ("category", "utilities"), ("amount_cents", "abc")]
+  )
+  _ = WebTest.expect_redirect(r_bad_int, "/")
+  (s2, r_bad_int_f) = WebTest.follow_redirect(s1, app)
+  WebTest.expect_validation_error(r_bad_int_f, "amount_cents", "greater than 0")
+
+  # 2b. Name length boundaries 1 (fail), 2 (pass), 80 (pass), 81 (fail)
+  (s3, _) = WebTest.post_form(
+    s2,
+    app,
+    "/bills",
+    [("name", "A"), ("category", "utilities"), ("amount_cents", "100")]
+  )
+  (s4, r_len1) = WebTest.follow_redirect(s3, app)
+  WebTest.expect_validation_error(r_len1, "name", "at least 2")
+
+  (s5, _) = WebTest.post_form(
+    s4,
+    app,
+    "/bills",
+    [("name", "AB"), ("category", "utilities"), ("amount_cents", "100")]
+  )
+  (s6, r_len2) = WebTest.follow_redirect(s5, app)
+  WebTest.expect_flash_notice(r_len2, "Bill added")
+
+  var n80 = ""
+  var k = 0
+  while k < 80
+    n80 = "#{n80}x"
+    k += 1
+  end
+  n81 = "#{n80}y"
+  (s7, _) = WebTest.post_form(
+    s6,
+    app,
+    "/bills",
+    [("name", n80), ("category", "utilities"), ("amount_cents", "100")]
+  )
+  (s8, r_len80) = WebTest.follow_redirect(s7, app)
+  WebTest.expect_flash_notice(r_len80, "Bill added")
+
+  (s9, _) = WebTest.post_form(
+    s8,
+    app,
+    "/bills",
+    [("name", n81), ("category", "utilities"), ("amount_cents", "100")]
+  )
+  (s10, r_len81) = WebTest.follow_redirect(s9, app)
+  WebTest.expect_validation_error(r_len81, "name", "at most 80")
+
+  # 2c. CSV edge cases: headerless row, blank line + empty category fallback, line-number errors, and 65537-byte limit
+  (s11, csv_hdr_blank) = WebTest.post_multipart(
+    s10,
+    app,
+    "/imports/csv",
+    [("default_category", "card")],
+    [
+      WebTest.TestFile(
+        field_name: "statement",
+        filename: "mix.csv",
+        content_type: "text/csv",
+        data: "name,category,amount_cents\nName,housing,1\nWater,,4500\n\n".bytes
+      )
+    ]
+  )
+  _ = WebTest.expect_status(csv_hdr_blank, 200)
+  assert Json.decode_strict[Map(Text, Int)](csv_hdr_blank.text) == Ok({"imported": 2})
+  assert db.query("SELECT category FROM bills WHERE name = 'Water'", []) is Ok(cat_q)
+  assert cat_q.rows.first == Some([Sqlite.String("card")])
+
+  (s12, csv_no_hdr) = WebTest.post_multipart(
+    s11,
+    app,
+    "/imports/csv",
+    [],
+    [
+      WebTest.TestFile(
+        field_name: "statement",
+        filename: "direct.csv",
+        content_type: "text/csv",
+        data: "DirectRow,card,500\n".bytes
+      )
+    ]
+  )
+  _ = WebTest.expect_status(csv_no_hdr, 200)
+  assert Json.decode_strict[Map(Text, Int)](csv_no_hdr.text) == Ok({"imported": 1})
+
+  var csv_s = s12
+  for (bad_csv, expect_sub) in [
+    ("name,category,amount_cents\nBadCols,two\n", "line 2"),
+    ("name,category,amount_cents\nBadInt,utilities,nope\n", "line 2"),
+    ("name,category,amount_cents\n,utilities,500\n", "line 2"),
+    ("name,category,amount_cents\nZeroBill,utilities,0\n", "line 2")
+  ]
+    (next_s, bad_res) = WebTest.post_multipart(
+      csv_s,
+      app,
+      "/imports/csv",
+      [],
+      [
+        WebTest.TestFile(
+          field_name: "statement",
+          filename: "err.csv",
+          content_type: "text/csv",
+          data: bad_csv.bytes
+        )
+      ]
+    )
+    csv_s = next_s
+    _ = WebTest.expect_status(bad_res, 422)
+    assert bad_res.text.contains?(expect_sub)
+  end
+
+  # Exact 65537-byte valid multipart body fails 65536 cap with 422
+  mp_head = "--arvoBig\r\nContent-Disposition: form-data; name=\"statement\"; filename=\"big.csv\"\r\nContent-Type: text/csv\r\n\r\nname,category,amount_cents\nBigOk,utilities,100\n\r\n--arvoBig\r\nContent-Disposition: form-data; name=\"pad\"\r\n\r\n"
+  mp_tail = "\r\n--arvoBig--\r\n"
+  need_pad = 65537 - mp_head.byte_count - mp_tail.byte_count
+  var pad_chunks = []
+  var pi = 0
+  while pi < need_pad
+    pad_chunks = pad_chunks.append("p")
+    pi += 1
+  end
+  raw_mp = "#{mp_head}#{pad_chunks.join("")}#{mp_tail}".bytes
+  assert raw_mp.size == 65537
+  (s13, res_too_big) = WebTest.send(
+    csv_s,
+    app,
+    Api.post("/imports/csv").with_bytes(raw_mp, "multipart/form-data; boundary=arvoBig")
+  )
+  _ = WebTest.expect_status(res_too_big, 422)
+
+  # 2d. Routes.home audit LIMIT 20 (kills 20 -> 21)
+  var ai = 0
+  while ai < 21
+    _ev_ins = db.run(
+      "INSERT INTO arvo_events (id, actor, action, entity_table, entity_id, created_at) VALUES (?, 'ada@household.local', 'limit.check', 'bills', '1', ?)",
+      [Sqlite.String("evt_lim_#{ai}"), Sqlite.String(t0.to_text)]
+    )
+    ai += 1
+  end
+  (_s_lim, lim_res) = WebTest.get(s13, app, "/")
+  lim_home = WebTest.expect_inertia[Routes.HomeProps](lim_res, "Home")
+  assert lim_home.audit_feed.size == 20
 end

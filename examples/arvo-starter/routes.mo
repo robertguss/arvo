@@ -535,7 +535,7 @@ fn create_bill(
   name = (Form.field(fields, "name") or "").trim
   category = (Form.field(fields, "category") or "").trim
   raw_amount = (Form.field(fields, "amount_cents") or "").trim
-  amount_cents = raw_amount.to_int or -1
+  amount_cents = raw_amount.to_int or 0
 
   draft = NewBillDraft(name: name, category: category, amount_cents: amount_cents)
   cs = Changeset.new(draft).require_non_empty("name", draft.name).require_length(
@@ -548,10 +548,10 @@ fn create_bill(
 
   key = try app_secret_key(env)
   sec? = secure_cookies?(env)
-  validated = case Changeset.finish(cs)
-    Ok(v): v
-    Error(errs): return Ok(Inertia.validation_error(req, rng, key, "/", errs, sec?))
+  if not cs.valid?
+    return Ok(Inertia.validation_error(req, rng, key, "/", cs.errors, sec?))
   end
+  validated = cs.data
 
   ins = try db.execute(
     "INSERT INTO bills (name, category, amount_cents, status, version, created_at) VALUES (?, ?, ?, 'due', 1, ?)",
