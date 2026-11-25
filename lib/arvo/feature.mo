@@ -149,6 +149,7 @@ fn match_pattern(pattern: Text, text: Text) : Option(Map(Text, Text))
     match_pattern("I reload the page", "I reload the page") == Some({})
     match_pattern("I reload the page", "I leave the page") == None
     match_pattern("status is {code}", "status is 409") == Some({"code": "409"})
+    match_pattern("{a}{b}", "ab") == None
   end
 
   tokens = split_pattern_tokens(pattern)
@@ -664,9 +665,9 @@ test "Feature parses 4-H2 .feature.md, executes in-memory scenarios with tables,
   assert doc.background.size == 1
   assert doc.scenarios.size == 2
   scen0 = doc.scenarios.get(0) or stop "scen0"
-  assert scen0.line == 21
+  assert scen0.line == 22
   step0 = scen0.steps.get(0) or stop "step0"
-  assert step0.line == 22
+  assert step0.line == 23
 
   manifest = browser_manifest([doc])
   assert manifest.size == 1
