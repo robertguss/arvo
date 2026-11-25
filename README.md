@@ -121,6 +121,8 @@ This typechecks and runs every `example`, `promise`, and `test` across all 12 `l
 
 - [Architecture & Roadmap](docs/arvo-plan.md)
 - [Framework Specification](docs/arvo-spec.md)
+- [Testing & Verification Architecture](docs/arvo-testing-plan.md)
+- [Testing & Verification Specification](docs/arvo-testing-spec.md)
 - [Starter App Guide](examples/arvo-starter/README.md)
 
 ## License
