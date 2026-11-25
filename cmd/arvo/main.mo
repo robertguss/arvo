@@ -291,6 +291,43 @@ fn elapsed_ms(clock: Clock, start: Time) : Int
   if ms >= 1: ms else: 0
 end
 
+fn skip_scan_dir?(name: Text) : Bool
+  examples
+    skip_scan_dir?(".arvo")
+    skip_scan_dir?(".git")
+    skip_scan_dir?("node_modules")
+    skip_scan_dir?("public")
+    not skip_scan_dir?("specs")
+  end
+
+  name.starts_with?(".") or name == "node_modules" or name == "public"
+end
+
+fn collect_tamper_files(files: ReadFiles, dir: Text, globs: List(Text)) : Map(Text, Text)
+  var acc = {}
+  case files.entries(dir)
+    Error(_): return acc
+    Ok(ents):
+      for ent in ents
+        rel = if dir == ".": ent.name else: "#{dir}/#{ent.name}"
+        if ent.kind is Folder
+          if not skip_scan_dir?(ent.name)
+            for (k, v) in collect_tamper_files(files, rel, globs)
+              acc = acc.set(k, v)
+            end
+          end
+        else if ent.kind is File
+          if rel.ends_with?(".mo") or globs.any?(fn(g) Tamper.glob_match?(g, rel) end)
+            if files.read_text(rel) is Ok(txt)
+              acc = acc.set(rel, txt)
+            end
+          end
+        end
+      end
+  end
+  acc
+end
+
 fn extract_contracts_json(app_dir: Text, cfg: Config.ArvoConfig, files: Files, cmd: Command) : Result(
   List(Inertia.PageContract),
   Text
@@ -502,7 +539,7 @@ fn run_tamper_phase(
   app_dir: Text,
   tier: Text,
   cfg: Config.ArvoConfig,
-  files: ReadFiles,
+  files: Files,
   cmd: Command,
   clock: Clock
 ) : Dossier.VerifyEvent
@@ -520,8 +557,10 @@ fn run_tamper_phase(
   df_prefix = if app_dir == ".": "" else: "#{app_dir}/"
 
   var all_changed = []
+  var st_ok? = false
   if cmd.run("git", ["status", "--porcelain", "--untracked-files=all"], git_dur) is Ok(st_out)
     if st_out.ok?
+      st_ok? = true
       for p in Tamper.parse_git_status_paths(st_out.stdout)
         if strip_repo_prefix(p, effective_prefix) is Some(rel_p)
           all_changed = all_changed.append(rel_p)
@@ -529,8 +568,10 @@ fn run_tamper_phase(
       end
     end
   end
+  var df_ok? = false
   if cmd.run("git", ["diff", "--relative", "--name-only", "HEAD"], git_dur) is Ok(df_out)
     if df_out.ok?
+      df_ok? = true
       for ln in df_out.stdout.lines
         trimmed = ln.trim
         continue if trimmed.empty?
@@ -541,35 +582,66 @@ fn run_tamper_phase(
     end
   end
 
-  unique_changed = all_changed.unique
-  var tampered = Tamper.detect_tampered_paths(unique_changed, cfg.tamper_globs)
+  if st_ok? and df_ok?
+    unique_changed = all_changed.unique
+    var tampered = Tamper.detect_tampered_paths(unique_changed, cfg.tamper_globs)
 
-  for p in unique_changed
-    if p.ends_with?(".mo")
-      if cmd.run("git", ["show", "HEAD:./#{join_app_path(app_dir, p)}"], git_dur) is Ok(old_out)
-        if old_out.ok?
-          if files.read_text(p) is Ok(cur_src)
-            if Tamper.promise_blocks_changed?(old_out.stdout, cur_src)
-              tampered = tampered.append("#{p} (promise)")
+    for p in unique_changed
+      if p.ends_with?(".mo")
+        if cmd.run("git", ["show", "HEAD:./#{join_app_path(app_dir, p)}"], git_dur) is Ok(old_out)
+          if old_out.ok?
+            if files.read_text(p) is Ok(cur_src)
+              if Tamper.promise_blocks_changed?(old_out.stdout, cur_src)
+                tampered = tampered.append("#{p} (promise)")
+              end
             end
           end
         end
       end
     end
+
+    final_tampered = tampered.unique.sort
+    ms = elapsed_ms(clock, t0)
+    if final_tampered.empty?
+      var ev = Dossier.new_event(ts, tier, "tamper_check", "pass", ms)
+      ev.detail = Some("0 contract edits")
+      return ev
+    else
+      var ev = Dossier.new_event(ts, tier, "tamper_check", "warn", ms)
+      ev.modified_contracts = Some(final_tampered)
+      ev.detail = Some("modified: #{final_tampered.join(", ")}")
+      return ev
+    end
   end
 
-  final_tampered = tampered.unique.sort
-  ms = elapsed_ms(clock, t0)
-  if final_tampered.empty?
-    var ev = Dossier.new_event(ts, tier, "tamper_check", "pass", ms)
-    ev.detail = Some("0 contract edits")
-    ev
-  else
-    var ev = Dossier.new_event(ts, tier, "tamper_check", "warn", ms)
-    ev.modified_contracts = Some(final_tampered)
-    ev.detail = Some("modified: #{final_tampered.join(", ")}")
-    ev
+  current_fp = Tamper.fingerprint_map(
+    collect_tamper_files(files.read_only, ".", cfg.tamper_globs),
+    cfg.tamper_globs
+  )
+  baseline_path = ".arvo/dossier/tamper-baseline.json"
+  if files.read_text(baseline_path) is Ok(raw)
+    if Json.decode_strict[Map(Text, Text)](raw) is Ok(base_fp)
+      changed = Tamper.diff_fingerprints(base_fp, current_fp)
+      ms = elapsed_ms(clock, t0)
+      if changed.empty?
+        var ev = Dossier.new_event(ts, tier, "tamper_check", "pass", ms)
+        ev.detail = Some("0 contract edits (baseline; git unavailable)")
+        return ev
+      else
+        var ev = Dossier.new_event(ts, tier, "tamper_check", "warn", ms)
+        ev.modified_contracts = Some(changed)
+        ev.detail = Some("modified (baseline): #{changed.join(", ")}")
+        return ev
+      end
+    end
   end
+
+  _mk = files.make_folder(".arvo/dossier")
+  _wr = files.write_text(baseline_path, Json.encode(current_fp))
+  ms_init = elapsed_ms(clock, t0)
+  var init_ev = Dossier.new_event(ts, tier, "tamper_check", "warn", ms_init)
+  init_ev.detail = Some("git unavailable; recorded baseline (#{baseline_path})")
+  init_ev
 end
 
 fn run_verify_cmd(
@@ -697,7 +769,7 @@ fn run_verify_cmd(
   events = events.append(ctr_ev)
 
   # 5. Tamper check
-  events = events.append(run_tamper_phase(app_dir, tier, cfg, files.read_only, cmd, clock))
+  events = events.append(run_tamper_phase(app_dir, tier, cfg, files, cmd, clock))
 
   # Tier feature/full gates
   if tier == "feature" or tier == "full"
@@ -728,24 +800,57 @@ fn run_verify_cmd(
     )
       Ok(mout):
         msum = Dossier.parse_mo_test_json(mout.stdout)
-        rate_ok? = msum.kill_rate >= cfg.mo_mutant_min_kill_rate and
-          msum.failed == 0 and
-          msum.stopped == 0
-        var e = Dossier.new_event(
-          t_mut.to_text,
-          tier,
-          "mo_mutants",
-          if rate_ok?: "pass" else: "fail",
-          elapsed_ms(clock, t_mut)
-        )
-        e.total = Some(msum.mutants_total)
-        e.killed = Some(msum.mutants_killed)
-        e.survived = Some(msum.mutants_survived)
-        e.kill_rate = Some(msum.kill_rate)
-        e.detail = Some(
-          "#{msum.mutants_killed}/#{msum.mutants_total} killed (rate=#{msum.kill_rate})"
-        )
-        e
+        if msum.has_mutants?
+          rate_ok? = msum.kill_rate >= cfg.mo_mutant_min_kill_rate and
+            msum.failed == 0 and
+            msum.stopped == 0 and
+            msum.errors == 0
+          var e = Dossier.new_event(
+            t_mut.to_text,
+            tier,
+            "mo_mutants",
+            if rate_ok?: "pass" else: "fail",
+            elapsed_ms(clock, t_mut)
+          )
+          e.total = Some(msum.mutants_total)
+          e.killed = Some(msum.mutants_killed)
+          e.survived = Some(msum.mutants_survived)
+          e.kill_rate = Some(msum.kill_rate)
+          e.detail = Some(
+            "#{msum.mutants_killed}/#{msum.mutants_total} killed (rate=#{msum.kill_rate})"
+          )
+          e
+        else if mout.ok? and msum.errors == 0 and msum.failed == 0 and msum.stopped == 0
+          var e = Dossier.new_event(
+            t_mut.to_text,
+            tier,
+            "mo_mutants",
+            "pass",
+            elapsed_ms(clock, t_mut)
+          )
+          e.total = Some(0)
+          e.killed = Some(0)
+          e.survived = Some(0)
+          e.kill_rate = Some(1.0)
+          e.detail = Some("0/0 killed (rate=1)")
+          e
+        else
+          var e = Dossier.new_event(
+            t_mut.to_text,
+            tier,
+            "mo_mutants",
+            "fail",
+            elapsed_ms(clock, t_mut)
+          )
+          e.total = Some(0)
+          e.killed = Some(0)
+          e.survived = Some(0)
+          e.kill_rate = Some(0.0)
+          e.detail = Some(
+            "mutants did not run (errors=#{msum.errors}, failed=#{msum.failed + msum.stopped})"
+          )
+          e
+        end
       Error(merr):
         var e = Dossier.new_event(
           t_mut.to_text,
@@ -1718,4 +1823,232 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     Env.of({})
   ) ==
     1
+
+  # Worktree/Landlock tamper baseline fallback (git inaccessible) + mo_mutants null/error handling
+  gen_wt_ts = Codegen.generate_ts(
+    [Inertia.page_contract[FakeProps, FakeShared]("Home", ["/"], Inertia.Of, Inertia.Of)],
+    None
+  )
+  gen_empty_ts = Codegen.generate_ts([], None)
+  files_worktree = Files.in_memory({
+    "arvo.toml": "[app]\nentry = \"main.mo\"\n",
+    "main.mo": "module Main\nfn safe(x: Int) : Int\n  promise \"same\"\n    result == x\n  end\n  x\nend\n",
+    "frontend/src/pages/Home.tsx": "export default function Home() { return null; }\n",
+    "frontend/src/arvo.gen.ts": gen_wt_ts,
+    "node_modules/ignored.mo": "module Ignored\nfn bad(x: Int) : Int\n  promise \"never_seen\"\n    result == x\n  end\n  x\nend\n",
+    "specs/features/login.feature.md": valid_feature_doc
+  })
+  git_fail_replies = Command.replies([
+    (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.ok_output(contracts_json)),
+    (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
+    (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
+    (
+      Command.spec("git", ["rev-parse", "--show-prefix"]),
+      Command.output(128, "", "fatal: not a git repo")
+    ),
+    (
+      Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
+      Command.output(128, "", "fatal: not a git repo")
+    ),
+    (
+      Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]),
+      Command.output(128, "", "fatal: not a git repo")
+    )
+  ])
+  # 1st run records baseline and warns
+  assert run_cli(
+    Args.of(["verify", "--tier", "fast"]),
+    Console.fake(),
+    files_worktree,
+    Command.fake(git_fail_replies),
+    Clock.fixed(t0),
+    Env.of({})
+  ) ==
+    0
+  assert files_worktree.read_text(".arvo/dossier/verify.jsonl") is Ok(wt_init_j)
+  assert wt_init_j.contains?("\"phase\":\"tamper_check\",\"status\":\"warn\"")
+  assert wt_init_j.contains?("recorded baseline")
+  assert files_worktree.read_text(".arvo/dossier/tamper-baseline.json") is Ok(wt_base_json)
+  assert not wt_base_json.contains?("ignored.mo")
+
+  # Partial git failure (status OK, diff HEAD fails) still uses baseline and passes cleanly
+  partial_git_fail_replies = Command.replies([
+    (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.ok_output(contracts_json)),
+    (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
+    (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
+    (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
+    (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output("")),
+    (
+      Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]),
+      Command.output(128, "", "fatal: bad HEAD")
+    )
+  ])
+  assert run_cli(
+    Args.of(["verify", "--tier", "fast"]),
+    Console.fake(),
+    files_worktree,
+    Command.fake(partial_git_fail_replies),
+    Clock.fixed(t0),
+    Env.of({})
+  ) ==
+    0
+  assert files_worktree.read_text(".arvo/dossier/verify.jsonl") is Ok(wt_clean_j)
+  assert wt_clean_j.contains?("\"phase\":\"tamper_check\",\"status\":\"pass\"")
+  assert wt_clean_j.contains?("0 contract edits (baseline; git unavailable)")
+
+  # Partial git failure (status fails, diff HEAD OK) also uses baseline (never treats st_ok? as true)
+  status_fail_diff_ok_replies = Command.replies([
+    (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.ok_output(contracts_json)),
+    (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
+    (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
+    (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
+    (
+      Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
+      Command.output(128, "", "fatal: status failed")
+    ),
+    (Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]), Command.ok_output(""))
+  ])
+  assert run_cli(
+    Args.of(["verify", "--tier", "fast"]),
+    Console.fake(),
+    files_worktree,
+    Command.fake(status_fail_diff_ok_replies),
+    Clock.fixed(t0),
+    Env.of({})
+  ) ==
+    0
+  assert files_worktree.read_text(".arvo/dossier/verify.jsonl") is Ok(wt_stfail_j)
+  assert wt_stfail_j.contains?("0 contract edits (baseline; git unavailable)")
+
+  # Edit spec + promise block -> warn naming both without overwriting baseline
+  assert files_worktree.write_text(
+    "specs/features/login.feature.md",
+    "#{valid_feature_doc}\n- Gotcha edit.\n"
+  ) ==
+    Ok(Unit)
+  assert files_worktree.write_text(
+    "main.mo",
+    "module Main\nfn safe(x: Int) : Int\n  promise \"weakened\"\n    true\n  end\n  x\nend\n"
+  ) ==
+    Ok(Unit)
+  c_wt_warn = Console.fake()
+  assert run_cli(
+    Args.of(["verify", "--tier", "fast"]),
+    c_wt_warn,
+    files_worktree,
+    Command.fake(git_fail_replies),
+    Clock.fixed(t0),
+    Env.of({})
+  ) ==
+    0
+  assert c_wt_warn.printed.any?(fn(l) l.contains?("PASS WITH CONTRACT CHANGES") end)
+  assert files_worktree.read_text(".arvo/dossier/verify.jsonl") is Ok(wt_warn_j)
+  assert wt_warn_j.contains?("\"phase\":\"tamper_check\",\"status\":\"warn\"")
+  assert wt_warn_j.contains?("main.mo (promise)")
+  assert wt_warn_j.contains?("specs/features/login.feature.md")
+
+  # Re-verify still warns while edits persist, and passes once reverted
+  assert run_cli(
+    Args.of(["verify", "--tier", "fast"]),
+    Console.fake(),
+    files_worktree,
+    Command.fake(git_fail_replies),
+    Clock.fixed(t0),
+    Env.of({})
+  ) ==
+    0
+  assert files_worktree.read_text(".arvo/dossier/verify.jsonl") is Ok(wt_warn2_j)
+  assert wt_warn2_j.contains?("\"phase\":\"tamper_check\",\"status\":\"warn\"")
+
+  assert files_worktree.write_text("specs/features/login.feature.md", valid_feature_doc) == Ok(Unit)
+  assert files_worktree.write_text(
+    "main.mo",
+    "module Main\nfn safe(x: Int) : Int\n  promise \"same\"\n    result == x\n  end\n  x\nend\n"
+  ) ==
+    Ok(Unit)
+  assert run_cli(
+    Args.of(["verify", "--tier", "fast"]),
+    Console.fake(),
+    files_worktree,
+    Command.fake(git_fail_replies),
+    Clock.fixed(t0),
+    Env.of({})
+  ) ==
+    0
+  assert files_worktree.read_text(".arvo/dossier/verify.jsonl") is Ok(wt_rev_j)
+  assert wt_rev_j.contains?("\"phase\":\"tamper_check\",\"status\":\"pass\"")
+
+  # Corrupt baseline JSON re-records cleanly with warn
+  assert files_worktree.write_text(".arvo/dossier/tamper-baseline.json", "not-json") == Ok(Unit)
+  assert run_cli(
+    Args.of(["verify", "--tier", "fast"]),
+    Console.fake(),
+    files_worktree,
+    Command.fake(git_fail_replies),
+    Clock.fixed(t0),
+    Env.of({})
+  ) ==
+    0
+  assert files_worktree.read_text(".arvo/dossier/verify.jsonl") is Ok(wt_corrupt_j)
+  assert wt_corrupt_j.contains?("recorded baseline")
+
+  # Check missing entry .arvo/dossier/tamper-baseline.json inside empty dir with app_dir "." missing specs
+  # Clean 0-mutant pass vs null-mutant failures (errors, nonzero exit, failed+stopped) & has_mutants+errors fail
+  null_clean = "{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0,\"mutants\":null,\"status\":0}\n"
+  null_err = "{\"record\":\"totals\",\"passed\":4,\"failed\":0,\"stopped\":0,\"errors\":3,\"mutants\":null,\"status\":1}\n"
+  null_fail_stop = "{\"record\":\"totals\",\"passed\":1,\"failed\":1,\"stopped\":1,\"errors\":0,\"mutants\":null,\"status\":1}\n"
+  mut_err_json = "{\"record\":\"mutant_summary\",\"event\":\"mutant_summary\",\"total\":5,\"tried\":5,\"killed\":5,\"survived\":0,\"kill_rate\":1.0}\n{\"record\":\"totals\",\"passed\":4,\"failed\":0,\"stopped\":0,\"errors\":1,\"status\":1}\n"
+
+  for (mut_reply, expect_code, expect_frag) in [
+    (
+      Command.ok_output(null_clean),
+      0,
+      "\"status\":\"pass\",\"total\":0,\"killed\":0,\"survived\":0,\"kill_rate\":1,\"detail\":\"0/0 killed (rate=1)\""
+    ),
+    (
+      Command.ok_output(null_err),
+      1,
+      "\"status\":\"fail\",\"total\":0,\"killed\":0,\"survived\":0,\"kill_rate\":0,\"detail\":\"mutants did not run (errors=3, failed=0)\""
+    ),
+    (
+      Command.output(1, null_clean, "boom"),
+      1,
+      "\"status\":\"fail\",\"total\":0,\"killed\":0,\"survived\":0,\"kill_rate\":0"
+    ),
+    (
+      Command.ok_output(null_fail_stop),
+      1,
+      "\"detail\":\"mutants did not run (errors=0, failed=2)\""
+    ),
+    (Command.ok_output(mut_err_json), 1, "\"phase\":\"mo_mutants\",\"status\":\"fail\"")
+  ]
+    f_mut = Files.in_memory({
+      "arvo.toml": "[app]\nentry = \"main.mo\"\n",
+      "main.mo": "module Main\n",
+      "frontend/src/arvo.gen.ts": gen_empty_ts
+    })
+    rep_mut = Command.replies([
+      (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.ok_output("[]")),
+      (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
+      (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
+      (Command.spec("mo", ["test", "--jobs", "4", "--json", "--mutants", "main.mo"]), mut_reply),
+      (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
+      (
+        Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
+        Command.ok_output("")
+      ),
+      (Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]), Command.ok_output(""))
+    ])
+    assert run_cli(
+      Args.of(["verify", "--tier", "feature"]),
+      Console.fake(),
+      f_mut,
+      Command.fake(rep_mut),
+      Clock.fixed(t0),
+      Env.of({})
+    ) ==
+      expect_code
+    assert f_mut.read_text(".arvo/dossier/verify.jsonl") is Ok(mj)
+    assert mj.contains?(expect_frag)
+  end
 end

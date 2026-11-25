@@ -5,7 +5,10 @@ expose glob_match?,
 extract_promise_blocks,
 promise_blocks_changed?,
 parse_git_status_paths,
-detect_tampered_paths
+detect_tampered_paths,
+fingerprint_map,
+diff_fingerprints
+use Crypto
 
 fn match_text_glob(pat: List(Char), text: List(Char)) : Bool
   p_empty = pat.empty?
@@ -142,6 +145,39 @@ fn detect_tampered_paths(changed_paths: List(Text), globs: List(Text)) : List(Te
   changed_paths.filter(fn(p) globs.any?(fn(g) glob_match?(g, p) end) end).unique.sort
 end
 
+## Computes deterministic SHA-256 fingerprints for tamper-protected files and `.mo` promise blocks.
+fn fingerprint_map(file_contents: Map(Text, Text), globs: List(Text)) : Map(Text, Text)
+  var fp = {}
+  for (path, src) in file_contents
+    if globs.any?(fn(g) glob_match?(g, path) end)
+      fp = fp.set(path, Crypto.sha256(src.bytes).to_hex)
+    end
+    if path.ends_with?(".mo")
+      blocks = extract_promise_blocks(src)
+      if not blocks.empty?
+        fp = fp.set("#{path} (promise)", Crypto.sha256(blocks.join("\n---\n").bytes).to_hex)
+      end
+    end
+  end
+  fp
+end
+
+## Returns sorted unique keys added, removed, or modified between `baseline` and `current`.
+fn diff_fingerprints(baseline: Map(Text, Text), current: Map(Text, Text)) : List(Text)
+  var changed = []
+  for (k, h) in current
+    if baseline.get(k) != Some(h)
+      changed = changed.append(k)
+    end
+  end
+  for (k, _h) in baseline
+    if not current.has?(k)
+      changed = changed.append(k)
+    end
+  end
+  changed.unique.sort
+end
+
 test "Tamper detects modified protected paths and promise block edits"
   old_mo = """
     fn add(a: Int, b: Int) : Int
@@ -239,6 +275,43 @@ test "Tamper detects modified protected paths and promise block edits"
   globs = ["specs/features/**/*.feature.md", "snapshots/**/*"]
   assert detect_tampered_paths(paths, globs) == [
     "snapshots/home.snap.json",
+    "specs/features/bills.feature.md"
+  ]
+
+  fp_base = fingerprint_map(
+    {
+      "specs/features/bills.feature.md": "# Bills v1\n",
+      "routes.mo": old_mo,
+      "helper.mo": "fn id(x: Int) : Int\n  x\nend\n",
+      "README.md": "ignored docs"
+    },
+    globs
+  )
+  assert fp_base.has?("specs/features/bills.feature.md")
+  assert fp_base.has?("routes.mo (promise)")
+  assert not fp_base.has?("routes.mo")
+  assert not fp_base.has?("helper.mo (promise)")
+  assert not fp_base.has?("README.md")
+
+  # Body-only edit in .mo preserves promise fingerprint
+  fp_same = fingerprint_map(
+    {
+      "specs/features/bills.feature.md": "# Bills v1\n",
+      "routes.mo": same_promise,
+      "helper.mo": "fn id(x: Int) : Int\n  x + 0\nend\n"
+    },
+    globs
+  )
+  assert diff_fingerprints(fp_base, fp_same) == []
+
+  # Promise edit, spec edit, addition, and removal all surface cleanly
+  fp_edited = fingerprint_map(
+    {"routes.mo": weakened_promise, "snapshots/new.snap.json": "{}"},
+    globs
+  )
+  assert diff_fingerprints(fp_base, fp_edited) == [
+    "routes.mo (promise)",
+    "snapshots/new.snap.json",
     "specs/features/bills.feature.md"
   ]
 end
