@@ -1,6 +1,6 @@
 ## Pure-Mo `arvo` verification, contract codegen, feature map, and simulation CLI.
 module Main
-expose CliCmd(..), parse_args, usage, run_cli, main
+expose CliCmd(..), CliInvocation(..), parse_args, parse_invocation, usage, run_cli, main
 use Arvo.Feature
 use Arvo.Inertia
 use Codegen
@@ -19,47 +19,57 @@ enum CliCmd
   SimCmd(entry: Option(Text), only: Option(Text))
 end
 
+## Parsed CLI invocation combining `--app DIR` target (default `"."`) and `CliCmd`.
+struct CliInvocation
+  app_dir: Text
+  cmd: CliCmd
+end
+
 ## Returns top-level or subcommand usage help text.
 fn usage(topic: Option(Text)) : Text
   case topic
     Some("contracts"): """
-      usage: arvo contracts [--check]
+      usage: arvo contracts [--app DIR] [--check]
 
       Generates frontend TypeScript contracts from the app's Json.schema[T]() manifest
       and checks that every PageContract.component resolves to a page .tsx file.
 
       Flags:
+        --app DIR  Target application subdirectory (default: `.`)
         --check    Fail non-zero if generated arvo.gen.ts is stale or tsc --noEmit fails
         -h, --help Show this help
       """
     Some("verify"): """
-      usage: arvo verify [--tier fast|feature|full] [--json] [--changed]
+      usage: arvo verify [--app DIR] [--tier fast|feature|full] [--json] [--changed]
 
       Runs the Arvo verification ladder, detects contract/promise tampering, and emits
       machine-readable events to .arvo/dossier/verify.jsonl.
 
       Flags:
+        --app DIR    Target application subdirectory (default: `.`)
         --tier TIER  Verification tier: fast (default), feature, or full
         --json       Print NDJSON events to stdout instead of the terminal scorecard
         --changed    Focus checks on changed files where supported
         -h, --help   Show this help
       """
     Some("feature"): """
-      usage: arvo feature [--validate] [--manifest OUT] [DIR]
+      usage: arvo feature [--app DIR] [--validate] [--manifest OUT] [DIR]
 
       Validates .feature.md Executable Feature Maps and optionally exports @browser scenarios.
 
       Flags:
+        --app DIR       Target application subdirectory (default: `.`)
         --validate      Validate all .feature.md files under DIR (default from arvo.toml)
         --manifest OUT  Write @browser scenario manifest JSON to OUT
         -h, --help      Show this help
       """
     Some("sim"): """
-      usage: arvo sim [--entry FILE] [--only NAME]
+      usage: arvo sim [--app DIR] [--entry FILE] [--only NAME]
 
       Runs Arvo.Sim deterministic web simulation tests via `mo test --json`.
 
       Flags:
+        --app DIR     Target application subdirectory (default: `.`)
         --entry FILE  Entry Mo module (default from arvo.toml)
         --only NAME   Run only the named simulation check
         -h, --help    Show this help
@@ -67,13 +77,13 @@ fn usage(topic: Option(Text)) : Text
     Some(_) | None: """
       Arvo Verification & Testing CLI (pure Mo)
 
-      usage: arvo <command> [flags]
+      usage: arvo <command> [--app DIR] [flags]
 
       Commands:
-        contracts [--check]                         Generate/verify frontend/src/arvo.gen.ts from Json.schema[T]()
-        verify [--tier fast|feature|full] [--json]  Run verification checks, tamper check, and write verify.jsonl
-        feature [--validate] [--manifest OUT] [DIR] Parse .feature.md specs and export @browser manifest
-        sim [--entry FILE] [--only NAME]            Run Arvo.Sim simulation tests
+        contracts [--app DIR] [--check]                         Generate/verify frontend/src/arvo.gen.ts from Json.schema[T]()
+        verify [--app DIR] [--tier fast|feature|full] [--json]  Run verification checks, tamper check, and write verify.jsonl
+        feature [--app DIR] [--validate] [--manifest OUT] [DIR] Parse .feature.md specs and export @browser manifest
+        sim [--app DIR] [--entry FILE] [--only NAME]            Run Arvo.Sim simulation tests
 
       Run `arvo <command> --help` for command-specific flags.
       """
@@ -213,6 +223,41 @@ fn parse_args(args: List(Text)) : Result(CliCmd, Text)
   end
 end
 
+fn normalize_app_dir(raw: Text) : Text
+  t = raw.trim
+  no_dot = t.drop_prefix("./") or t
+  no_slash = no_dot.drop_suffix("/") or no_dot
+  if no_slash.empty?: "." else: no_slash
+end
+
+fn extract_app_dir(args: List(Text)) : Result((Text, List(Text)), Text)
+  var app_dir = "."
+  var filtered = []
+  var i = 0
+  while i < args.size
+    a = args.get(i) or ""
+    if a == "--app"
+      next_val = args.get(i + 1) or ""
+      if next_val.empty? or next_val.starts_with?("-")
+        return Error("`--app` requires a directory path. Run `arvo --help`.")
+      end
+      app_dir = normalize_app_dir(next_val)
+      i += 1
+    else
+      filtered = filtered.append(a)
+    end
+    i += 1
+  end
+  Ok((app_dir, filtered))
+end
+
+## Parses full CLI invocation combining `--app DIR` and subcommand `CliCmd`.
+fn parse_invocation(args: List(Text)) : Result(CliInvocation, Text)
+  (app_dir, rest) = try extract_app_dir(args)
+  cmd = try parse_args(rest)
+  Ok(CliInvocation(app_dir: app_dir, cmd: cmd))
+end
+
 struct CmdTimeouts
   git_secs: Int
   mo_secs: Int
@@ -222,6 +267,10 @@ end
 
 fn default_timeouts() : CmdTimeouts
   CmdTimeouts(git_secs: 15, mo_secs: 30, tsc_secs: 60, slow_secs: 120)
+end
+
+fn join_app_path(app_dir: Text, rel: Text) : Text
+  if app_dir == ".": rel else: "#{app_dir}/#{rel}"
 end
 
 fn strip_repo_prefix(path: Text, prefix: Text) : Option(Text)
@@ -242,45 +291,50 @@ fn elapsed_ms(clock: Clock, start: Time) : Int
   if ms >= 1: ms else: 0
 end
 
-fn extract_contracts_json(cfg: Config.ArvoConfig, files: Files, cmd: Command) : Result(
+fn extract_contracts_json(app_dir: Text, cfg: Config.ArvoConfig, files: Files, cmd: Command) : Result(
   List(Inertia.PageContract),
   Text
 )
   timeouts = default_timeouts()
-  out = try cmd.run("mo", ["run", cfg.entry, "--arvo-contracts"], timeouts.mo_secs.seconds)
-    .map_error(fn(e) "failed running `mo run #{cfg.entry} --arvo-contracts`: #{e}" end)
+  entry_path = join_app_path(app_dir, cfg.entry)
+  out = try cmd.run("mo", ["run", entry_path, "--arvo-contracts"], timeouts.mo_secs.seconds)
+    .map_error(fn(e) "failed running `mo run #{entry_path} --arvo-contracts`: #{e}" end)
   raw_json = if out.ok? and out.stdout.trim.starts_with?("[")
     out.stdout.trim
   else
-    probe_path = "_arvo_contracts_probe.mo"
+    probe_path = "arvo-contracts-probe.mo"
+    probe_cmd_path = join_app_path(app_dir, probe_path)
     probe_src = "module ArvoContractsProbe\nuse #{cfg.contracts_module}\nuse Json\nfn main(console: Console)\n  console.print(Json.encode(#{cfg
       .contracts_module}.#{cfg.contracts_fn}()))\nend\n"
     try files.write_text(probe_path, probe_src).map_error(fn(e) "#{e}" end)
-    probe_res = cmd.run("mo", ["run", probe_path], timeouts.mo_secs.seconds)
+    probe_res = cmd.run("mo", ["run", probe_cmd_path], timeouts.mo_secs.seconds)
     _rm = files.remove(probe_path)
     probe_out = try probe_res.map_error(fn(e) "failed running contract probe: #{e}" end)
     if not probe_out.ok?
       return Error(
-        "failed extracting contracts from #{cfg.entry} or #{cfg.contracts_module}.#{cfg.contracts_fn}: #{probe_out
-          .stderr}"
+        "failed extracting contracts from #{entry_path} or #{cfg.contracts_module}.#{cfg
+          .contracts_fn}: #{probe_out.stderr}"
       )
     end
     probe_out.stdout.trim
   end
 
   Json.decode_strict[List(Inertia.PageContract)](raw_json).map_error(
-    fn(e) "invalid PageContract JSON from #{cfg.entry}: #{e.to_text}" end
+    fn(e) "invalid PageContract JSON from #{entry_path}: #{e.to_text}" end
   )
 end
 
-fn try_tsc_check(cfg: Config.ArvoConfig, files: ReadFiles, cmd: Command) : Result(Unit, Text)
+fn try_tsc_check(app_dir: Text, cfg: Config.ArvoConfig, files: ReadFiles, cmd: Command) : Result(
+  Unit,
+  Text
+)
   timeouts = default_timeouts()
   fdir = cfg.frontend_dir.drop_suffix("/") or cfg.frontend_dir
   tsconfig = "#{fdir}/tsconfig.json"
   tsc_js = "#{fdir}/node_modules/typescript/bin/tsc"
   return Ok(Unit) if not files.exists?(tsconfig) or not files.exists?(tsc_js)
 
-  out = try cmd.within(fdir).allow_programs(["node"]).run(
+  out = try cmd.within(join_app_path(app_dir, fdir)).allow_programs(["node"]).run(
     "node",
     ["./node_modules/typescript/bin/tsc", "--noEmit"],
     timeouts.tsc_secs.seconds
@@ -293,11 +347,14 @@ fn try_tsc_check(cfg: Config.ArvoConfig, files: ReadFiles, cmd: Command) : Resul
   end
 end
 
-fn run_contracts_flow(check?: Bool, cfg: Config.ArvoConfig, files: Files, cmd: Command) : Result(
-  (Int, Text),
-  Text
-)
-  contracts = try extract_contracts_json(cfg, files, cmd)
+fn run_contracts_flow(
+  app_dir: Text,
+  check?: Bool,
+  cfg: Config.ArvoConfig,
+  files: Files,
+  cmd: Command
+) : Result((Int, Text), Text)
+  contracts = try extract_contracts_json(app_dir, cfg, files, cmd)
   missing = Codegen.missing_page_components(files.read_only, cfg.pages_dir, contracts)
   if not missing.empty?
     return Error(
@@ -319,7 +376,7 @@ fn run_contracts_flow(check?: Bool, cfg: Config.ArvoConfig, files: Files, cmd: C
           )
         end
     end
-    try try_tsc_check(cfg, files.read_only, cmd)
+    try try_tsc_check(app_dir, cfg, files.read_only, cmd)
     Ok((contracts.size, "Contracts up to date (#{contracts.size} pages, #{cfg.contracts_out})"))
   else
     pdir = parent_dir(cfg.contracts_out)
@@ -403,6 +460,7 @@ fn run_feature_cmd(
 end
 
 fn run_sim_cmd(
+  app_dir: Text,
   entry_opt: Option(Text),
   only_opt: Option(Text),
   files: ReadFiles,
@@ -416,7 +474,7 @@ fn run_sim_cmd(
       return 1
   end
   timeouts = default_timeouts()
-  entry = entry_opt or cfg.entry
+  entry = join_app_path(app_dir, entry_opt or cfg.entry)
   var mo_args = ["test", "--json"]
   if only_opt is Some(name)
     mo_args = mo_args.append("--only").append(name)
@@ -441,6 +499,7 @@ fn run_sim_cmd(
 end
 
 fn run_tamper_phase(
+  app_dir: Text,
   tier: Text,
   cfg: Config.ArvoConfig,
   files: ReadFiles,
@@ -457,12 +516,14 @@ fn run_tamper_phase(
       git_prefix = pfx_out.stdout.trim
     end
   end
+  effective_prefix = if app_dir == ".": git_prefix else: "#{git_prefix}#{app_dir}/"
+  df_prefix = if app_dir == ".": "" else: "#{app_dir}/"
 
   var all_changed = []
   if cmd.run("git", ["status", "--porcelain", "--untracked-files=all"], git_dur) is Ok(st_out)
     if st_out.ok?
       for p in Tamper.parse_git_status_paths(st_out.stdout)
-        if strip_repo_prefix(p, git_prefix) is Some(rel_p)
+        if strip_repo_prefix(p, effective_prefix) is Some(rel_p)
           all_changed = all_changed.append(rel_p)
         end
       end
@@ -472,8 +533,9 @@ fn run_tamper_phase(
     if df_out.ok?
       for ln in df_out.stdout.lines
         trimmed = ln.trim
-        if not trimmed.empty?
-          all_changed = all_changed.append(trimmed)
+        continue if trimmed.empty?
+        if strip_repo_prefix(trimmed, df_prefix) is Some(rel_d)
+          all_changed = all_changed.append(rel_d)
         end
       end
     end
@@ -484,7 +546,7 @@ fn run_tamper_phase(
 
   for p in unique_changed
     if p.ends_with?(".mo")
-      if cmd.run("git", ["show", "HEAD:./#{p}"], git_dur) is Ok(old_out)
+      if cmd.run("git", ["show", "HEAD:./#{join_app_path(app_dir, p)}"], git_dur) is Ok(old_out)
         if old_out.ok?
           if files.read_text(p) is Ok(cur_src)
             if Tamper.promise_blocks_changed?(old_out.stdout, cur_src)
@@ -511,6 +573,7 @@ fn run_tamper_phase(
 end
 
 fn run_verify_cmd(
+  app_dir: Text,
   tier: Text,
   json_mode?: Bool,
   _changed?: Bool,
@@ -527,12 +590,13 @@ fn run_verify_cmd(
       console.error("arvo verify: #{e}")
       return 1
   end
+  entry_path = join_app_path(app_dir, cfg.entry)
 
   var events = []
 
   # 1. mo check
   t_chk = clock.now
-  chk_res = cmd.run("mo", ["check", cfg.entry], timeouts.mo_secs.seconds)
+  chk_res = cmd.run("mo", ["check", entry_path], timeouts.mo_secs.seconds)
   chk_ev = case chk_res
     Ok(out):
       if out.ok?
@@ -553,7 +617,7 @@ fn run_verify_cmd(
 
   # 2. mo test --json
   t_tst = clock.now
-  tst_res = cmd.run("mo", ["test", "--json", cfg.entry], timeouts.tsc_secs.seconds)
+  tst_res = cmd.run("mo", ["test", "--json", entry_path], timeouts.tsc_secs.seconds)
   tst_ev = case tst_res
     Ok(out):
       sum = Dossier.parse_mo_test_json(out.stdout)
@@ -619,7 +683,7 @@ fn run_verify_cmd(
 
   # 4. Contracts & tsc --noEmit
   t_ctr = clock.now
-  ctr_ev = case run_contracts_flow(true, cfg, files, cmd)
+  ctr_ev = case run_contracts_flow(app_dir, true, cfg, files, cmd)
     Ok((pages_count, msg)):
       var e = Dossier.new_event(t_ctr.to_text, tier, "contracts", "pass", elapsed_ms(clock, t_ctr))
       e.pages_checked = Some(pages_count)
@@ -633,7 +697,7 @@ fn run_verify_cmd(
   events = events.append(ctr_ev)
 
   # 5. Tamper check
-  events = events.append(run_tamper_phase(tier, cfg, files.read_only, cmd, clock))
+  events = events.append(run_tamper_phase(app_dir, tier, cfg, files.read_only, cmd, clock))
 
   # Tier feature/full gates
   if tier == "feature" or tier == "full"
@@ -659,7 +723,7 @@ fn run_verify_cmd(
     t_mut = clock.now
     mut_ev = case cmd.run(
       "mo",
-      ["test", "--jobs", "4", "--json", "--mutants", cfg.entry],
+      ["test", "--jobs", "4", "--json", "--mutants", entry_path],
       timeouts.slow_secs.seconds
     )
       Ok(mout):
@@ -740,25 +804,27 @@ end
 
 ## Executes the CLI command using explicit capabilities (usable directly from both `main` and tests).
 fn run_cli(args: Args, console: Console, files: Files, cmd: Command, clock: Clock, _env: Env) : Int
-  parsed = case parse_args(args.list)
+  inv = case parse_invocation(args.list)
     Ok(c): c
     Error(msg):
       console.error("arvo: #{msg}")
       return 2
   end
+  app_dir = inv.app_dir
+  app_files = if app_dir == ".": files else: files.within(app_dir)
 
-  case parsed
+  case inv.cmd
     HelpCmd(topic: t):
       console.print(usage(t))
       0
     ContractsCmd(check?: chk):
-      cfg = case Config.load(files.read_only)
+      cfg = case Config.load(app_files.read_only)
         Ok(c): c
         Error(e):
           console.error("arvo contracts: #{e}")
           return 1
       end
-      case run_contracts_flow(chk, cfg, files, cmd)
+      case run_contracts_flow(app_dir, chk, cfg, app_files, cmd)
         Ok((_n, msg)):
           console.print(msg)
           0
@@ -767,16 +833,22 @@ fn run_cli(args: Args, console: Console, files: Files, cmd: Command, clock: Cloc
           1
       end
     VerifyCmd(tier: tier, json?: j, changed?: chg): run_verify_cmd(
+      app_dir,
       tier,
       j,
       chg,
-      files,
+      app_files,
       cmd,
       clock,
       console
     )
-    FeatureCmd(validate?: _v, manifest_out: mout, dir: d): run_feature_cmd(mout, d, files, console)
-    SimCmd(entry: e, only: o): run_sim_cmd(e, o, files.read_only, cmd, console)
+    FeatureCmd(validate?: _v, manifest_out: mout, dir: d): run_feature_cmd(
+      mout,
+      d,
+      app_files,
+      console
+    )
+    SimCmd(entry: e, only: o): run_sim_cmd(app_dir, e, o, app_files.read_only, cmd, console)
   end
 end
 
@@ -869,6 +941,23 @@ test "parse_args handles all commands, help flags, and rejects unknown options c
   assert dt.git_secs == 15 and dt.mo_secs == 30 and dt.tsc_secs == 60 and dt.slow_secs == 120
   assert parent_dir("a.mo") == "."
   assert parent_dir("a/b/c.mo") == "a/b"
+  assert join_app_path(".", "main.mo") == "main.mo"
+  assert join_app_path("examples/app", "main.mo") == "examples/app/main.mo"
+
+  assert parse_invocation(["contracts", "--app", "./examples/app/"]) ==
+    Ok(CliInvocation(app_dir: "examples/app", cmd: ContractsCmd(check?: false)))
+  assert parse_invocation(["contracts", "--app", "./"]) ==
+    Ok(CliInvocation(app_dir: ".", cmd: ContractsCmd(check?: false)))
+  assert parse_invocation(["--app", "examples/app", "contracts", "--check"]) ==
+    Ok(CliInvocation(app_dir: "examples/app", cmd: ContractsCmd(check?: true)))
+  assert case parse_invocation(["contracts", "--app"])
+    Error(m): m.contains?("requires a directory")
+    Ok(_): false
+  end
+  assert case parse_invocation(["contracts", "--app", "-x"])
+    Error(m): m.contains?("requires a directory")
+    Ok(_): false
+  end
 
   t_ref = Time.parse("2026-11-25T15:00:00Z") or stop "t_ref"
   assert elapsed_ms(Clock.fixed(t_ref - 5.milliseconds), t_ref) == 0
@@ -1160,7 +1249,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
   # Fallback probe succeeds and fails
   replies_probe_ok = Command.replies([
     (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.output(1, "", "no flag")),
-    (Command.spec("mo", ["run", "_arvo_contracts_probe.mo"]), Command.ok_output(contracts_json))
+    (Command.spec("mo", ["run", "arvo-contracts-probe.mo"]), Command.ok_output(contracts_json))
   ])
   assert run_cli(
     Args.of(["contracts"]),
@@ -1171,11 +1260,11 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     Env.of({})
   ) ==
     0
-  assert not files_root_out.exists?("_arvo_contracts_probe.mo")
+  assert not files_root_out.exists?("arvo-contracts-probe.mo")
 
   replies_probe_bad = Command.replies([
     (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.output(1, "", "err")),
-    (Command.spec("mo", ["run", "_arvo_contracts_probe.mo"]), Command.output(1, "", "probe bad"))
+    (Command.spec("mo", ["run", "arvo-contracts-probe.mo"]), Command.output(1, "", "probe bad"))
   ])
   c_pbad = Console.fake()
   assert run_cli(
@@ -1417,7 +1506,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
   # extract_contracts_json runs fallback probe even when failing first command outputs `[`
   replies_probe_bracket = Command.replies([
     (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.output(1, "[bad", "err")),
-    (Command.spec("mo", ["run", "_arvo_contracts_probe.mo"]), Command.ok_output(contracts_json))
+    (Command.spec("mo", ["run", "arvo-contracts-probe.mo"]), Command.ok_output(contracts_json))
   ])
   assert run_cli(
     Args.of(["contracts"]),
@@ -1511,6 +1600,106 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     0
   assert files_star_glob.read_text(".arvo/dossier/verify.jsonl") is Ok(v_star)
   assert v_star.contains?("\"phase\":\"tamper_check\",\"status\":\"pass\"")
+
+  # `--app DIR` targets a monorepo subdirectory cleanly across contracts, tsc, feature, sim, and verify
+  files_mono = Files.in_memory({
+    "examples/app/arvo.toml": "[app]\nentry = \"main.mo\"\n",
+    "examples/app/main.mo": "module Main\nfn f(x: Int) : Int\n  promise\n    true\n  end\n  x\nend\n",
+    "examples/app/frontend/src/pages/Home.tsx": "export default function Home() { return null; }\n",
+    "examples/app/frontend/tsconfig.json": "{}",
+    "examples/app/frontend/node_modules/typescript/bin/tsc": "//tsc",
+    "examples/app/specs/features/login.feature.md": valid_feature_doc
+  })
+  replies_mono = Command.replies([
+    (
+      Command.spec("mo", ["run", "examples/app/main.mo", "--arvo-contracts"]),
+      Command.output(1, "", "use probe")
+    ),
+    (
+      Command.spec("mo", ["run", "examples/app/arvo-contracts-probe.mo"]),
+      Command.ok_output(contracts_json)
+    ),
+    (
+      Command.spec("node", ["./node_modules/typescript/bin/tsc", "--noEmit"]).in_folder(
+        "examples/app/frontend"
+      ),
+      Command.ok_output("")
+    ),
+    (Command.spec("mo", ["check", "examples/app/main.mo"]), Command.ok_output("")),
+    (Command.spec("mo", ["test", "--json", "examples/app/main.mo"]), Command.ok_output(test_json)),
+    (
+      Command.spec("mo", ["test", "--jobs", "4", "--json", "--mutants", "examples/app/main.mo"]),
+      Command.ok_output(mut_json)
+    ),
+    (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
+    (
+      Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
+      Command.ok_output(" M examples/app/main.mo\n M lib/other.mo\n")
+    ),
+    (
+      Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]),
+      Command.ok_output("examples/app/specs/features/login.feature.md\nlib/other.mo\n\n")
+    ),
+    (
+      Command.spec("git", ["show", "HEAD:./examples/app/main.mo"]),
+      Command.ok_output(
+        "module Main\nfn f(x: Int) : Int\n  promise\n    result == x\n  end\n  x\nend\n"
+      )
+    )
+  ])
+  assert run_cli(
+    Args.of(["contracts", "--app", "examples/app"]),
+    Console.fake(),
+    files_mono,
+    Command.fake(replies_mono),
+    Clock.fixed(t0),
+    Env.of({})
+  ) ==
+    0
+  assert files_mono.exists?("examples/app/frontend/src/arvo.gen.ts")
+  assert not files_mono.exists?("examples/app/arvo-contracts-probe.mo")
+  assert run_cli(
+    Args.of(["contracts", "--app", "examples/app", "--check"]),
+    Console.fake(),
+    files_mono,
+    Command.fake(replies_mono),
+    Clock.fixed(t0),
+    Env.of({})
+  ) ==
+    0
+  assert run_cli(
+    Args.of(["feature", "--app", "examples/app", "--validate"]),
+    Console.fake(),
+    files_mono,
+    Command.fake(replies_mono),
+    Clock.fixed(t0),
+    Env.of({})
+  ) ==
+    0
+  assert run_cli(
+    Args.of(["sim", "--app", "examples/app"]),
+    Console.fake(),
+    files_mono,
+    Command.fake(replies_mono),
+    Clock.fixed(t0),
+    Env.of({})
+  ) ==
+    0
+  c_mono_v = Console.fake()
+  assert run_cli(
+    Args.of(["verify", "--app", "examples/app", "--tier", "full"]),
+    c_mono_v,
+    files_mono,
+    Command.fake(replies_mono),
+    Clock.fixed(t0),
+    Env.of({})
+  ) ==
+    0
+  assert files_mono.exists?("examples/app/.arvo/dossier/browser-features.json")
+  assert files_mono.read_text("examples/app/.arvo/dossier/verify.jsonl") is Ok(mono_jsonl)
+  assert mono_jsonl.contains?("main.mo (promise)")
+  assert mono_jsonl.contains?("specs/features/login.feature.md")
+  assert not mono_jsonl.contains?("lib/other.mo")
 
   # Command.NotPermitted inside verify exercises Error(err) branches on mo commands
   assert run_cli(
