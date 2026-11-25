@@ -65,6 +65,12 @@ end
 
 ## Requires `value > 0`.
 fn require_positive_int(cs: Changeset(T), field: Text, value: Int) : Changeset(T)
+  examples
+    require_positive_int(new(0), "amount", 1).valid?
+    not require_positive_int(new(0), "amount", 0).valid?
+    not require_positive_int(new(0), "amount", -1).valid?
+  end
+
   check(cs, field, value > 0, "must be greater than 0")
 end
 
@@ -98,11 +104,21 @@ end
 
 ## Requires `value` to be a well-formed email address (`local@domain.tld`).
 fn require_email(cs: Changeset(T), field: Text, value: Text) : Changeset(T)
+  examples
+    require_email(new(""), "email", "ada@example.com").valid?
+    not require_email(new(""), "email", "bad-email").valid?
+  end
+
   check(cs, field, plausible_email?(value), "must be a valid email address")
 end
 
 ## Requires `value` to be an exact member of `allowed`.
 fn require_one_of(cs: Changeset(T), field: Text, value: Text, allowed: List(Text)) : Changeset(T)
+  examples
+    require_one_of(new(""), "cat", "utilities", ["utilities", "housing"]).valid?
+    not require_one_of(new(""), "cat", "crypto", ["utilities", "housing"]).valid?
+  end
+
   check(cs, field, allowed.contains?(value), "must be one of: #{allowed.join(", ")}")
 end
 
@@ -113,6 +129,10 @@ end
 
 ## Projects each field's error list down to its first message (`Record<string, string>`).
 fn first_errors(errors: Map(Text, List(Text))) : Map(Text, Text)
+  examples
+    first_errors({"name": ["first err", "second err"], "empty": []}) == {"name": "first err"}
+  end
+
   var flat = {}
   for (k, msgs) in errors
     if msgs.first is Some(first_msg)

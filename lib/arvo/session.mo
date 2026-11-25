@@ -64,7 +64,46 @@ end
 
 ## Default session configuration (`arvo_session`, 14-day TTL).
 fn default_config(secure?: Bool) : SessionConfig
+  examples
+    default_config(true).cookie_name == "arvo_session"
+    default_config(true).ttl_seconds == 1209600
+    default_config(true).secure?
+    not default_config(false).secure?
+  end
+
   SessionConfig(cookie_name: "arvo_session", ttl_seconds: default_ttl_seconds, secure?: secure?)
+end
+
+## Returns `true` iff `key` is an exact 32-byte AES-256-GCM key.
+fn valid_key?(key: Bytes) : Bool
+  examples
+    not valid_key?("".bytes)
+    not valid_key?("0123456789012345678901234567890".bytes)
+    valid_key?("01234567890123456789012345678901".bytes)
+    not valid_key?("012345678901234567890123456789012".bytes)
+  end
+
+  key.size == 32
+end
+
+## Returns `true` when a session's `expires_at` timestamp is at or before `now`.
+fn token_expired?(expires_at: Time, now: Time) : Bool
+  examples
+    case (Time.parse("2026-11-21T12:00:00Z"), Time.parse("2026-11-21T12:00:00Z"))
+      (Some(exp), Some(now)): token_expired?(exp, now)
+      (_, _): false
+    end
+    case (Time.parse("2026-11-21T11:59:59Z"), Time.parse("2026-11-21T12:00:00Z"))
+      (Some(exp), Some(now)): token_expired?(exp, now)
+      (_, _): false
+    end
+    case (Time.parse("2026-11-21T12:00:01Z"), Time.parse("2026-11-21T12:00:00Z"))
+      (Some(exp), Some(now)): not token_expired?(exp, now)
+      (_, _): false
+    end
+  end
+
+  expires_at <= now
 end
 
 table_ddl = "CREATE TABLE IF NOT EXISTS arvo_sessions (id TEXT PRIMARY KEY, member_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, csrf_token TEXT NOT NULL, expires_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, created_at TEXT NOT NULL) STRICT"
@@ -92,7 +131,7 @@ fn prepare_material(
   member_id: Text,
   cfg: SessionConfig
 ) : Result((Session, Text, Text, Time), SessionError)
-  return Error(InvalidKey) if key.size != 32
+  return Error(InvalidKey) if not valid_key?(key)
   session_id = "sess_#{rng.bytes(16).to_hex}"
   raw_token = rng.bytes(32)
   csrf_token = rng.bytes(32).to_base64url
@@ -146,7 +185,7 @@ fn load(req: Api.Request, db: Sqlite.Database, clock: Clock, key: Bytes, cfg: Se
   Option(Session),
   SessionError
 )
-  return Error(InvalidKey) if key.size != 32
+  return Error(InvalidKey) if not valid_key?(key)
   raw_cookie = case Cookie.get(req, cfg.cookie_name)
     Some(c): c
     None: return Ok(None)
@@ -175,7 +214,7 @@ fn load(req: Api.Request, db: Sqlite.Database, clock: Clock, key: Bytes, cfg: Se
   end
   return Ok(None) if not Crypto.constant_time_eq?(row.token_hash.bytes, token_hash.bytes)
   now = clock.now
-  return Ok(None) if row.expires_at <= now
+  return Ok(None) if token_expired?(row.expires_at, now)
   _upd = try db.execute(
     "UPDATE arvo_sessions SET last_seen_at = ? WHERE id = ?",
     [Sqlite.String(now.to_text), Sqlite.String(row.id)]
@@ -259,11 +298,29 @@ end
 
 ## Attaches the `HttpOnly` session cookie to `res`.
 fn attach_cookie(res: Api.Response, cookie_val: Text, cfg: SessionConfig) : Api.Response
+  examples
+    (attach_cookie(Api.no_content(), "v1", default_config(true)).header("Set-Cookie") or "").contains?(
+      "HttpOnly"
+    )
+    (attach_cookie(Api.no_content(), "v1", default_config(true)).header("Set-Cookie") or "").contains?(
+      "arvo_session=v1;"
+    )
+    (attach_cookie(Api.no_content(), "v1", default_config(true)).header("Set-Cookie") or "").contains?(
+      "Max-Age=1209600"
+    )
+  end
+
   Cookie.set(res, cfg.cookie_name, cookie_val, Cookie.session_options(cfg.secure?, cfg.ttl_seconds))
 end
 
 ## Appends a cookie-clearing `Set-Cookie` header for `cfg.cookie_name`.
 fn clear_cookie(res: Api.Response, cfg: SessionConfig) : Api.Response
+  examples
+    (clear_cookie(Api.no_content(), default_config(true)).header("Set-Cookie") or "").starts_with?(
+      "arvo_session=; Path=/; Max-Age=0"
+    )
+  end
+
   Cookie.clear(res, cfg.cookie_name, "/", cfg.secure?)
 end
 

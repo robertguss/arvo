@@ -43,6 +43,13 @@ end
 ## single-quoted strings (`''`), double-quoted identifiers (`""`), `--` line comments,
 ## `/* ... */` block comments, and `CREATE TRIGGER ... BEGIN ... [CASE ... END] ... END` blocks.
 fn split_statements(sql: Text) : List(Text)
+  examples
+    split_statements("SELECT 'a;b'; SELECT 2;") == ["SELECT 'a;b'", "SELECT 2"]
+    split_statements(
+      "CREATE TRIGGER t AFTER INSERT ON x BEGIN INSERT INTO y VALUES (CASE WHEN 1 THEN 'a;b' ELSE 'c' END); END; SELECT 1;"
+    ).size == 2
+  end
+
   chars = sql.chars
   n = chars.size
   var stmts = []

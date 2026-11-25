@@ -26,13 +26,54 @@ end
 
 ## Constant-time verification of an explicit CSRF `token` (e.g. form `_csrf`) against `session.csrf_token`.
 fn verify_token(token: Text, session: Session.Session) : Bool
-  return false if token.empty? or session.csrf_token.empty?
+  examples
+    case Time.parse("2026-11-22T00:00:00Z")
+      Some(exp): verify_token(
+        "tok_a+b/c",
+        Session.Session(id: "s", member_id: "m", csrf_token: "tok_a+b/c", expires_at: exp)
+      )
+      None: false
+    end
+    case Time.parse("2026-11-22T00:00:00Z")
+      Some(exp): not verify_token(
+        "",
+        Session.Session(id: "s", member_id: "m", csrf_token: "", expires_at: exp)
+      )
+      None: false
+    end
+    case Time.parse("2026-11-22T00:00:00Z")
+      Some(exp): not verify_token(
+        "wrong",
+        Session.Session(id: "s", member_id: "m", csrf_token: "tok_a+b/c", expires_at: exp)
+      )
+      None: false
+    end
+  end
+
+  return false if token.empty?
   Crypto.constant_time_eq?(token.bytes, session.csrf_token.bytes)
 end
 
 ## Verifies `X-XSRF-TOKEN` on `req` (percent-decoding if URL-encoded) against `session.csrf_token`
 ## in constant time.
 fn verify(req: Api.Request, session: Session.Session) : Bool
+  examples
+    case Time.parse("2026-11-22T00:00:00Z")
+      Some(exp): verify(
+        Api.post("/bills").with_header("X-XSRF-TOKEN", "tok_a%2Bb%2Fc"),
+        Session.Session(id: "s", member_id: "m", csrf_token: "tok_a+b/c", expires_at: exp)
+      )
+      None: false
+    end
+    case Time.parse("2026-11-22T00:00:00Z")
+      Some(exp): not verify(
+        Api.post("/bills"),
+        Session.Session(id: "s", member_id: "m", csrf_token: "tok_a+b/c", expires_at: exp)
+      )
+      None: false
+    end
+  end
+
   raw = case req.header(header_name)
     Some(v): v.trim
     None: return false
