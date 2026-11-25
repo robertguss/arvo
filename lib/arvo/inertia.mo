@@ -2,6 +2,8 @@
 ## Vite dev HMR and production `manifest.json` assets, partial reloads, and `303`/`409` redirects.
 module Arvo.Inertia
 expose InertiaConfig(..),
+SchemaTag(..),
+PageContract(..),
 dev_config,
 request?,
 escape_html,
@@ -12,6 +14,10 @@ version_mismatch?,
 check_version,
 render,
 render_with_status,
+render_page,
+render_page_with_status,
+page_contract,
+page_contract_schemas,
 redirect,
 location,
 validation_error
@@ -28,6 +34,19 @@ struct InertiaConfig
   entry_js: Text
   entry_css: List(Text)
   head_extra: Text
+end
+
+## Phantom type witness passed to `page_contract` so compiler-derived `Json.schema` types are named explicitly.
+enum SchemaTag(T)
+  Of
+end
+
+## Contract descriptor emitted by an app's `contracts()` manifest for `arvo contracts`.
+struct PageContract
+  component: Text
+  route_examples: List(Text)
+  props_schema: Json
+  shared_schema: Json
 end
 
 ## Builds a development `InertiaConfig` pointing at a running Vite dev server (`http://127.0.0.1:5173`).
@@ -402,6 +421,78 @@ fn render(
   render_with_status(req, cfg, 200, component, props, shared)
 end
 
+fn json_object_fields(val: Json) : Map(Text, Json)
+  examples
+    json_object_fields(Json.Object({"a": Json.int(1)})) == {"a": Json.int(1)}
+    json_object_fields(Json.Array([])) == {}
+    json_object_fields(Json.Null) == {}
+  end
+
+  case val
+    Json.Object(fields): fields
+    Json.Null | Json.Boolean(_) | Json.Number(_) | Json.String(_) | Json.Array(_): {}
+  end
+end
+
+## Renders an Inertia v2 page with explicit HTTP `status` from typed `Json`-deriving prop structs.
+fn render_page_with_status(
+  req: Api.Request,
+  cfg: InertiaConfig,
+  status: Int,
+  component: Text,
+  props: P,
+  shared: S
+) : Api.Response
+  where P: Json, S: Json
+  render_with_status(
+    req,
+    cfg,
+    status,
+    component,
+    json_object_fields(props.to_json),
+    json_object_fields(shared.to_json)
+  )
+end
+
+## Renders a `200 OK` Inertia v2 page from concrete `Json`-deriving `props` and `shared` structs.
+fn render_page(req: Api.Request, cfg: InertiaConfig, component: Text, props: P, shared: S) : Api
+  .Response
+  where P: Json, S: Json
+  render_page_with_status(req, cfg, 200, component, props, shared)
+end
+
+## Builds a `PageContract` directly from JSON schemas.
+fn page_contract_schemas(
+  component: Text,
+  route_examples: List(Text),
+  props_schema: Json,
+  shared_schema: Json
+) : PageContract
+  examples
+    page_contract_schemas("Login", ["/login"], Json.Null, Json.Null).component == "Login"
+    page_contract_schemas("Home", ["/"], Json.Boolean(true), Json.Boolean(false)).shared_schema ==
+      Json.Boolean(false)
+  end
+
+  PageContract(
+    component: component,
+    route_examples: route_examples,
+    props_schema: props_schema,
+    shared_schema: shared_schema
+  )
+end
+
+## Derives a `PageContract` using compiler-generated `Json.schema[P]()` and `Json.schema[S]()`.
+fn page_contract(
+  component: Text,
+  route_examples: List(Text),
+  _props: SchemaTag(P),
+  _shared: SchemaTag(S)
+) : PageContract
+  where P: Json, S: Json
+  page_contract_schemas(component, route_examples, Json.schema[P](), Json.schema[S]())
+end
+
 fn safe_local_path?(p: Text) : Bool
   return false if not p.starts_with?("/") or p.starts_with?("//")
   return false if p.contains?("\\") or
@@ -596,4 +687,77 @@ test "Vite manifest config, HTML shell escaping, dev HMR, partial reloads, and o
     "Location"
   ) ==
     Some("/bills/edit?id=5")
+end
+
+struct SamplePageProps
+  title: Text
+  count: Int
+  note: Option(Text)
+end
+
+struct SampleSharedProps
+  viewer: Option(Text)
+  errors: Map(Text, Text)
+end
+
+test "render_page renders typed props/shared with escaping, partial reloads, status override, and PageContract schemas"
+  cfg = dev_config("Arvo Typed", "http://127.0.0.1:5173", "src/main.tsx", "")
+  props = SamplePageProps(title: "</script><script>alert(1)</script>", count: 4, note: Some("ok"))
+  shared = SampleSharedProps(viewer: Some("ada"), errors: {"title": "none"})
+
+  html_res = render_page(Api.get("/items?page=1"), cfg, "Items", props, shared)
+  assert html_res.status == 200
+  assert html_res.header("Vary") == Some("X-Inertia")
+  assert not html_res.text.contains?("<script>alert(1)")
+  assert html_res.text.contains?("&lt;/script&gt;&lt;script&gt;alert(1)")
+
+  xhr_req = Api.get("/items?page=1").with_header("X-Inertia", "true").with_header(
+    "X-Inertia-Version",
+    "dev"
+  )
+  xhr_res = render_page_with_status(xhr_req, cfg, 201, "Items", props, shared)
+  assert xhr_res.status == 201
+  assert xhr_res.header("X-Inertia") == Some("true")
+  assert xhr_res.json is Ok(doc)
+  assert doc.text_at("component") == Some("Items")
+  assert doc.text_at("props.title") == Some("</script><script>alert(1)</script>")
+  assert doc.int_at("props.count") == Some(4)
+  assert doc.text_at("props.viewer") == Some("ada")
+  assert doc.text_at("props.errors.title") == Some("none")
+
+  partial_req = xhr_req.with_header("X-Inertia-Partial-Component", "Items").with_header(
+    "X-Inertia-Partial-Data",
+    "count"
+  )
+  partial_res = render_page(partial_req, cfg, "Items", props, shared)
+  assert partial_res.json is Ok(pdoc)
+  assert pdoc.int_at("props.count") == Some(4)
+  assert pdoc.path("props.title") == None
+  assert pdoc.path("props.viewer") == None
+  assert pdoc.path("props.errors") != None
+
+  except_req = xhr_req.with_header("X-Inertia-Partial-Component", "Items").with_header(
+    "X-Inertia-Partial-Except",
+    "viewer,errors"
+  )
+  except_res = render_page(except_req, cfg, "Items", props, shared)
+  assert except_res.json is Ok(edoc)
+  assert edoc.int_at("props.count") == Some(4)
+  assert edoc.path("props.viewer") == None
+  assert edoc.path("props.errors") == None
+
+  contract = page_contract[SamplePageProps, SampleSharedProps](
+    "Items",
+    ["/items", "/items?page=1"],
+    Of,
+    Of
+  )
+  assert contract.component == "Items"
+  assert contract.route_examples == ["/items", "/items?page=1"]
+  assert contract.props_schema.text_at("properties.title.type") == Some("string")
+  assert contract.props_schema.text_at("properties.count.type") == Some("integer")
+  assert contract.shared_schema.text_at("properties.errors.type") == Some("object")
+
+  encoded = Json.encode(contract)
+  assert Json.decode_strict[PageContract](encoded) == Ok(contract)
 end
