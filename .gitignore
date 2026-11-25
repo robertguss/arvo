@@ -18,8 +18,13 @@ node_modules/
 examples/arvo-starter/public/assets/
 examples/arvo-starter/public/manifest.json
 
-# Arvo generated test/verification artifacts
-.arvo/
+# Arvo generated test/verification artifacts (keep .arvo/skills/ tracked)
+.arvo/runs/
+.arvo/evidence/
+.arvo/dossier/
+.arvo/fixtures/
+.arvo/tmp/
+examples/*/.arvo/
 
 # OS / editor
 .DS_Store
