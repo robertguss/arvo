@@ -21,6 +21,7 @@ viewports = [
   { name = "mobile", width = 390, height = 844 },
   { name = "desktop", width = 1280, height = 800 },
 ]
+visual_parity_max_diff_pixels = 0
 
 [testing.tamper_protected]
 globs = [

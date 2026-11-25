@@ -28,6 +28,7 @@ struct ArvoConfig
   ts_stryker_min_kill_rate: Float
   strength_min_kill_rate: Float
   viewports: List(Viewport)
+  visual_parity_max_diff_pixels: Int
   tamper_globs: List(Text)
 end
 
@@ -54,6 +55,7 @@ fn default_config() : ArvoConfig
       Viewport(name: "mobile", width: 390, height: 844),
       Viewport(name: "desktop", width: 1280, height: 800)
     ],
+    visual_parity_max_diff_pixels: 0,
     tamper_globs: [
       "specs/features/**/*.feature.md",
       "snapshots/**/*",
@@ -316,6 +318,10 @@ fn parse(toml_text: Text) : Result(ArvoConfig, Text)
         )
       else if key == "viewports"
         cfg.viewports = try parse_viewport_list(val)
+      else if key == "visual_parity_max_diff_pixels"
+        cfg.visual_parity_max_diff_pixels = try val.to_int.or_fail(
+          "invalid visual_parity_max_diff_pixels '#{val}'"
+        )
       end
     else if section == "testing.tamper_protected"
       if key == "globs"
@@ -362,6 +368,7 @@ test "Config parses Spec 4.2 arvo.toml with multiline arrays, viewports, comment
       { name = "mobile\\"#1", width = 390, height = 844 },
       { name = "desktop\\\\", width = 1280, height = 800 },
     ]
+    visual_parity_max_diff_pixels = 2
 
     [testing.tamper_protected]
     globs = [
@@ -390,10 +397,12 @@ test "Config parses Spec 4.2 arvo.toml with multiline arrays, viewports, comment
     Viewport(name: "mobile\"#1", width: 390, height: 844),
     Viewport(name: "desktop\\", width: 1280, height: 800)
   ]
+  assert cfg.visual_parity_max_diff_pixels == 2
   assert cfg.tamper_globs == ["specs/features/**/*.feature.md", "snapshots/**/*"]
 
   def = default_config()
   assert def.max_queries_per_get == 10
+  assert def.visual_parity_max_diff_pixels == 0
   assert def.sim_tier1_seeds == 200
   assert def.sim_tier2_seeds == 5000
   assert def.viewports == [
@@ -426,6 +435,7 @@ test "Config parses Spec 4.2 arvo.toml with multiline arrays, viewports, comment
   assert parse("[testing]\nviewports = [{ width = 10 }]") is Error(_)
   assert parse("bad_no_eq]") is Error(_)
   assert parse("[testing]\nmax_queries_per_get = nope") is Error(_)
+  assert parse("[testing]\nvisual_parity_max_diff_pixels = nope") is Error(_)
   assert unquote_string("\"a\"") == Ok("a")
   assert unquote_string("\"") is Error(_)
   assert unquote_string("abc\"") is Error(_)

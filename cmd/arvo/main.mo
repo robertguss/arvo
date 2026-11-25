@@ -8,6 +8,7 @@ use Command
 use Config
 use Control
 use Dossier
+use FrontendCheck
 use Json
 use Tamper
 
@@ -276,7 +277,7 @@ struct CmdTimeouts
 end
 
 fn default_timeouts() : CmdTimeouts
-  CmdTimeouts(git_secs: 15, mo_secs: 30, tsc_secs: 60, slow_secs: 120)
+  CmdTimeouts(git_secs: 15, mo_secs: 30, tsc_secs: 60, slow_secs: 600)
 end
 
 fn join_app_path(app_dir: Text, rel: Text) : Text
@@ -662,6 +663,7 @@ fn run_verify_cmd(
   files: Files,
   cmd: Command,
   clock: Clock,
+  env: Env,
   console: Console
 ) : Int
   start_all = clock.now
@@ -874,13 +876,12 @@ fn run_verify_cmd(
     end
     events = events.append(mut_ev)
 
-    var vit_ev = Dossier.new_event(clock.now.to_text, tier, "vitest_fixtures", "skipped", 0)
-    vit_ev.detail = Some("skipped: pending Phase 3+ browser/frontend runner")
-    events = events.append(vit_ev)
-
-    var br_ev = Dossier.new_event(clock.now.to_text, tier, "browser_e2e", "skipped", 0)
-    br_ev.detail = Some("skipped: pending Phase 3+ arvo control Playwright runner")
-    events = events.append(br_ev)
+    events = events.append(
+      FrontendCheck.run_vitest_phase(app_dir, tier, cfg, files.read_only, cmd, clock, env)
+    )
+    events = events.append(
+      FrontendCheck.run_browser_e2e_phase(app_dir, tier, cfg, files.read_only, cmd, clock, env)
+    )
   end
 
   if tier == "full"
@@ -888,9 +889,9 @@ fn run_verify_cmd(
     str_ev.detail = Some("skipped: pending Phase 4+ strength suites")
     events = events.append(str_ev)
 
-    var stk_ev = Dossier.new_event(clock.now.to_text, tier, "stryker", "skipped", 0)
-    stk_ev.detail = Some("skipped: pending Phase 3+ Stryker TS config")
-    events = events.append(stk_ev)
+    events = events.append(
+      FrontendCheck.run_stryker_phase(app_dir, tier, cfg, files.read_only, cmd, clock, env)
+    )
 
     var sc_ev = Dossier.new_event(clock.now.to_text, tier, "statechart", "skipped", 0)
     sc_ev.detail = Some("skipped: pending Phase 4+ Arvo.Statechart")
@@ -963,6 +964,7 @@ fn run_cli(
       app_files,
       cmd,
       clock,
+      env,
       console
     )
     FeatureCmd(validate?: _v, manifest_out: mout, dir: d): run_feature_cmd(
@@ -1082,7 +1084,7 @@ test "parse_args handles all commands, help flags, and rejects unknown options c
   assert usage(Some("sim")).contains?("--only")
 
   dt = default_timeouts()
-  assert dt.git_secs == 15 and dt.mo_secs == 30 and dt.tsc_secs == 60 and dt.slow_secs == 120
+  assert dt.git_secs == 15 and dt.mo_secs == 30 and dt.tsc_secs == 60 and dt.slow_secs == 600
   assert parent_dir("a.mo") == "."
   assert parent_dir("a/b/c.mo") == "a/b"
   assert join_app_path(".", "main.mo") == "main.mo"
@@ -1267,9 +1269,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
   assert files.read_text(".arvo/dossier/verify.jsonl") is Ok(vfeat_jsonl)
   assert vfeat_jsonl.contains?("\"phase\":\"mo_mutants\"")
   assert vfeat_jsonl.contains?("\"phase\":\"feature_manifest\"")
-  assert vfeat_jsonl.contains?(
-    "\"phase\":\"browser_e2e\",\"status\":\"skipped\",\"detail\":\"skipped: pending Phase 3+ arvo control Playwright runner\",\"ms\":0"
-  )
+  assert vfeat_jsonl.contains?("\"phase\":\"vitest_fixtures\",\"status\":\"pass\"")
+  assert vfeat_jsonl.contains?("\"phase\":\"browser_e2e\",\"status\":\"pass\"")
   assert not vfeat_jsonl.contains?("\"phase\":\"mo_strength\"")
 
   c_vfull = Console.fake()
@@ -1283,21 +1284,41 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     Network.fake({})
   ) ==
     0
-  assert c_vfull.printed.any?(fn(l) l.contains?("[SKIP] browser_e2e") end)
+  assert c_vfull.printed.any?(fn(l) l.contains?("[PASS] browser_e2e") end)
   assert c_vfull.printed.any?(fn(l) l.contains?("[PASS] mo_mutants") end)
   assert files.read_text(".arvo/dossier/verify.jsonl") is Ok(vfull_jsonl)
-  assert vfull_jsonl.contains?(
-    "\"phase\":\"vitest_fixtures\",\"status\":\"skipped\",\"detail\":\"skipped: pending Phase 3+ browser/frontend runner\",\"ms\":0"
-  )
+  assert vfull_jsonl.contains?("\"phase\":\"vitest_fixtures\",\"status\":\"pass\"")
   assert vfull_jsonl.contains?(
     "\"phase\":\"mo_strength\",\"status\":\"skipped\",\"detail\":\"skipped: pending Phase 4+ strength suites\",\"ms\":0"
   )
-  assert vfull_jsonl.contains?(
-    "\"phase\":\"stryker\",\"status\":\"skipped\",\"detail\":\"skipped: pending Phase 3+ Stryker TS config\",\"ms\":0"
-  )
+  assert vfull_jsonl.contains?("\"phase\":\"stryker\",\"status\":\"pass\"")
   assert vfull_jsonl.contains?(
     "\"phase\":\"statechart\",\"status\":\"skipped\",\"detail\":\"skipped: pending Phase 4+ Arvo.Statechart\",\"ms\":0"
   )
+
+  # App with frontend/package.json fails fail-closed if Vitest/E2E/Stryker evidence is missing
+  files_with_pkg = Files.in_memory({
+    "arvo.toml": "[app]\nentry = \"main.mo\"\n",
+    "main.mo": "module Main\n",
+    "frontend/package.json": "{}",
+    "frontend/src/pages/Login.tsx": "export default function Login() { return null; }\n",
+    "frontend/src/pages/Home.tsx": "export default function Home() { return null; }\n",
+    "frontend/src/arvo.gen.ts": gen_ts
+  })
+  assert run_cli(
+    Args.of(["verify", "--tier", "full"]),
+    Console.fake(),
+    files_with_pkg,
+    Command.fake(replies_ok),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    1
+  assert files_with_pkg.read_text(".arvo/dossier/verify.jsonl") is Ok(vp_fail_jsonl)
+  assert vp_fail_jsonl.contains?("\"phase\":\"vitest_fixtures\",\"status\":\"fail\"")
+  assert vp_fail_jsonl.contains?("\"phase\":\"browser_e2e\",\"status\":\"fail\"")
+  assert vp_fail_jsonl.contains?("\"phase\":\"stryker\",\"status\":\"fail\"")
 
   # 6. Subdir tamper detection catches modified .feature.md AND modified promise block in .mo
   files_tamper = Files.in_memory({

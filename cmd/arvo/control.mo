@@ -22,6 +22,7 @@ use Json
 ## Parsed `arvo control <subcommand>` invocation.
 enum ControlCmd
   ControlHelpCmd
+  ShaCmd
   LaunchCmd(seed: Text, run_id: Option(Text), oneshot?: Bool)
   DoctorCmd(run_id: Text)
   InspectCmd(run_id: Text, mode: Text, sql_query: Option(Text))
@@ -85,6 +86,7 @@ fn control_usage() : Text
       screenshot --run-id ID [--out PATH] [--path /] [--viewport mobile|desktop] [--cdp-url URL]
       record --run-id ID [--out PATH] [--viewport mobile|desktop] [--cdp-url URL]
       cleanup --run-id ID
+      sha
     """
 end
 
@@ -334,6 +336,14 @@ fn parse_control_args(rest: List(Text)) : Result(ControlCmd, Text)
     else
       Ok(CleanupCmd(run_id: try parse_run_id_only(tail, "cleanup")))
     end
+  else if sub == "sha"
+    if tail.any?(fn(a) a == "--help" or a == "-h" end)
+      Ok(ControlHelpCmd)
+    else if not tail.empty?
+      Error("unknown flag '#{tail.first or ""}' for `arvo control sha`.")
+    else
+      Ok(ShaCmd)
+    end
   else
     Error("unknown control subcommand '#{sub}'. Run `arvo control --help`.")
   end
@@ -402,8 +412,22 @@ fn compute_build_sha(app_files: ReadFiles, cfg: Config.ArvoConfig, cmd: Command,
       return head_sha.trim
     end
   end
+  var paths = [cfg.entry, "routes.mo", "arvo.toml", cfg.contracts_out]
+  fdir = cfg.frontend_dir.drop_suffix("/") or cfg.frontend_dir
+  if not fdir.empty?
+    for sub in ["src/pages", "src/lib"]
+      sub_dir = "#{fdir}/#{sub}"
+      for rel in count_files_under(app_files, sub_dir)
+        paths = paths.append("#{sub_dir}/#{rel}")
+      end
+    end
+    pw_path = "#{fdir}/scripts/arvo-playwright.mjs"
+    if app_files.exists?(pw_path)
+      paths = paths.append(pw_path)
+    end
+  end
   var parts = []
-  for p in [cfg.entry, "routes.mo", "arvo.toml"]
+  for p in paths
     if app_files.read_text(p) is Ok(txt)
       parts = parts.append("#{p}\n#{txt}")
     end
@@ -1070,6 +1094,9 @@ fn run_control_cmd(
     ControlHelpCmd:
       console.print(control_usage())
       0
+    ShaCmd:
+      console.print(compute_build_sha(app_files.read_only, cfg, cmd, env))
+      0
     LaunchCmd(seed: seed, run_id: rid_opt, oneshot?: oneshot?): run_launch(
       app_dir,
       seed,
@@ -1215,9 +1242,13 @@ test "parse_control_args, detect_sqlite_filename, timeouts, and valid_run_id? co
   assert parse_control_args(["cleanup", "--help"]) == Ok(ControlHelpCmd)
   assert parse_control_args(["cleanup", "-h"]) == Ok(ControlHelpCmd)
   assert parse_control_args(["cleanup", "--run-id", "r1"]) == Ok(CleanupCmd(run_id: "r1"))
+  assert parse_control_args(["sha"]) == Ok(ShaCmd)
+  assert parse_control_args(["sha", "--help"]) == Ok(ControlHelpCmd)
+  assert parse_control_args(["sha", "-h"]) == Ok(ControlHelpCmd)
 
   for bad in [
     ["bogus"],
+    ["sha", "--bad"],
     ["launch", "--seed"],
     ["launch", "--run-id", "../x"],
     ["launch", "--bad"],
@@ -1562,7 +1593,26 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
   rep_emptygit = Command.replies([(Command.spec("git", ["rev-parse", "HEAD"]), Command.ok_output("\n"))])
   assert compute_build_sha(files.read_only, cfg, Command.fake(rep_nogit), Env.of({"ARVO_GIT_HEAD": "envsha"})) ==
     "envsha"
-  assert compute_build_sha(files.read_only, cfg, Command.fake(rep_emptygit), Env.of({})).starts_with?("src:")
+  sha1 = compute_build_sha(files.read_only, cfg, Command.fake(rep_emptygit), Env.of({}))
+  assert sha1.starts_with?("src:")
+  files_fe = Files.in_memory({
+    "arvo.toml": "[app]\nentry = \"main.mo\"\n",
+    "main.mo": "module Main\n",
+    "frontend/src/arvo.gen.ts": "export interface Home {}\n",
+    "frontend/src/pages/Home.tsx": "export default function Home() { return null; }\n",
+    "frontend/src/lib/format.ts": "export const x = 1;\n",
+    "frontend/scripts/arvo-playwright.mjs": "// v1\n"
+  })
+  sha_fe1 = compute_build_sha(files_fe.read_only, cfg, Command.fake(rep_emptygit), Env.of({}))
+  assert files_fe.write_text("frontend/src/pages/Home.tsx", "export default function Home() { return <div/>; }\n") == Ok(Unit)
+  sha_fe2 = compute_build_sha(files_fe.read_only, cfg, Command.fake(rep_emptygit), Env.of({}))
+  assert sha_fe1 != sha_fe2
+  assert files_fe.write_text("frontend/scripts/arvo-playwright.mjs", "// v2\n") == Ok(Unit)
+  sha_fe3 = compute_build_sha(files_fe.read_only, cfg, Command.fake(rep_emptygit), Env.of({}))
+  assert sha_fe2 != sha_fe3
+  c_sha = Console.fake()
+  assert run_control_cmd("examples/app", ShaCmd, cfg, files_fe, Command.fake(rep_emptygit), Clock.fixed(t0), Env.of({}), net, c_sha) == 0
+  assert c_sha.printed == [sha_fe3]
 
   # 2. Doctor (healthy + all unhealthy migration branches)
   c_d = Console.fake()
