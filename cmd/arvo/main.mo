@@ -336,7 +336,7 @@ fn try_tsc_check(app_dir: Text, cfg: Config.ArvoConfig, files: ReadFiles, cmd: C
 
   out = try cmd.within(join_app_path(app_dir, fdir)).allow_programs(["node"]).run(
     "node",
-    ["./node_modules/typescript/bin/tsc", "--noEmit"],
+    ["--openssl-config=/dev/null", "./node_modules/typescript/bin/tsc", "--noEmit"],
     timeouts.tsc_secs.seconds
   ).map_error(fn(e) "failed invoking tsc: #{e}" end)
   if out.ok?
@@ -987,7 +987,10 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
   replies_ok = Command.replies([
     (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.ok_output(contracts_json)),
     (
-      Command.spec("node", ["./node_modules/typescript/bin/tsc", "--noEmit"]).in_folder("frontend"),
+      Command.spec(
+        "node",
+        ["--openssl-config=/dev/null", "./node_modules/typescript/bin/tsc", "--noEmit"]
+      ).in_folder("frontend"),
       Command.ok_output("")
     ),
     (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
@@ -1282,7 +1285,10 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
   replies_tsc_bad = Command.replies([
     (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.ok_output(contracts_json)),
     (
-      Command.spec("node", ["./node_modules/typescript/bin/tsc", "--noEmit"]).in_folder("frontend"),
+      Command.spec(
+        "node",
+        ["--openssl-config=/dev/null", "./node_modules/typescript/bin/tsc", "--noEmit"]
+      ).in_folder("frontend"),
       Command.output(2, "ts out err", "ts stderr err")
     )
   ])
@@ -1620,9 +1626,10 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       Command.ok_output(contracts_json)
     ),
     (
-      Command.spec("node", ["./node_modules/typescript/bin/tsc", "--noEmit"]).in_folder(
-        "examples/app/frontend"
-      ),
+      Command.spec(
+        "node",
+        ["--openssl-config=/dev/null", "./node_modules/typescript/bin/tsc", "--noEmit"]
+      ).in_folder("examples/app/frontend"),
       Command.ok_output("")
     ),
     (Command.spec("mo", ["check", "examples/app/main.mo"]), Command.ok_output("")),
