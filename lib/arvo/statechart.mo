@@ -635,7 +635,7 @@ fn session_spec_with(title: Text, allow_bug?: Bool) : ChartSpec(
     covered_files: [
       "lib/arvo/session.mo:create,load,rotate,revoke,revoke_all_for_member,prune_expired"
     ],
-    sync_commit: "f11ca6ffc25128538844c952cb0b3bf4cafee177",
+    sync_commit: "4ea7e818b88a38fe86021a500fd866e0aa392557",
     max_states: 200,
     initial_states: [
       SessionModelState(status: "guest", current_valid?: false, old_valid?: false)

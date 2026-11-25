@@ -25,6 +25,7 @@ examples/arvo-starter/public/manifest.json
 .arvo/dossier/
 .arvo/fixtures/
 .arvo/tmp/
+.arvo/replays/
 examples/*/.arvo/
 
 # OS / editor

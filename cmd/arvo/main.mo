@@ -3,6 +3,7 @@ module Main
 expose CliCmd(..), CliInvocation(..), parse_args, parse_invocation, usage, run_cli, main
 use Arvo.Feature
 use Arvo.Inertia
+use Bench
 use Codegen
 use Command
 use Config
@@ -10,6 +11,8 @@ use Control
 use Dossier
 use FrontendCheck
 use Json
+use ReplayCmd
+use SemanticMutants
 use StatechartCmd
 use Tamper
 
@@ -22,6 +25,8 @@ enum CliCmd
   SimCmd(entry: Option(Text), only: Option(Text))
   ControlCmd(sub: Control.ControlCmd)
   RunStatechartCmd(args: StatechartCmd.StatechartArgs)
+  RunReplayCmd(sub: ReplayCmd.ReplayCmdArgs)
+  RunBenchCmd(args: Bench.BenchArgs)
 end
 
 ## Parsed CLI invocation combining `--app DIR` target (default `"."`) and `CliCmd`.
@@ -81,6 +86,8 @@ fn usage(topic: Option(Text)) : Text
       """
     Some("control"): Control.control_usage()
     Some("statechart"): StatechartCmd.statechart_usage()
+    Some("replay"): ReplayCmd.replay_usage()
+    Some("bench"): Bench.bench_usage()
     Some(_) | None: """
       Arvo Verification & Testing CLI (pure Mo)
 
@@ -93,6 +100,8 @@ fn usage(topic: Option(Text)) : Text
         sim [--app DIR] [--entry FILE] [--only NAME]            Run Arvo.Sim simulation tests
         control <subcmd> [--app DIR] [flags]                    Manage isolated runtime instances (launch, doctor, inspect, reset, drive, cleanup)
         statechart [check|render] [--app DIR] [--out DIR]       Explore Jobs/Session statecharts, replay code, & check sync commits
+        replay <capture|gen> [--app DIR] [flags]                Capture sanitized failure bundle or generate regression test
+        bench --baseline-cmd A --candidate-cmd B [flags]        Alternating A/B/A/B benchmark with 7-question checklist
 
       Run `arvo <command> --help` for command-specific flags.
       """
@@ -240,6 +249,22 @@ fn parse_args(args: List(Text)) : Result(CliCmd, Text)
           Ok(HelpCmd(topic: Some("statechart")))
         else
           Ok(RunStatechartCmd(args: sa))
+        end
+      Error(e): Error(e)
+    end
+  else if sub == "replay"
+    case ReplayCmd.parse_replay_args(rest)
+      Ok(ReplayCmd.ReplayHelpCmd): Ok(HelpCmd(topic: Some("replay")))
+      Ok(r): Ok(RunReplayCmd(sub: r))
+      Error(e): Error(e)
+    end
+  else if sub == "bench"
+    case Bench.parse_bench_args(rest)
+      Ok(ba):
+        if ba.help?
+          Ok(HelpCmd(topic: Some("bench")))
+        else
+          Ok(RunBenchCmd(args: ba))
         end
       Error(e): Error(e)
     end
@@ -674,6 +699,7 @@ fn run_verify_cmd(
   tier: Text,
   json_mode?: Bool,
   _changed?: Bool,
+  root_files: ReadFiles,
   files: Files,
   cmd: Command,
   clock: Clock,
@@ -899,14 +925,15 @@ fn run_verify_cmd(
   end
 
   if tier == "full"
-    var str_ev = Dossier.new_event(clock.now.to_text, tier, "mo_strength", "skipped", 0)
-    str_ev.detail = Some("skipped: pending Phase 4+ strength suites")
-    events = events.append(str_ev)
-
+    events = events.append(
+      SemanticMutants.run_strength_phase(app_dir, tier, cfg, root_files, files, cmd, clock)
+    )
+    events = events.append(
+      SemanticMutants.run_semantic_mutants_phase(app_dir, tier, cfg, root_files, files, cmd, clock)
+    )
     events = events.append(
       FrontendCheck.run_stryker_phase(app_dir, tier, cfg, files.read_only, cmd, clock, env)
     )
-
     events = events.append(StatechartCmd.run_statechart_phase(tier, files, cmd, clock, env))
   end
 
@@ -973,6 +1000,7 @@ fn run_cli(
       tier,
       j,
       chg,
+      files.read_only,
       app_files,
       cmd,
       clock,
@@ -995,6 +1023,8 @@ fn run_cli(
       end
       Control.run_control_cmd(app_dir, sub_cmd, cfg, app_files, cmd, clock, env, net, console)
     RunStatechartCmd(args: sa): StatechartCmd.run_statechart_cmd(sa, app_files, cmd, env, console)
+    RunReplayCmd(sub: r): ReplayCmd.run_replay_cmd(r, app_files, cmd, clock, env, console)
+    RunBenchCmd(args: ba): Bench.run_bench_cmd(ba, cmd, clock, console)
   end
 end
 
@@ -1085,6 +1115,16 @@ test "parse_args handles all commands, help flags, and rejects unknown options c
   assert parse_args(["statechart", "--bad"]) is Error(_)
   assert usage(Some("statechart")).contains?("Arvo.Jobs")
   assert usage(None).contains?("statechart")
+  assert parse_args(["replay", "--help"]) == Ok(HelpCmd(topic: Some("replay")))
+  assert parse_args(["replay", "capture", "--id", "b1"]) is Ok(RunReplayCmd(sub: _))
+  assert parse_args(["replay", "bogus"]) is Error(_)
+  assert usage(Some("replay")).contains?("capture")
+  assert usage(None).contains?("replay")
+  assert parse_args(["bench", "--help"]) == Ok(HelpCmd(topic: Some("bench")))
+  assert parse_args(["bench", "--cmd", "echo a", "--runs", "3"]) is Ok(RunBenchCmd(args: _))
+  assert parse_args(["bench", "--bad"]) is Error(_)
+  assert usage(Some("bench")).contains?("7-question")
+  assert usage(None).contains?("bench")
 
   assert parse_args(["bogus"]) is Error(_)
   assert parse_args(["verify", "--tier", "bogus"]) is Error(_)
@@ -1200,7 +1240,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
         [
           "diff",
           "--name-only",
-          "f11ca6ffc25128538844c952cb0b3bf4cafee177..HEAD",
+          "4ea7e818b88a38fe86021a500fd866e0aa392557..HEAD",
           "--",
           "lib/arvo/session.mo"
         ]
@@ -1210,7 +1250,9 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     (
       Command.spec("mo", ["test", "--json", "lib/arvo/statechart.mo"]),
       Command.ok_output("{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n")
-    )
+    ),
+    (Command.spec("sh", ["-c", "echo a"]), Command.ok_output("a\n")),
+    (Command.spec("sh", ["-c", "echo b"]), Command.ok_output("b\n"))
   ])
 
   # 0. Help and invalid arg exit codes
@@ -1344,18 +1386,66 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     0
   assert c_vfull.printed.any?(fn(l) l.contains?("[PASS] browser_e2e") end)
   assert c_vfull.printed.any?(fn(l) l.contains?("[PASS] mo_mutants") end)
+  assert c_vfull.printed.any?(fn(l) l.contains?("[PASS] mo_strength") end)
+  assert c_vfull.printed.any?(fn(l) l.contains?("[PASS] semantic_mutants") end)
   assert c_vfull.printed.any?(fn(l) l.contains?("[PASS] statechart") end)
   assert files.read_text(".arvo/dossier/verify.jsonl") is Ok(vfull_jsonl)
   assert vfull_jsonl.contains?("\"phase\":\"vitest_fixtures\",\"status\":\"pass\"")
-  assert vfull_jsonl.contains?(
-    "\"phase\":\"mo_strength\",\"status\":\"skipped\",\"detail\":\"skipped: pending Phase 4+ strength suites\",\"ms\":0"
-  )
+  assert vfull_jsonl.contains?("\"phase\":\"mo_strength\",\"status\":\"pass\"")
+  assert vfull_jsonl.contains?("\"phase\":\"semantic_mutants\",\"status\":\"pass\"")
   assert vfull_jsonl.contains?("\"phase\":\"stryker\",\"status\":\"pass\"")
   assert vfull_jsonl.contains?("\"phase\":\"statechart\",\"status\":\"pass\"")
   assert files.read_text(".arvo/dossier/statecharts/jobs.mmd") is Ok(j_mmd)
   assert j_mmd.contains?("stateDiagram-v2")
   assert files.read_text(".arvo/dossier/statecharts/session.mmd") is Ok(s_mmd)
   assert s_mmd.contains?("stateDiagram-v2")
+
+  c_rep_cap = Console.fake()
+  assert run_cli(
+    Args.of(["replay", "capture", "--id", "cli1", "--out", ".arvo/replays/cli1.json"]),
+    c_rep_cap,
+    files,
+    Command.fake(replies_ok),
+    Clock.fixed(t0),
+    Env.of({"ARVO_SECRET_KEY": "sekrit"}),
+    Network.fake({})
+  ) ==
+    0
+  assert c_rep_cap.printed == [".arvo/replays/cli1.json"]
+  c_rep_gen = Console.fake()
+  assert run_cli(
+    Args.of(["replay", "gen", ".arvo/replays/cli1.json"]),
+    c_rep_gen,
+    files,
+    Command.fake(replies_ok),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert (c_rep_gen.printed.first or "").contains?("ReplayRegression")
+
+  c_bench = Console.fake()
+  assert run_cli(
+    Args.of([
+      "bench",
+      "--baseline-cmd",
+      "echo a",
+      "--candidate-cmd",
+      "echo b",
+      "--runs",
+      "3",
+      "--json"
+    ]),
+    c_bench,
+    files,
+    Command.fake(replies_ok),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert (c_bench.printed.first or "").contains?("\"verdict\":\"no_difference\"")
 
   c_sc = Console.fake()
   assert run_cli(
@@ -1721,7 +1811,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
         [
           "diff",
           "--name-only",
-          "f11ca6ffc25128538844c952cb0b3bf4cafee177..HEAD",
+          "4ea7e818b88a38fe86021a500fd866e0aa392557..HEAD",
           "--",
           "lib/arvo/session.mo"
         ]
@@ -1731,7 +1821,9 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     (
       Command.spec("mo", ["test", "--json", "lib/arvo/statechart.mo"]),
       Command.ok_output("{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n")
-    )
+    ),
+    (Command.spec("sh", ["-c", "echo a"]), Command.ok_output("a\n")),
+    (Command.spec("sh", ["-c", "echo b"]), Command.ok_output("b\n"))
   ])
   assert run_cli(
     Args.of(["sim"]),
@@ -1906,7 +1998,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
         [
           "diff",
           "--name-only",
-          "f11ca6ffc25128538844c952cb0b3bf4cafee177..HEAD",
+          "4ea7e818b88a38fe86021a500fd866e0aa392557..HEAD",
           "--",
           "lib/arvo/session.mo"
         ]
@@ -1916,7 +2008,9 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     (
       Command.spec("mo", ["test", "--json", "lib/arvo/statechart.mo"]),
       Command.ok_output("{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n")
-    )
+    ),
+    (Command.spec("sh", ["-c", "echo a"]), Command.ok_output("a\n")),
+    (Command.spec("sh", ["-c", "echo b"]), Command.ok_output("b\n"))
   ])
   assert run_cli(
     Args.of(["verify", "--tier", "fast"]),
@@ -2021,7 +2115,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
         [
           "diff",
           "--name-only",
-          "f11ca6ffc25128538844c952cb0b3bf4cafee177..HEAD",
+          "4ea7e818b88a38fe86021a500fd866e0aa392557..HEAD",
           "--",
           "lib/arvo/session.mo"
         ]
@@ -2031,7 +2125,9 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     (
       Command.spec("mo", ["test", "--json", "lib/arvo/statechart.mo"]),
       Command.ok_output("{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n")
-    )
+    ),
+    (Command.spec("sh", ["-c", "echo a"]), Command.ok_output("a\n")),
+    (Command.spec("sh", ["-c", "echo b"]), Command.ok_output("b\n"))
   ])
   assert run_cli(
     Args.of(["contracts", "--app", "examples/app"]),

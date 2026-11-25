@@ -444,7 +444,7 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
     (
       Command.spec(
         "git",
-        ["diff", "--name-only", "f11ca6ffc25128538844c952cb0b3bf4cafee177..HEAD", "--", "lib/arvo/session.mo"]
+        ["diff", "--name-only", "4ea7e818b88a38fe86021a500fd866e0aa392557..HEAD", "--", "lib/arvo/session.mo"]
       ),
       Command.ok_output("\n")
     ),
@@ -515,7 +515,7 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
     (
       Command.spec(
         "git",
-        ["diff", "--name-only", "f11ca6ffc25128538844c952cb0b3bf4cafee177..HEAD", "--", "lib/arvo/session.mo"]
+        ["diff", "--name-only", "4ea7e818b88a38fe86021a500fd866e0aa392557..HEAD", "--", "lib/arvo/session.mo"]
       ),
       Command.ok_output("")
     ),

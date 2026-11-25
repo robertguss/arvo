@@ -494,6 +494,12 @@ fn page_contract(
 end
 
 fn safe_local_path?(p: Text) : Bool
+  examples
+    safe_local_path?("/bills")
+    not safe_local_path?("//evil.com")
+    not safe_local_path?("https://evil.com")
+  end
+
   return false if not p.starts_with?("/") or p.starts_with?("//")
   return false if p.contains?("\\") or
     p.contains?("\r") or
