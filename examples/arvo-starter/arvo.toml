@@ -1,0 +1,32 @@
+[app]
+entry = "main.mo"
+contracts_module = "Routes"
+contracts_fn = "contracts"
+frontend_dir = "frontend"
+pages_dir = "frontend/src/pages"
+contracts_out = "frontend/src/arvo.gen.ts"
+features_dir = "specs/features"
+strength_dir = "strength"
+
+[testing]
+public_routes = ["GET /login", "POST /login"]
+csrf_exempt_routes = []
+max_queries_per_get = 10
+sim_tier1_seeds = 200
+sim_tier2_seeds = 5000
+mo_mutant_min_kill_rate = 1.0
+ts_stryker_min_kill_rate = 0.85
+strength_min_kill_rate = 1.0
+viewports = [
+  { name = "mobile", width = 390, height = 844 },
+  { name = "desktop", width = 1280, height = 800 },
+]
+
+[testing.tamper_protected]
+globs = [
+  "specs/features/**/*.feature.md",
+  "snapshots/**/*",
+  "strength/**/*",
+  "arvo.toml",
+  "frontend/stryker.config.*",
+]

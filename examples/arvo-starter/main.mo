@@ -36,6 +36,16 @@ api
   status Routes.ServerFailed(_) = 500
 end
 
+fn main(args: Args, console: Console) : Int
+  if args.list.contains?("--arvo-contracts")
+    console.print(Json.encode(Routes.contracts()))
+    0
+  else
+    console.print("Start the server with: mo serve main.mo --data .")
+    0
+  end
+end
+
 fn must_page(res: Api.Response) : WebTest.InertiaPage
   case WebTest.inertia_page(res)
     Ok(p): p
