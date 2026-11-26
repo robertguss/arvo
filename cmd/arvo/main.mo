@@ -1846,7 +1846,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_root_out,
     Command.fake(replies_probe_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   assert c_probe_exists.printed_errors.any?(fn(e) e.contains?("already exists") end)

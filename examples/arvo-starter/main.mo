@@ -54,6 +54,18 @@ fn parse_flag_value(args: List(Text), flag: Text) : Option(Text)
   None
 end
 
+fn starter_db_path(args: List(Text)) : Result(Text, Text)
+  if not args.contains?("--db")
+    return Ok("starter.sqlite")
+  end
+  path = parse_flag_value(args, "--db") or ""
+  if path.empty? or path.starts_with?("-")
+    Error("--db requires a database path")
+  else
+    Ok(path)
+  end
+end
+
 fn reset_starter_db(
   db: Sqlite.Database,
   profile: Text,
@@ -61,12 +73,24 @@ fn reset_starter_db(
   clock: Clock,
   env: Env
 ) : Result(Unit, Text)
-  _mig = try Migrations.run(db, clock, Routes.app_migrations()).map_error(fn(e) "#{e}" end)
-  for tbl in ["arvo_sessions", "arvo_events", "bills", "members"]
-    _del = try db.run("DELETE FROM #{tbl}", []).map_error(fn(e) "#{e}" end)
+  profiles = Routes.seed_profiles()
+  if Seed.find_profile(profiles, profile) is None
+    return Seed.run_profile(profiles, profile, db, rng, clock, env)
   end
-  _seq = db.run("DELETE FROM sqlite_sequence", [])
-  Seed.run_profile(Routes.seed_profiles(), profile, db, rng, clock, env)
+  _mig = try Migrations.run(db, clock, Routes.app_migrations()).map_error(fn(e) "#{e}" end)
+  Sqlite.transaction(
+    db,
+    (profiles, profile, rng, clock, env),
+    fn(tx, ctx)
+      (seed_profiles, name, random, now, config) = ctx
+      for tbl in ["arvo_sessions", "arvo_events", "bills", "members"]
+        try tx.run("DELETE FROM #{tbl}", []).map_error(fn(e) "#{e}" end)
+      end
+      try tx.run("DELETE FROM sqlite_sequence WHERE name = 'bills'", []).map_error(fn(e) "#{e}" end)
+      Seed.run_profile(seed_profiles, name, tx, random, now, config)
+    end,
+    fn(e) "#{e}" end
+  )
 end
 
 ## Prints `PageContract` manifest (`--arvo-contracts`) or applies `--arvo-seed` / `--arvo-reset` profiles.
@@ -87,7 +111,12 @@ fn main(args: Args, console: Console, sqlite: Sqlite, rng: SecureRandom, clock: 
         console.error("--arvo-seed requires a profile name")
         return 2
     end
-    db_path = parse_flag_value(alist, "--db") or "starter.sqlite"
+    db_path = case starter_db_path(alist)
+      Ok(p): p
+      Error(e):
+        console.error(e)
+        return 2
+    end
     db = case sqlite.open(db_path)
       Ok(d): d
       Error(e):
@@ -114,7 +143,12 @@ fn main(args: Args, console: Console, sqlite: Sqlite, rng: SecureRandom, clock: 
         console.error("--arvo-reset requires a profile name")
         return 2
     end
-    db_path = parse_flag_value(alist, "--db") or "starter.sqlite"
+    db_path = case starter_db_path(alist)
+      Ok(p): p
+      Error(e):
+        console.error(e)
+        return 2
+    end
     db = case sqlite.open(db_path)
       Ok(d): d
       Error(e):
@@ -226,6 +260,16 @@ test "starter end-to-end flow via WebTest v2, query budgets, Seed profiles, and 
   assert main(Args.of(["--arvo-reset", "-x"]), c_bad_cli, sql_cli, rng, clock, env) == 2
   assert main(Args.of(["--arvo-reset", "nope"]), c_bad_cli, sql_cli, rng, clock, env) == 1
   assert main(Args.of(["--arvo-reset", "baseline", "--db", "../bad.sqlite"]), c_bad_cli, sql_cli, rng, clock, env) == 1
+  assert main(Args.of(["--arvo-reset", "baseline", "--db"]), c_bad_cli, sql_cli, rng, clock, env) == 2
+  assert main(Args.of(["--arvo-seed", "baseline", "--db", "--bad"]), c_bad_cli, sql_cli, rng, clock, env) == 2
+  assert main(Args.of(["--arvo-reset", "nope", "--db", "cli.sqlite"]), c_bad_cli, sql_cli, rng, clock, env) == 1
+  assert db_cli.query("SELECT id FROM bills", []) is Ok(after_bad_profile) and after_bad_profile == rst_bills
+  assert db_cli.run(
+    "CREATE TRIGGER fail_reset BEFORE INSERT ON bills BEGIN SELECT RAISE(ABORT, 'test failure'); END",
+    []
+  ) == Ok(Unit)
+  assert main(Args.of(["--arvo-reset", "baseline", "--db", "cli.sqlite"]), c_bad_cli, sql_cli, rng, clock, env) == 1
+  assert db_cli.query("SELECT id FROM bills", []) is Ok(after_failed_seed) and after_failed_seed == rst_bills
 
   # 1. Static asset ETag / 304 behavior
   asset_res = app.send(Api.get("/assets/main-a1b2c3d4.js"))
