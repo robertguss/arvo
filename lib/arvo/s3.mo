@@ -458,7 +458,7 @@ fn presign_put(cfg: S3Config, key: Text, opts: PresignPutOptions, now: Time) : R
     None: Unit
   end
 
-  payload_hash = case opts.sha256_hex
+  case opts.sha256_hex
     Some(hex):
       decoded = case Bytes.from_hex(hex.trim)
         Some(b) if b.size == 32: b
@@ -466,11 +466,10 @@ fn presign_put(cfg: S3Config, key: Text, opts: PresignPutOptions, now: Time) : R
       end
       lower_hex = decoded.to_hex
       req_headers = req_headers.append(("x-amz-content-sha256", lower_hex))
-      lower_hex
-    None: "UNSIGNED-PAYLOAD"
+    None: Unit
   end
 
-  presign_common(cfg, "PUT", key, opts.expires_seconds, [], req_headers, payload_hash, now)
+  presign_common(cfg, "PUT", key, opts.expires_seconds, [], req_headers, "UNSIGNED-PAYLOAD", now)
 end
 
 ## Generates an AWS SigV4 presigned `DELETE` URL for `key`.
@@ -624,6 +623,28 @@ test "MinIO path-style presign PUT/GET/DELETE, validation bounds, and Network.fa
     ("x-amz-content-sha256", digest_hex)
   ]
   assert put_url.expires_at == now + 300.seconds
+  signed_put_hdrs = "content-length;content-type;host;x-amz-content-sha256"
+  expected_put_q = encode_sorted_query([
+    ("X-Amz-Algorithm", "AWS4-HMAC-SHA256"),
+    ("X-Amz-Credential", "minioadmin/20261126/us-east-1/s3/aws4_request"),
+    ("X-Amz-Date", "20261126T120000Z"),
+    ("X-Amz-Expires", "300"),
+    ("X-Amz-SignedHeaders", signed_put_hdrs),
+    ("X-Amz-Security-Token", "sts-tok-123")
+  ])
+  expected_put_canon_hdrs = "content-length:#{payload.size.to_text}\ncontent-type:text/plain\nhost:127.0.0.1:9000\nx-amz-content-sha256:#{digest_hex}\n"
+  expected_put_sig = sigv4_signature(
+    minio_cfg,
+    "PUT",
+    "/vellum-uploads/workspaces/ws_1/note.txt",
+    expected_put_q,
+    expected_put_canon_hdrs,
+    signed_put_hdrs,
+    "UNSIGNED-PAYLOAD",
+    "20261126T120000Z",
+    "20261126"
+  )
+  assert put_url.signature == expected_put_sig
 
   dl_opts = PresignGetOptions(
     expires_seconds: 60,
