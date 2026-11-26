@@ -253,7 +253,7 @@ test "starter end-to-end flow via WebTest v2, query budgets, Seed profiles, and 
   assert Json.decode_strict[Map(Text, Int)](csv_res.text) == Ok({"imported": 2})
 
   (s16, pay_ok) = WebTest.post_json(
-    s15,
+    WebTest.without_inertia(s15),
     app,
     "/bills/1/pay",
     Routes.PayInput(expected_version: 1, reason: Some("Paid from checking"))
@@ -273,6 +273,28 @@ test "starter end-to-end flow via WebTest v2, query budgets, Seed profiles, and 
   (s18, feed_res) = WebTest.get(s17, app, "/")
   feed_props = WebTest.expect_inertia[Routes.HomeProps](feed_res, "Home")
   assert feed_props.audit_feed.size == 4
+
+  (s_browser, browser_pay) = WebTest.post_json(
+    WebTest.with_inertia(s18, expected_version),
+    app,
+    "/bills/2/pay",
+    Routes.PayInput(expected_version: 1, reason: None)
+  )
+  _ = WebTest.expect_redirect(browser_pay, "/")
+  (s_paid, browser_home) = WebTest.follow_redirect(s_browser, app)
+  WebTest.expect_flash_notice(browser_home, "Bill marked in flight")
+  browser_props = WebTest.expect_inertia[Routes.HomeProps](browser_home, "Home")
+  assert browser_props.bills.any?(fn(b) b.id == 2 and b.status == "in_flight" and b.version == 2 end)
+  (s_stale, browser_conflict) = WebTest.post_json(
+    s_paid,
+    app,
+    "/bills/2/pay",
+    Routes.PayInput(expected_version: 1, reason: None)
+  )
+  _ = WebTest.expect_redirect(browser_conflict, "/")
+  (_s_current, browser_current) = WebTest.follow_redirect(s_stale, app)
+  current_shared = WebTest.expect_inertia[Routes.SharedProps](browser_current, "Home")
+  assert current_shared.flash.alert == Some("This bill changed; review its current status.")
 
   # 10. Logout revokes session & clears cookies so stale replay fails
   captured = s18

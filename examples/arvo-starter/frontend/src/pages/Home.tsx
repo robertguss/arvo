@@ -14,7 +14,10 @@ export default function Home({
 
   function addBill(e: FormEvent) {
     e.preventDefault();
-    form.post("/bills", { onSuccess: () => form.reset() });
+    form.post("/bills", {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      onSuccess: () => form.reset(),
+    });
   }
 
   return (
@@ -54,11 +57,14 @@ export default function Home({
                   <button
                     type="button"
                     onClick={() =>
-                      router.post(`/bills/${b.id}/pay`, { expected_version: b.version })
+                      router.post(`/bills/${b.id}/pay`, {
+                        expected_version: b.version,
+                        reason: null,
+                      })
                     }
                     className="rounded border px-2 py-1 text-xs font-medium"
                   >
-                    Mark paid
+                    Mark in flight
                   </button>
                 )}
               </div>
@@ -95,11 +101,7 @@ export default function Home({
             <option value="utilities">utilities</option>
             <option value="housing">housing</option>
             <option value="groceries">groceries</option>
-            <option value="transit">transit</option>
-            <option value="debt">debt</option>
-            <option value="insurance">insurance</option>
-            <option value="childcare">childcare</option>
-            <option value="other">other</option>
+            <option value="card">card</option>
           </select>
           {errors.category && <p className="mt-1 text-xs text-red-600">{errors.category}</p>}
         </div>
