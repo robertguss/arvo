@@ -73,6 +73,30 @@ else
   "$MO" run "$ROOT/cmd/arvo/main.mo" statechart check
 fi
 
+echo "==> Checking arvo replay capture/gen compiles and executes under mo check/test"
+mkdir -p "$ROOT/.arvo/tmp"
+REPLAY_REL="$(cd "$ROOT" && mktemp -d ".arvo/tmp/arvo-replay-smoke.XXXXXX")"
+REPLAY_TMP="$ROOT/$REPLAY_REL"
+CLEANUP_DIRS+=("$REPLAY_TMP")
+mkdir -p "$REPLAY_TMP/req" "$REPLAY_TMP/noreq"
+(
+  cd "$ROOT"
+  "$MO" run "$ROOT/cmd/arvo/main.mo" replay capture --id smoke-req --method POST --path "/bills/1/pay?token=sec" --body '{"password":"secret"}' --error "boom #{1+1}" --out "$REPLAY_REL/req.json"
+  "$MO" run "$ROOT/cmd/arvo/main.mo" replay gen "$REPLAY_REL/req.json" --out "$REPLAY_REL/req/replay-regression.mo"
+  "$MO" check "$REPLAY_REL/req/replay-regression.mo"
+  "$MO" test "$REPLAY_REL/req/replay-regression.mo"
+  python3 -c '
+import json, pathlib
+p = pathlib.Path("'"$REPLAY_REL"'/req.json")
+b = json.loads(p.read_text())
+b["request"] = None
+pathlib.Path("'"$REPLAY_REL"'/noreq.json").write_text(json.dumps(b))
+'
+  "$MO" run "$ROOT/cmd/arvo/main.mo" replay gen "$REPLAY_REL/noreq.json" --out "$REPLAY_REL/noreq/replay-regression.mo"
+  "$MO" check "$REPLAY_REL/noreq/replay-regression.mo"
+  "$MO" test "$REPLAY_REL/noreq/replay-regression.mo"
+)
+
 run_modb_suite() {
   local arvo_root="$1"
   echo "==> Checking and testing Arvo MoDB adapter modules ($MO)"
