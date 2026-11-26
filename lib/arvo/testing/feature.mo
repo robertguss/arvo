@@ -41,6 +41,7 @@ end
 struct Scenario
   name: Text
   tags: List(Text)
+  background: List(Step)
   steps: List(Step)
   line: Int
 end
@@ -229,7 +230,11 @@ fn parse_gherkin_block(path: Text, start_line: Int, lines: List(Text)) : Result(
         if sc_steps.empty?
           Error(ParseError(path: path, line: sc_line, message: "Scenario '#{sname}' contains no steps"))
         else
-          Ok(existing.append(Scenario(name: sname, tags: sc_tags, steps: sc_steps, line: sc_line)))
+          Ok(
+            existing.append(
+              Scenario(name: sname, tags: sc_tags, background: [], steps: sc_steps, line: sc_line)
+            )
+          )
         end
       None: Ok(existing)
     end
@@ -483,10 +488,16 @@ fn parse(path: Text, content: Text) : Result(FeatureDoc, ParseError)
     if not fname.empty?
       feature_name = fname
     end
-    if not bg.empty?
-      background = background.concat(bg)
+    if gherkin_blocks.size == 1
+      background = bg
+      all_scenarios = scens
+    else
+      all_scenarios = all_scenarios.concat(
+        scens.map(fn(s)
+          Scenario(name: s.name, tags: s.tags, background: bg, steps: s.steps, line: s.line)
+        end)
+      )
     end
-    all_scenarios = all_scenarios.concat(scens)
   end
 
   Ok(
@@ -543,7 +554,7 @@ fn run_feature(
     var steps_run = 0
     var failure = None
 
-    all_steps = doc.background.concat(scen.steps)
+    all_steps = doc.background.concat(scen.background).concat(scen.steps)
     for step in all_steps
       case find_matching_binding(bindings, step)
         None:
@@ -599,7 +610,7 @@ fn browser_manifest(docs: List(FeatureDoc)) : List(BrowserScenarioManifest)
             feature_title: doc.title,
             scenario_name: scen.name,
             tags: scen.tags,
-            background: doc.background,
+            background: doc.background.concat(scen.background),
             steps: scen.steps
           )
         )
@@ -788,6 +799,45 @@ test "Feature parses 4-H2 .feature.md, executes in-memory scenarios with tables,
   assert (rep.results.get(1) or stop "r1").steps_run == 2
   assert format_report(rep).contains?("2/2 passed (0 failed)")
 
+  multiple_blocks = """
+    # Multiple blocks
+    ## Sub-features
+    ## How to get to it (user POV)
+    ## Scenarios
+    ```gherkin
+    Background:
+      Given CSRF token "feat_tok"
+    @browser
+    Scenario: Add a bill
+      When I add bills:
+        | name | amount_cents |
+        | Gas | 9200 |
+      Then bill count is 1
+    ```
+    ```gherkin
+    Background:
+      Given CSRF token "unused"
+    @browser
+    Scenario: Have no bills
+      Then bill count is 0
+    ```
+    ```gherkin
+    @browser
+    Scenario: Have no background
+      Then bill count is 0
+    ```
+    ## Gotchas
+    """
+  assert parse("multiple.feature.md", multiple_blocks) is Ok(multiple_doc)
+  multiple_rep = run_feature(multiple_doc, None, bindings, init_w)
+  assert multiple_rep.passed == 3
+  assert multiple_rep.results.map(fn(r) r.steps_run end) == [3, 2, 1]
+  assert browser_manifest([multiple_doc]).map(fn(s) s.background.map(fn(st) st.text end) end) == [
+    ["CSRF token \"feat_tok\""],
+    ["CSRF token \"unused\""],
+    []
+  ]
+
   # Feature omitting `Feature:` header falls back to H1 doc.title
   no_feat_line = sample_feature_md.replace("Feature: Manage bills", "")
   assert parse("specs/nof.feature.md", no_feat_line) is Ok(doc_nof)
@@ -815,6 +865,7 @@ test "Feature parses 4-H2 .feature.md, executes in-memory scenarios with tables,
       Scenario(
         name: "Wrong count",
         tags: [],
+        background: [],
         steps: [Step(kind: Then, raw_keyword: "Then", text: "bill count is 99", table: [], line: 1)],
         line: 1
       )

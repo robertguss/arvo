@@ -237,7 +237,7 @@ fn evaluate_and_write(
   cmd: Command,
   env: Env,
   tla_opt: Option(Text)
-) : Result((Bool, Int, Int, List(SingleChartOutcome), Text, List(Text)), Text)
+) : Result((Bool, Int, Int, List(SingleChartOutcome), Text, List(Text), Text), Text)
   try files.make_folder(out_dir).map_error(fn(e) "failed creating #{out_dir}: #{e}" end)
 
   j_spec = Statechart.jobs_chart_spec()
@@ -311,7 +311,11 @@ fn evaluate_and_write(
     tla_ok?
 
   full_md = [
-    outcomes.map(fn(o) o.report_md end).join("\n"),
+    if charts_ok?: "# Statechart verification: PASS" else: "# Statechart verification: FAIL",
+    outcomes.map(fn(o)
+      broken = if o.broken_caught?: "caught" else: "not caught"
+      "#{o.report_md}\n- Sync check: #{o.sync_detail}\n- Broken variant: #{broken}\n"
+    end).join("\n"),
     "- Replay check: #{replay_msg}",
     if tla_msgs.empty?: "" else: "- TLA+ check: #{tla_msgs.join("; ")}"
   ].filter(fn(s) not s.empty? end).join("\n")
@@ -331,7 +335,7 @@ fn evaluate_and_write(
   _w_json = try files.write_text("#{out_dir}/report.json", "#{report_json.pretty}\n").map_error(
     fn(e) "failed writing #{out_dir}/report.json: #{e}" end
   )
-  Ok((charts_ok?, total_states, total_transitions, outcomes, replay_msg, tla_msgs))
+  Ok((charts_ok?, total_states, total_transitions, outcomes, replay_msg, tla_msgs, full_md))
 end
 
 fn elapsed_ms(clock: Clock, started: Time) : Int
@@ -356,11 +360,9 @@ fn run_statechart_cmd(
     Error(err):
       console.error("arvo statechart: #{err}")
       1
-    Ok((ok?, states, transitions, outcomes, replay_msg, tla_msgs)):
+    Ok((ok?, states, transitions, outcomes, replay_msg, tla_msgs, full_md)):
       if sargs.subcmd == "render"
-        for o in outcomes
-          console.print(o.report_md)
-        end
+        console.print(full_md)
       else
         summary = Json.Object({
           "ok": Json.Boolean(ok?),
@@ -396,7 +398,7 @@ fn run_statechart_phase(tier: Text, files: Files, cmd: Command, clock: Clock, en
       var ev = Dossier.new_event(t.to_text, tier, "statechart", "fail", elapsed_ms(clock, t))
       ev.detail = Some(err)
       ev
-    Ok((ok?, states, transitions, outcomes, replay_msg, _tla)):
+    Ok((ok?, states, transitions, outcomes, replay_msg, _tla, _full_md)):
       var ev = Dossier.new_event(
         t.to_text,
         tier,
@@ -565,6 +567,16 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
   ev_stale = run_statechart_phase("full", files_ok, Command.fake(rep_stale_git), Clock.fixed(t0), Env.of({}))
   assert ev_stale.status == "fail" and ev_stale.passed == Some(0) and ev_stale.failed == Some(1)
   assert (ev_stale.detail or "").contains?("STALE_FORMAL_CHECK")
+  c_stale = Console.fake()
+  assert run_statechart_cmd(
+    StatechartArgs(subcmd: "render", out_dir: None, tla_file: None, help?: false),
+    files_ok,
+    Command.fake(rep_stale_git),
+    Env.of({}),
+    c_stale
+  ) == 1
+  assert (c_stale.printed.first or "").starts_with?("# Statechart verification: FAIL")
+  assert (c_stale.printed.first or "").contains?("STALE_FORMAL_CHECK")
 
   (empty_sync?, _) = check_sync_commit([], "1234567890", Command.fake(rep_clean), Env.of({}))
   assert empty_sync?
