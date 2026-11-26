@@ -9,6 +9,7 @@ use Command
 use Config
 use Control
 use Dossier
+use DossierHtml
 use FrontendCheck
 use Json
 use ReplayCmd
@@ -27,6 +28,8 @@ enum CliCmd
   RunStatechartCmd(args: StatechartCmd.StatechartArgs)
   RunReplayCmd(sub: ReplayCmd.ReplayCmdArgs)
   RunBenchCmd(args: Bench.BenchArgs)
+  RunDossierCmd(open?: Bool)
+  RunLogCmd(phase: Text, decision: Text, why: Text, evidence: Text, result: Text)
 end
 
 ## Parsed CLI invocation combining `--app DIR` target (default `"."`) and `CliCmd`.
@@ -89,6 +92,31 @@ fn usage(topic: Option(Text)) : Text
     Some("statechart"): StatechartCmd.statechart_usage()
     Some("replay"): ReplayCmd.replay_usage()
     Some("bench"): Bench.bench_usage()
+    Some("dossier"): """
+      usage: arvo dossier [--app DIR] [--open]
+
+      Renders .arvo/dossier/index.html and .arvo/dossier/pr-summary.md from the
+      latest .arvo/dossier/verify.jsonl and collected proof artifacts.
+
+      Flags:
+        --app DIR   Target application subdirectory (default: `.`)
+        --open      Record open request in returned JSON metadata
+        -h, --help  Show this help
+      """
+    Some("log"): """
+      usage: arvo log [--app DIR] --phase P --decision D --why W --evidence E --result R
+
+      Appends one sanitized decision row to .arvo/dossier/decisions.tsv.
+
+      Flags:
+        --app DIR      Target application subdirectory (default: `.`)
+        --phase P      Verification phase name
+        --decision D   Decision made
+        --why W        Rationale
+        --evidence E   Evidence path or identifier
+        --result R     Outcome (pass, fail, warn, skip)
+        -h, --help     Show this help
+      """
     Some(_) | None: """
       Arvo Verification & Testing CLI (pure Mo)
 
@@ -103,6 +131,8 @@ fn usage(topic: Option(Text)) : Text
         statechart [check|render] [--app DIR] [--out DIR]       Explore Jobs/Session statecharts, replay code, & check sync commits
         replay <capture|gen> [--app DIR] [flags]                Capture sanitized failure bundle or generate regression test
         bench --baseline-cmd A --candidate-cmd B [flags]        Alternating A/B/A/B benchmark with 7-question checklist
+        dossier [--app DIR] [--open]                            Render static HTML Verification Dossier & <150-word PR summary
+        log [--app DIR] --phase P --decision D ...              Append sanitized row to .arvo/dossier/decisions.tsv
 
       Run `arvo <command> --help` for command-specific flags.
       """
@@ -111,6 +141,65 @@ end
 
 fn help_flag?(arg: Text) : Bool
   arg == "--help" or arg == "-h"
+end
+
+fn parse_dossier_args(rest: List(Text)) : Result(CliCmd, Text)
+  var open? = false
+  for a in rest
+    if help_flag?(a)
+      return Ok(HelpCmd(topic: Some("dossier")))
+    else if a == "--open"
+      open? = true
+    else
+      return Error("unknown flag '#{a}' for `arvo dossier`. Run `arvo dossier --help`.")
+    end
+  end
+  Ok(RunDossierCmd(open?: open?))
+end
+
+fn parse_log_args(rest: List(Text)) : Result(CliCmd, Text)
+  var phase = ""
+  var decision = ""
+  var why = ""
+  var evidence = ""
+  var result = ""
+  var i = 0
+  while i < rest.size
+    a = rest.get(i) or ""
+    if help_flag?(a)
+      return Ok(HelpCmd(topic: Some("log")))
+    else if a == "--phase" or
+      a == "--decision" or
+      a == "--why" or
+      a == "--evidence" or
+      a == "--result"
+      if i + 1 >= rest.size
+        return Error("`#{a}` requires a value. Run `arvo log --help`.")
+      end
+      val = rest.get(i + 1) or ""
+      if a == "--phase"
+        phase = val
+      else if a == "--decision"
+        decision = val
+      else if a == "--why"
+        why = val
+      else if a == "--evidence"
+        evidence = val
+      else
+        result = val
+      end
+      i += 1
+    else
+      return Error("unknown flag '#{a}' for `arvo log`. Run `arvo log --help`.")
+    end
+    i += 1
+  end
+  if phase.empty? or decision.empty? or why.empty? or evidence.empty? or result.empty?
+    return Error(
+      "missing required flag (`--phase`, `--decision`, `--why`, `--evidence`, `--result`). Run `arvo log --help`."
+    )
+  end
+  Ok(RunLogCmd(phase: phase, decision: decision, why: why, evidence: evidence, result: result))
 end
 
 fn parse_contracts_args(rest: List(Text)) : Result(CliCmd, Text)
@@ -277,6 +366,10 @@ fn parse_args(args: List(Text)) : Result(CliCmd, Text)
         end
       Error(e): Error(e)
     end
+  else if sub == "dossier"
+    parse_dossier_args(rest)
+  else if sub == "log"
+    parse_log_args(rest)
   else
     Error("unknown command '#{sub}'. Run `arvo --help` to see available commands.")
   end
@@ -1185,6 +1278,22 @@ fn run_verify_cmd(
     _w = files.write_text(".arvo/dossier/verify.jsonl", "#{ndjson_lines.join("\n")}\n")
   end
 
+  if tier == "full"
+    case DossierHtml.generate_dossier(
+      app_dir,
+      tier,
+      cfg,
+      files,
+      Some(events),
+      Some(elapsed_ms(clock, start_all)),
+      cmd,
+      env
+    )
+      Ok(_): Unit
+      Error(de): console.error("arvo verify: dossier warning: #{de}")
+    end
+  end
+
   if json_mode?
     for line in ndjson_lines
       console.print(line)
@@ -1269,6 +1378,54 @@ fn run_cli(
     RunStatechartCmd(args: sa): StatechartCmd.run_statechart_cmd(sa, app_files, cmd, env, console)
     RunReplayCmd(sub: r): ReplayCmd.run_replay_cmd(r, app_files, cmd, clock, env, console)
     RunBenchCmd(args: ba): Bench.run_bench_cmd(ba, cmd, clock, console)
+    RunDossierCmd(open?: open?):
+      cfg = case Config.load(app_files.read_only)
+        Ok(c): c
+        Error(e):
+          console.error("arvo dossier: #{e}")
+          return 1
+      end
+      case DossierHtml.generate_dossier(app_dir, "", cfg, app_files, None, None, cmd, env)
+        Error(e):
+          console.error("arvo dossier: #{e}")
+          1
+        Ok(out):
+          console.print(
+            Json.Object({
+              "verdict": Json.String(out.verdict),
+              "html_path": Json.String(join_app_path(app_dir, out.html_path)),
+              "pr_summary_path": Json.String(join_app_path(app_dir, out.pr_summary_path)),
+              "pr_word_count": Json.int(out.pr_word_count),
+              "screenshots_embedded": Json.int(out.screenshots_embedded),
+              "open_requested": Json.Boolean(open?)
+            }).to_text
+          )
+          0
+      end
+    RunLogCmd(phase: p, decision: d, why: w, evidence: ev, result: r):
+      row = Dossier.DecisionRow(
+        ts: clock.now.to_text,
+        phase: p,
+        decision: d,
+        why: w,
+        evidence: ev,
+        result: r
+      )
+      case Dossier.append_decision(app_files, row)
+        Error(e):
+          console.error("arvo log: #{e}")
+          1
+        Ok(_):
+          console.print(
+            Json.Object({
+              "logged": Json.Boolean(true),
+              "path": Json.String(join_app_path(app_dir, ".arvo/dossier/decisions.tsv")),
+              "phase": Json.String(p),
+              "result": Json.String(r)
+            }).to_text
+          )
+          0
+      end
   end
 end
 
@@ -1497,7 +1654,9 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     ),
     (
       Command.spec("mo", ["test", "--json", "lib/arvo/testing/statechart.mo"]),
-      Command.ok_output("{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n")
+      Command.ok_output(
+        "{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n"
+      )
     ),
     (Command.spec("sh", ["-c", "echo a"]), Command.ok_output("a\n")),
     (Command.spec("sh", ["-c", "echo b"]), Command.ok_output("b\n"))
@@ -2211,7 +2370,9 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     ),
     (
       Command.spec("mo", ["test", "--json", "lib/arvo/testing/statechart.mo"]),
-      Command.ok_output("{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n")
+      Command.ok_output(
+        "{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n"
+      )
     ),
     (Command.spec("sh", ["-c", "echo a"]), Command.ok_output("a\n")),
     (Command.spec("sh", ["-c", "echo b"]), Command.ok_output("b\n"))
@@ -2399,7 +2560,9 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     ),
     (
       Command.spec("mo", ["test", "--json", "lib/arvo/testing/statechart.mo"]),
-      Command.ok_output("{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n")
+      Command.ok_output(
+        "{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n"
+      )
     ),
     (Command.spec("sh", ["-c", "echo a"]), Command.ok_output("a\n")),
     (Command.spec("sh", ["-c", "echo b"]), Command.ok_output("b\n"))
@@ -2517,7 +2680,9 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     ),
     (
       Command.spec("mo", ["test", "--json", "lib/arvo/testing/statechart.mo"]),
-      Command.ok_output("{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n")
+      Command.ok_output(
+        "{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n"
+      )
     ),
     (Command.spec("sh", ["-c", "echo a"]), Command.ok_output("a\n")),
     (Command.spec("sh", ["-c", "echo b"]), Command.ok_output("b\n"))
@@ -2852,4 +3017,368 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     Network.fake({})
   ) ==
     1
+
+  # `arvo dossier` and `arvo log` arg parsing, errors, and CLI execution
+  assert parse_args(["dossier"]) == Ok(RunDossierCmd(open?: false))
+  assert parse_args(["dossier", "--open"]) == Ok(RunDossierCmd(open?: true))
+  assert parse_args(["dossier", "--help"]) == Ok(HelpCmd(topic: Some("dossier")))
+  assert parse_args(["dossier", "--bad"]) is Error(_)
+
+  assert parse_args([
+    "log",
+    "--phase",
+    "verify",
+    "--decision",
+    "ship",
+    "--why",
+    "all green",
+    "--evidence",
+    "verify.jsonl",
+    "--result",
+    "pass"
+  ]) ==
+    Ok(
+      RunLogCmd(
+        phase: "verify",
+        decision: "ship",
+        why: "all green",
+        evidence: "verify.jsonl",
+        result: "pass"
+      )
+    )
+  assert parse_args(["log", "--help"]) == Ok(HelpCmd(topic: Some("log")))
+  assert parse_args(["log", "--phase"]) ==
+    Error("`--phase` requires a value. Run `arvo log --help`.")
+  assert parse_args(["log", "--bad"]) is Error(_)
+  assert parse_args(["log", "--phase", "verify"]) is Error(_)
+  assert parse_args(["log", "--phase", "verify", "--decision", "d", "--why", "w", "--evidence", "e"]) is
+    Error(_)
+  assert parse_args(["log", "--decision", "d", "--why", "w", "--evidence", "e", "--result", "pass"]) is
+    Error(_)
+  assert parse_args([
+    "log",
+    "--phase",
+    "verify",
+    "--why",
+    "w",
+    "--evidence",
+    "e",
+    "--result",
+    "pass"
+  ]) is
+    Error(_)
+  assert parse_args([
+    "log",
+    "--phase",
+    "verify",
+    "--decision",
+    "d",
+    "--evidence",
+    "e",
+    "--result",
+    "pass"
+  ]) is
+    Error(_)
+  assert parse_args([
+    "log",
+    "--phase",
+    "verify",
+    "--decision",
+    "d",
+    "--why",
+    "w",
+    "--result",
+    "pass"
+  ]) is
+    Error(_)
+
+  c_help_d = Console.fake()
+  assert run_cli(
+    Args.of(["dossier", "--help"]),
+    c_help_d,
+    files,
+    Command.fake(replies_ok),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert c_help_d.printed.any?(fn(l) l.contains?("pr-summary.md") end)
+
+  c_help_l = Console.fake()
+  assert run_cli(
+    Args.of(["log", "-h"]),
+    c_help_l,
+    files,
+    Command.fake(replies_ok),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert c_help_l.printed.any?(fn(l) l.contains?("decisions.tsv") end)
+
+  # arvo log & arvo dossier against root & subfolder + error branches
+  f_dl = Files.in_memory({
+    "app/arvo.toml": "[app]\nentry = \"main.mo\"\n",
+    "app/main.mo": "module Main\napi\n  get \"/\" H.index\nend\n",
+    "app/.arvo/dossier/verify.jsonl": "{\"ts\":\"2026-11-25T10:00:00Z\",\"tier\":\"full\",\"phase\":\"mo_test\",\"status\":\"pass\",\"ms\":12}\n"
+  })
+  c_log = Console.fake()
+  assert run_cli(
+    Args.of([
+      "log",
+      "--app",
+      "app",
+      "--phase",
+      "verify",
+      "--decision",
+      "Run full",
+      "--why",
+      "=formula",
+      "--evidence",
+      "verify.jsonl",
+      "--result",
+      "pass"
+    ]),
+    c_log,
+    f_dl,
+    Command.fake(replies_ok),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert (c_log.printed.first or "").contains?("\"logged\":true")
+  assert (c_log.printed.first or "").contains?("app/.arvo/dossier/decisions.tsv")
+
+  c_dos = Console.fake()
+  assert run_cli(
+    Args.of(["dossier", "--app", "app", "--open"]),
+    c_dos,
+    f_dl,
+    Command.fake(
+      Command.replies([
+        (Command.spec("git", ["rev-parse", "HEAD"]), Command.ok_output("sha_main_1\n"))
+      ])
+    ),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert (c_dos.printed.first or "").contains?("\"verdict\":\"PASS\"")
+  assert (c_dos.printed.first or "").contains?("\"open_requested\":true")
+  assert f_dl.exists?("app/.arvo/dossier/index.html")
+  assert f_dl.exists?("app/.arvo/dossier/pr-summary.md")
+
+  assert run_cli(
+    Args.of(["dossier"]),
+    Console.fake(),
+    files_bad_cfg,
+    Command.fake(replies_ok),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    1
+  assert run_cli(
+    Args.of(["dossier"]),
+    Console.fake(),
+    Files.in_memory({"arvo.toml": "[app]\nentry=\"main.mo\"\n"}),
+    Command.fake(replies_ok),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    1
+  assert run_cli(
+    Args.of([
+      "log",
+      "--phase",
+      "p",
+      "--decision",
+      "d",
+      "--why",
+      "w",
+      "--evidence",
+      "e",
+      "--result",
+      "pass"
+    ]),
+    Console.fake(),
+    Files.in_memory({".arvo": "blocker"}),
+    Command.fake(replies_ok),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    1
+
+  # verify --tier fast does NOT auto-emit index.html, while --tier full DOES (and warns if write fails)
+  f_fast_chk = Files.in_memory({
+    "arvo.toml": "[app]\nentry = \"main.mo\"\n",
+    "main.mo": "module Main\n",
+    "frontend/src/arvo.gen.ts": gen_empty_ts
+  })
+  assert run_cli(
+    Args.of(["verify", "--tier", "fast"]),
+    Console.fake(),
+    f_fast_chk,
+    Command.fake(
+      Command.replies([
+        (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.ok_output("[]")),
+        (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
+        (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
+        (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
+        (
+          Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
+          Command.ok_output("")
+        ),
+        (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output(""))
+      ])
+    ),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert not f_fast_chk.exists?(".arvo/dossier/index.html")
+
+  f_full_emit = Files.in_memory({
+    "arvo.toml": "[app]\nentry = \"main.mo\"\n",
+    "main.mo": "module Main\napi\n  get \"/\" H.index\nend\n",
+    "frontend/src/arvo.gen.ts": gen_empty_ts
+  })
+  assert run_cli(
+    Args.of(["verify", "--tier", "full"]),
+    Console.fake(),
+    f_full_emit,
+    Command.fake(
+      Command.replies([
+        (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.ok_output("[]")),
+        (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
+        (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
+        (
+          Command.spec("mo", ["test", "--jobs", "4", "--json", "--mutants", "main.mo"]),
+          Command.ok_output(null_clean)
+        ),
+        (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
+        (
+          Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
+          Command.ok_output("")
+        ),
+        (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output("")),
+        (
+          Command.spec(
+            "git",
+            [
+              "diff",
+              "--name-only",
+              "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+              "--",
+              "lib/arvo/sqlite/jobs.mo"
+            ]
+          ),
+          Command.ok_output("")
+        ),
+        (
+          Command.spec(
+            "git",
+            [
+              "diff",
+              "--name-only",
+              "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+              "--",
+              "lib/arvo/sqlite/sessions.mo",
+              "lib/arvo/session.mo"
+            ]
+          ),
+          Command.ok_output("")
+        ),
+        (
+          Command.spec("mo", ["test", "--json", "lib/arvo/testing/statechart.mo"]),
+          Command.ok_output(
+            "{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n"
+          )
+        ),
+        (Command.spec("git", ["rev-parse", "HEAD"]), Command.ok_output("sha_full_emit\n"))
+      ])
+    ),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert f_full_emit.exists?(".arvo/dossier/index.html")
+  assert f_full_emit.exists?(".arvo/dossier/pr-summary.md")
+
+  c_dos_err = Console.fake()
+  f_full_err = Files.in_memory({
+    "arvo.toml": "[app]\nentry = \"main.mo\"\n",
+    "main.mo": "module Main\n",
+    "frontend/src/arvo.gen.ts": gen_empty_ts,
+    ".arvo/dossier/index.html/block": "dir"
+  })
+  assert run_cli(
+    Args.of(["verify", "--tier", "full"]),
+    c_dos_err,
+    f_full_err,
+    Command.fake(
+      Command.replies([
+        (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.ok_output("[]")),
+        (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
+        (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
+        (
+          Command.spec("mo", ["test", "--jobs", "4", "--json", "--mutants", "main.mo"]),
+          Command.ok_output(null_clean)
+        ),
+        (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
+        (
+          Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
+          Command.ok_output("")
+        ),
+        (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output("")),
+        (
+          Command.spec(
+            "git",
+            [
+              "diff",
+              "--name-only",
+              "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+              "--",
+              "lib/arvo/sqlite/jobs.mo"
+            ]
+          ),
+          Command.ok_output("")
+        ),
+        (
+          Command.spec(
+            "git",
+            [
+              "diff",
+              "--name-only",
+              "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+              "--",
+              "lib/arvo/sqlite/sessions.mo",
+              "lib/arvo/session.mo"
+            ]
+          ),
+          Command.ok_output("")
+        ),
+        (
+          Command.spec("mo", ["test", "--json", "lib/arvo/testing/statechart.mo"]),
+          Command.ok_output(
+            "{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n"
+          )
+        ),
+        (Command.spec("git", ["rev-parse", "HEAD"]), Command.ok_output("sha_full_err\n"))
+      ])
+    ),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert c_dos_err.printed_errors.any?(fn(l) l.contains?("dossier warning") end)
 end
