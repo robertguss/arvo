@@ -1,9 +1,18 @@
-## Route handlers, domain types, migrations, and auth adapter for the Arvo + Inertia v2 starter.
+## Route handlers, domain types, migrations, seed profiles, contracts, and auth adapter for the Arvo + Inertia v2 starter.
 module Routes
 expose Member(..),
 Bill(..),
 PayInput(..),
+AuthUser(..),
+FlashProps(..),
+SharedProps(..),
+LoginProps(..),
+HomeProps(..),
 AppError(..),
+app_migrations,
+seed_profiles,
+contracts,
+bootstrap_db,
 authenticate,
 show_login,
 post_login,
@@ -22,6 +31,7 @@ use Arvo.Session
 use Arvo.Sqlite.Audit
 use Arvo.Sqlite.Migrations
 use Arvo.Sqlite.Sessions
+use Arvo.Testing.Seed
 use Json
 
 ## Authenticated household member + active SQLite-backed session.
@@ -59,6 +69,38 @@ end
 struct PayInput
   expected_version: Int
   reason: Option(Text)
+end
+
+## Authenticated viewer metadata shared across Inertia pages.
+struct AuthUser
+  id: Text
+  email: Text
+  display_name: Text
+end
+
+## Flash banner payload shared across Inertia pages.
+struct FlashProps
+  notice: Option(Text)
+  alert: Option(Text)
+end
+
+## Shared Inertia props serialized identically on every page render.
+struct SharedProps
+  auth: Option(AuthUser)
+  flash: FlashProps
+  errors: Map(Text, Text)
+end
+
+## Typed Inertia props for the `Login` page.
+struct LoginProps
+  allowlist_hint: Text
+end
+
+## Typed Inertia props for the `Home` dashboard page.
+struct HomeProps
+  bills: List(Bill)
+  total_due_cents: Int
+  audit_feed: List(Audit.AuditEntry)
 end
 
 ## Domain errors mapped to HTTP status codes in `Main`'s `api` block.
@@ -127,6 +169,125 @@ fn app_migrations() : List(Migrations.Migration)
   [Migrations.Migration(version: 1, name: "init_arvo_starter", sql: m1_sql)]
 end
 
+fn insert_member(
+  db: Sqlite.Database,
+  id: Text,
+  email: Text,
+  pw_hash: Text,
+  display_name: Text,
+  now_iso: Text
+) : Result(Unit, Text)
+  _m = try db.execute(
+    "INSERT OR IGNORE INTO members (id, email, password_hash, display_name, created_at) VALUES (?, ?, ?, ?, ?)",
+    [
+      Sqlite.String(id),
+      Sqlite.String(email),
+      Sqlite.String(pw_hash),
+      Sqlite.String(display_name),
+      Sqlite.String(now_iso)
+    ]
+  ).map_error(fn(e) "#{e}" end)
+  Ok(Unit)
+end
+
+fn insert_seed_bill(
+  db: Sqlite.Database,
+  name: Text,
+  category: Text,
+  amount_cents: Int,
+  now_iso: Text
+) : Result(Unit, Text)
+  _b = try db.execute(
+    "INSERT INTO bills (name, category, amount_cents, status, version, created_at) VALUES (?, ?, ?, 'due', 1, ?)",
+    [
+      Sqlite.String(name),
+      Sqlite.String(category),
+      Sqlite.Integer(amount_cents),
+      Sqlite.String(now_iso)
+    ]
+  ).map_error(fn(e) "#{e}" end)
+  Ok(Unit)
+end
+
+fn apply_baseline_seed(db: Sqlite.Database, rng: SecureRandom, clock: Clock, env: Env) : Result(
+  Unit,
+  Text
+)
+  _applied = try Migrations.run(db, clock, app_migrations()).map_error(
+    fn(e) "migration failed: #{e}" end
+  )
+  count_rows = try db.query("SELECT id FROM members LIMIT 1", []).map_error(fn(e) "#{e}" end)
+  return Ok(Unit) if not count_rows.rows.empty?
+  seed_pw = env.get("ARVO_SEED_PASSWORD") or "horse-staple-battery"
+  pw_hash = try Auth.hash_password(rng, seed_pw).map_error(fn(e) "password hash failed: #{e}" end)
+  now_iso = clock.now.to_text
+  try insert_member(
+    db,
+    "mem_ada",
+    "ada@household.local",
+    pw_hash,
+    "Ada & Household <Team>",
+    now_iso
+  )
+  try insert_member(db, "mem_grace", "grace@household.local", pw_hash, "Grace Partner", now_iso)
+  insert_seed_bill(db, "Electric & Gas <Utility>", "utilities", 14500, now_iso)
+end
+
+## Named deterministic `Arvo.Seed` profiles usable in both tests and seeded runtimes.
+fn seed_profiles() : List(Seed.SeedProfile)
+  [
+    Seed.SeedProfile(
+      name: "empty",
+      description: "Schema migrations only with zero household rows",
+      apply: fn(db, _rng, clock, _env)
+        _m = try Migrations.run(db, clock, app_migrations()).map_error(fn(e) "#{e}" end)
+        Ok(Unit)
+      end
+    ),
+    Seed.SeedProfile(
+      name: "baseline",
+      description: "Household partners (Ada & Grace) plus one due utility bill",
+      apply: apply_baseline_seed
+    ),
+    Seed.SeedProfile(
+      name: "many_bills",
+      description: "Baseline household plus 8 additional paycheck bills across categories",
+      apply: fn(db, rng, clock, env)
+        try apply_baseline_seed(db, rng, clock, env)
+        now_iso = clock.now.to_text
+        extra = [
+          ("City Water", "utilities", 4800),
+          ("Fiber Internet", "utilities", 7500),
+          ("Apartment Rent", "housing", 185000),
+          ("Weekly Groceries", "groceries", 24000),
+          ("Metro Pass", "transit", 9500),
+          ("Health Insurance", "insurance", 31200),
+          ("Mobile Plan", "utilities", 6000),
+          ("After-School Care", "childcare", 42000)
+        ]
+        for (bname, bcat, cents) in extra
+          try insert_seed_bill(db, bname, bcat, cents, now_iso)
+        end
+        Ok(Unit)
+      end
+    )
+  ]
+end
+
+## Exported page contract manifest consumed by `arvo contracts` for TS codegen.
+fn contracts() : List(Inertia.PageContract)
+  [
+    Inertia.page_contract[LoginProps, SharedProps]("Login", ["/login"], Inertia.Of, Inertia.Of),
+    Inertia.page_contract[HomeProps, SharedProps](
+      "Home",
+      ["/", "/?status=due"],
+      Inertia.Of,
+      Inertia.Of
+    )
+  ]
+end
+
+## Idempotently migrates and seeds the baseline household database when empty.
 fn bootstrap_db(db: Sqlite.Database, rng: SecureRandom, clock: Clock, env: Env) : Result(
   Unit,
   AppError
@@ -138,30 +299,9 @@ fn bootstrap_db(db: Sqlite.Database, rng: SecureRandom, clock: Clock, env: Env) 
     fn(e) ServerFailed(reason: "#{e}") end
   )
   if count_rows.rows.empty?
-    seed_pw = env.get("ARVO_SEED_PASSWORD") or "correct-horse-battery-staple"
-    pw_hash = try Auth.hash_password(rng, seed_pw).map_error(
-      fn(e) ServerFailed(reason: "password hash failed: #{e}") end
+    try Seed.run_profile(seed_profiles(), "baseline", db, rng, clock, env).map_error(
+      fn(e) ServerFailed(reason: e) end
     )
-    now_iso = clock.now.to_text
-    _m = try db.execute(
-      "INSERT INTO members (id, email, password_hash, display_name, created_at) VALUES (?, ?, ?, ?, ?)",
-      [
-        Sqlite.String("mem_ada"),
-        Sqlite.String("ada@household.local"),
-        Sqlite.String(pw_hash),
-        Sqlite.String("Ada & Household <Team>"),
-        Sqlite.String(now_iso)
-      ]
-    ).map_error(fn(e) ServerFailed(reason: "#{e}") end)
-    _b = try db.execute(
-      "INSERT INTO bills (name, category, amount_cents, status, version, created_at) VALUES (?, ?, ?, 'due', 1, ?)",
-      [
-        Sqlite.String("Electric & Gas <Utility>"),
-        Sqlite.String("utilities"),
-        Sqlite.Integer(14500),
-        Sqlite.String(now_iso)
-      ]
-    ).map_error(fn(e) ServerFailed(reason: "#{e}") end)
   end
   Ok(Unit)
 end
@@ -181,23 +321,16 @@ fn load_inertia_config(files: ReadFiles, env: Env) : Result(Inertia.InertiaConfi
   end
 end
 
-fn shared_props(viewer: Option(Member), flash: Flash.FlashData) : Map(Text, Json)
-  var base = {
-    "errors": Changeset.inertia_error_map_json(flash.errors),
-    "flash": Json.Object({"notice": flash.notice.to_json, "alert": flash.alert.to_json})
-  }
-  case viewer
-    Some(m): base = base.set(
-      "auth",
-      Json.Object({
-        "id": Json.String(m.id),
-        "email": Json.String(m.email),
-        "display_name": Json.String(m.display_name)
-      })
-    )
-    None: base = base.set("auth", Json.Null)
+fn shared_props(viewer: Option(Member), flash: Flash.FlashData) : SharedProps
+  auth_user = case viewer
+    Some(m): Some(AuthUser(id: m.id, email: m.email, display_name: m.display_name))
+    None: None
   end
-  base
+  SharedProps(
+    auth: auth_user,
+    flash: FlashProps(notice: flash.notice, alert: flash.alert),
+    errors: Changeset.first_errors(flash.errors)
+  )
 end
 
 ## Authenticates the encrypted `arvo_session` cookie and loads the corresponding `Member`.
@@ -236,11 +369,11 @@ fn show_login(req: Api.Request, viewer: Option(Member), files: ReadFiles, env: E
   end
   key = try app_secret_key(env)
   (flash, had_flash?) = Flash.take(req, key)
-  res = Inertia.render(
+  res = Inertia.render_page(
     req,
     cfg,
     "Login",
-    {"allowlist_hint": Json.String("Household members only")},
+    LoginProps(allowlist_hint: "Household members only"),
     shared_props(None, flash)
   )
   Ok(Flash.clear_if_present(res, had_flash?, secure_cookies?(env)))
@@ -335,9 +468,7 @@ fn post_logout(req: Api.Request, member: Member, db: Sqlite.Database, env: Env) 
   AppError
 )
   return Error(Forbidden) if not Auth.require_csrf(req, member.session)
-  _rev = try Sessions.revoke(db, member.session.id).map_error(
-    fn(e) ServerFailed(reason: "#{e}") end
-  )
+  _rev = try Sessions.revoke(db, member.session.id).map_error(fn(e) ServerFailed(reason: "#{e}") end)
   Ok(Auth.logout_response(Inertia.redirect("/login"), session_cfg(env)))
 end
 
@@ -379,15 +510,11 @@ fn home(
   (flash, had_flash?) = Flash.take(req, key)
   total_due_cents = bills.filter(fn(b) b.status == "due" end).map(fn(b) b.amount_cents end).sum
 
-  res = Inertia.render(
+  res = Inertia.render_page(
     req,
     cfg,
     "Home",
-    {
-      "bills": bills.to_json,
-      "total_due_cents": Json.int(total_due_cents),
-      "audit_feed": audit_feed.to_json
-    },
+    HomeProps(bills: bills, total_due_cents: total_due_cents, audit_feed: audit_feed),
     shared_props(Some(member), flash)
   )
   Ok(Flash.clear_if_present(res, had_flash?, secure_cookies?(env)))
@@ -409,7 +536,7 @@ fn create_bill(
   name = (Form.field(fields, "name") or "").trim
   category = (Form.field(fields, "category") or "").trim
   raw_amount = (Form.field(fields, "amount_cents") or "").trim
-  amount_cents = raw_amount.to_int or -1
+  amount_cents = raw_amount.to_int or 0
 
   draft = NewBillDraft(name: name, category: category, amount_cents: amount_cents)
   cs = Changeset.new(draft).require_non_empty("name", draft.name).require_length(
@@ -422,10 +549,10 @@ fn create_bill(
 
   key = try app_secret_key(env)
   sec? = secure_cookies?(env)
-  validated = case Changeset.finish(cs)
-    Ok(v): v
-    Error(errs): return Ok(Inertia.validation_error(req, rng, key, "/", errs, sec?))
+  if not cs.valid?
+    return Ok(Inertia.validation_error(req, rng, key, "/", cs.errors, sec?))
   end
+  validated = cs.data
 
   ins = try db.execute(
     "INSERT INTO bills (name, category, amount_cents, status, version, created_at) VALUES (?, ?, ?, 'due', 1, ?)",
@@ -469,10 +596,33 @@ fn pay_bill(
   db: Sqlite.Database,
   rng: SecureRandom,
   clock: Clock,
+  env: Env,
+  id: Int,
+  input: PayInput
+) : Result(Api.Response, AppError)
+  return Error(Forbidden) if not Auth.require_csrf(req, member.session)
+  if not Inertia.request?(req)
+    bill = try mark_bill_in_flight(db, rng, clock, member, id, input)
+    return Ok(Api.json_response(200, bill))
+  end
+
+  key = try app_secret_key(env)
+  flash = case mark_bill_in_flight(db, rng, clock, member, id, input)
+    Ok(_): Flash.with_notice("Bill marked in flight")
+    Error(VersionConflict(id: _)): Flash.with_alert("This bill changed; review its current status.")
+    Error(e): return Error(e)
+  end
+  Ok(Flash.attach(Inertia.redirect("/"), rng, key, flash, secure_cookies?(env)))
+end
+
+fn mark_bill_in_flight(
+  db: Sqlite.Database,
+  rng: SecureRandom,
+  clock: Clock,
+  member: Member,
   id: Int,
   input: PayInput
 ) : Result(Bill, AppError)
-  return Error(Forbidden) if not Auth.require_csrf(req, member.session)
   rows = try db.query(
     "SELECT id, name, category, amount_cents, status, version FROM bills WHERE id = ?",
     [Sqlite.Integer(id)]

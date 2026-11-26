@@ -1,18 +1,15 @@
 import { useForm } from "@inertiajs/react";
 import type { FormEvent } from "react";
+import type { LoginPageProps } from "../arvo.gen";
 
-interface LoginProps {
-  allowlist_hint: string;
-  errors: Record<string, string>;
-  flash: { notice: string | null; alert: string | null };
-}
-
-export default function Login({ allowlist_hint, errors, flash }: LoginProps) {
+export default function Login({ allowlist_hint, errors, flash }: LoginPageProps) {
   const form = useForm({ email: "", password: "" });
 
   function submit(e: FormEvent) {
     e.preventDefault();
-    form.post("/login");
+    form.post("/login", {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
   }
 
   return (
@@ -22,8 +19,11 @@ export default function Login({ allowlist_hint, errors, flash }: LoginProps) {
       {flash.alert && <p className="mt-3 text-sm text-red-600">{flash.alert}</p>}
       <form onSubmit={submit} className="mt-6 space-y-4">
         <div>
-          <label className="block text-sm font-medium">Email</label>
+          <label htmlFor="email" className="block text-sm font-medium">
+            Email
+          </label>
           <input
+            id="email"
             type="email"
             value={form.data.email}
             onChange={(e) => form.setData("email", e.target.value)}
@@ -32,8 +32,11 @@ export default function Login({ allowlist_hint, errors, flash }: LoginProps) {
           {errors.email && <p className="mt-1 text-xs text-red-600">{errors.email}</p>}
         </div>
         <div>
-          <label className="block text-sm font-medium">Password</label>
+          <label htmlFor="password" className="block text-sm font-medium">
+            Password
+          </label>
           <input
+            id="password"
             type="password"
             value={form.data.password}
             onChange={(e) => form.setData("password", e.target.value)}

@@ -57,6 +57,13 @@ echo "==> Checking and testing examples/arvo-starter via mo.toml path dependency
 "$MO" check "$ROOT/examples/arvo-starter/main.mo"
 "$MO" test "$ROOT/examples/arvo-starter/main.mo"
 
+echo "==> Validating starter Executable Feature Maps and contract sync"
+(
+  cd "$ROOT"
+  "$MO" run "$ROOT/cmd/arvo/main.mo" feature --app examples/arvo-starter --validate
+  "$MO" run "$ROOT/cmd/arvo/main.mo" contracts --app examples/arvo-starter --check
+)
+
 run_modb_suite() {
   local arvo_root="$1"
   echo "==> Checking and testing Arvo MoDB adapter modules ($MO)"
