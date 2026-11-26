@@ -90,8 +90,6 @@ enum AppError
   ServerFailed(reason: Text)
 end
 
-default_dev_key_hex = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
-
 fn members_by_email() : Table.Index(Text, MemberRow, Text)
   Table.unique_text_index[Text, MemberRow]("members_by_email", fn(m) m.email end)
 end
@@ -140,7 +138,7 @@ fn not_found_ledger?(err: Ledger.LedgerError) : Bool
 end
 
 fn app_secret_key(env: Env) : Result(Bytes, AppError)
-  hex = env.get("ARVO_SECRET_KEY") or default_dev_key_hex
+  hex = try env.get("ARVO_SECRET_KEY").or_fail(ServerFailed(reason: "ARVO_SECRET_KEY is required"))
   case Bytes.from_hex(hex)
     Some(k):
       if k.size == 32
@@ -185,7 +183,10 @@ fn bootstrap_db(files: Files, rng: SecureRandom, clock: Clock, env: Env) : Resul
     return Ok(Unit) if already_seeded?
   end
 
-  seed_pw = env.get("ARVO_SEED_PASSWORD") or "correct-horse-battery-staple"
+  seed_pw = try env.get("ARVO_SEED_PASSWORD").or_fail(
+    ServerFailed(reason: "ARVO_SEED_PASSWORD is required on first run")
+  )
+  return Error(ServerFailed(reason: "ARVO_SEED_PASSWORD must not be blank")) if seed_pw.trim.empty?
   pw_hash = try Auth.hash_password(rng, seed_pw).map_error(
     fn(e) ServerFailed(reason: "password hash failed: #{e}") end
   )
@@ -339,8 +340,8 @@ fn post_login(req: Api.Request, files: Files, rng: SecureRandom, clock: Clock, e
   Api.Response,
   AppError
 )
-  try bootstrap_db(files, rng, clock, env)
   key = try app_secret_key(env)
+  try bootstrap_db(files, rng, clock, env)
   sec? = secure_cookies?(env)
   fields = try Form.parse_urlencoded(req).map_error(
     fn(e) BadUpload(reason: "invalid login form: #{e}") end
@@ -743,6 +744,9 @@ end
 ## Periodic `mo serve` job handler draining MoDB-queued `import.notify` jobs and pruning expired sessions.
 fn drain_jobs(_payload: Json, files: Files, clock: Clock) : Result(Unit, AppError)
   _pruned = try Sessions.prune_expired(files, sessions_db_path, clock).map_error(map_table_error)
+  _recovered = try Jobs.requeue_stale_running(files, ledger_db_path, clock, 300).map_error(
+    map_table_error
+  )
   var keep_going = true
   while keep_going
     claimed = try Jobs.claim_next(files, ledger_db_path, clock, ["import.notify"]).map_error(
@@ -750,7 +754,9 @@ fn drain_jobs(_payload: Json, files: Files, clock: Clock) : Result(Unit, AppErro
     )
     case claimed
       None: keep_going = false
-      Some(job): try Jobs.complete(files, ledger_db_path, clock, job.id).map_error(map_table_error)
+      Some(job): try Jobs.complete(files, ledger_db_path, clock, job.id, job.attempts).map_error(
+        map_table_error
+      )
     end
   end
   Ok(Unit)

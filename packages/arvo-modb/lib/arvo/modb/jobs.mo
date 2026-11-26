@@ -256,8 +256,8 @@ fn claim_next(files: Files, db_path: Text, clock: Clock, job_names: List(Text)) 
   end
 end
 
-## Marks `job_id` as `'completed'` and clears `locked_at`.
-fn complete(files: Files, db_path: Text, clock: Clock, job_id: Text) : Result(
+## Completes the running attempt returned by `claim_next`; stale attempts are ignored.
+fn complete(files: Files, db_path: Text, clock: Clock, job_id: Text, attempt: Int) : Result(
   Unit,
   Table.TableError
 )
@@ -275,6 +275,7 @@ fn complete(files: Files, db_path: Text, clock: Clock, job_id: Text) : Result(
           case try Table.tx_get(tx, tbl, job_id)
             None: Ok(tx)
             Some(job):
+              return Ok(tx) if job.state != "running" or job.attempts != attempt
               var updated = job
               updated.state = "completed"
               updated.locked_at = None
@@ -292,22 +293,18 @@ fn complete(files: Files, db_path: Text, clock: Clock, job_id: Text) : Result(
   end
 end
 
-## Transitions `job_id` back to `'pending'` with exponential backoff when `attempts < max_attempts`,
-## or marks it terminal `'failed'` otherwise.
+## Retries or fails the running attempt returned by `claim_next`; stale attempts are ignored.
 fn fail_or_retry(
   files: Files,
   db_path: Text,
   clock: Clock,
   job_id: Text,
-  attempts: Int,
-  max_attempts: Int,
+  attempt: Int,
   error_msg: Text
 ) : Result(Unit, Table.TableError)
   return Ok(Unit) if not files.read_only.exists?(db_path)
   now = clock.now
   now_iso = format_utc_iso(now)
-  retry? = attempts < max_attempts
-  next_run_iso = format_utc_iso(now + backoff_seconds(attempts).seconds)
   tbl = jobs_table()
   res = Modb.with_exclusive_lock(
     files,
@@ -320,10 +317,11 @@ fn fail_or_retry(
           case try Table.tx_get(tx, tbl, job_id)
             None: Ok(tx)
             Some(job):
+              return Ok(tx) if job.state != "running" or job.attempts != attempt
               var updated = job
-              if retry?
+              if job.attempts < job.max_attempts
                 updated.state = "pending"
-                updated.run_at = next_run_iso
+                updated.run_at = format_utc_iso(now + backoff_seconds(job.attempts).seconds)
               else
                 updated.state = "failed"
               end
@@ -343,7 +341,7 @@ fn fail_or_retry(
   end
 end
 
-## Requeues orphaned `'running'` jobs whose `locked_at` is missing or at least `stale_seconds` old.
+## Recovers orphaned running jobs, failing those with no attempts left, and returns the count.
 fn requeue_stale_running(files: Files, db_path: Text, clock: Clock, stale_seconds: Int) : Result(
   Int,
   Table.TableError
@@ -379,7 +377,12 @@ fn requeue_stale_running(files: Files, db_path: Text, clock: Clock, stale_second
           var cur = tx
           for (jid, job) in stale
             var updated = job
-            updated.state = "pending"
+            if job.attempts >= job.max_attempts
+              updated.state = "failed"
+              updated.last_error = Some("job lease expired on the final attempt")
+            else
+              updated.state = "pending"
+            end
             updated.locked_at = None
             updated.updated_at = now_iso
             cur = try Table.put(cur, tbl, jid, updated)
@@ -484,11 +487,10 @@ test "modb jobs support transactional rollback, FIFO claim_next, backoff retry, 
   assert j2.attempts == 1
   assert claim_next(files, path, c1, ["csv.import", "mercury.sync"]) == Ok(None)
 
-  assert complete(files, path, c1, id1) == Ok(Unit)
+  assert complete(files, path, c1, id1, j1.attempts) == Ok(Unit)
 
   # Retry id2 on error: attempts=1 < max_attempts=5 -> pending at t1 + 15s
-  assert fail_or_retry(files, path, c1, id2, j2.attempts, j2.max_attempts, "temporary timeout") ==
-    Ok(Unit)
+  assert fail_or_retry(files, path, c1, id2, j2.attempts, "temporary timeout") == Ok(Unit)
   assert claim_next(files, path, Clock.fixed(t0 + 10.seconds), ["csv.import"]) == Ok(None)
   c_after_backoff = Clock.fixed(t0 + 16.seconds)
   assert claim_next(files, path, c_after_backoff, ["csv.import"]) is Ok(Some(j2_retry))
@@ -506,22 +508,12 @@ test "modb jobs support transactional rollback, FIFO claim_next, backoff retry, 
   assert claim_next(files, path, c_due, ["mercury.sync"]) is Ok(Some(jf1))
   assert jf1.id == id_future
   assert jf1.attempts == 1
-  assert fail_or_retry(
-    files,
-    path,
-    c_due,
-    jf1.id,
-    jf1.attempts,
-    jf1.max_attempts,
-    "502 bad gateway"
-  ) ==
-    Ok(Unit)
+  assert fail_or_retry(files, path, c_due, jf1.id, jf1.attempts, "502 bad gateway") == Ok(Unit)
 
   c_due2 = Clock.fixed(t0 + 12.minutes)
   assert claim_next(files, path, c_due2, ["mercury.sync"]) is Ok(Some(jf2))
   assert jf2.attempts == 2
-  assert fail_or_retry(files, path, c_due2, jf2.id, jf2.attempts, jf2.max_attempts, "502 again") ==
-    Ok(Unit)
+  assert fail_or_retry(files, path, c_due2, jf2.id, jf2.attempts, "502 again") == Ok(Unit)
   assert claim_next(files, path, Clock.fixed(t0 + 3.hours), ["mercury.sync"]) == Ok(None)
 
   assert list_recent(rf, path, 10) is Ok(recent)
@@ -531,4 +523,32 @@ test "modb jobs support transactional rollback, FIFO claim_next, backoff retry, 
   assert failed_rec.attempts == 2
   assert failed_rec.last_error == Some("502 again")
   assert failed_rec.to_json.text_at("state") == Some("failed")
+end
+
+test "stale claim owners cannot complete or retry jobs and stale final attempts fail"
+  files = Files.in_memory({})
+  path = "jobs.modb"
+  rng = SecureRandom.seeded(72)
+  t0 = Time.parse("2026-11-22T06:00:00Z") or stop "valid t0"
+  c0 = Clock.fixed(t0)
+  c1 = Clock.fixed(t0 + 60.seconds)
+  assert enqueue_at(files, path, rng, c0, "default", "worker", Json.Null, t0, 2) is Ok(id)
+  assert claim_next(files, path, c0, ["worker"]) is Ok(Some(old))
+  assert requeue_stale_running(files, path, c1, 30) == Ok(1)
+  assert claim_next(files, path, c1, ["worker"]) is Ok(Some(current))
+  assert current.id == id and current.attempts == old.attempts + 1
+
+  assert complete(files, path, c1, id, old.attempts) == Ok(Unit)
+  assert list_recent(files.read_only, path, 1) == Ok([current])
+  assert fail_or_retry(files, path, c1, id, old.attempts, "late failure") == Ok(Unit)
+  assert list_recent(files.read_only, path, 1) == Ok([current])
+
+  c2 = Clock.fixed(t0 + 120.seconds)
+  assert requeue_stale_running(files, path, c2, 30) == Ok(1)
+  assert claim_next(files, path, c2, ["worker"]) == Ok(None)
+  assert list_recent(files.read_only, path, 1) is Ok(rows)
+  failed = rows.first or stop "expected failed job"
+  assert failed.state == "failed"
+  assert failed.attempts == failed.max_attempts and failed.locked_at == None
+  assert failed.last_error is Some(_)
 end

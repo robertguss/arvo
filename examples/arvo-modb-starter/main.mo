@@ -405,3 +405,45 @@ test "end-to-end Arvo + MoDB + Inertia v2 flow: ReadFiles auth/GET, CSRF, flash,
   assert WebTest.cookie(logged_out, "arvo_session") == None
   assert WebTest.cookie(logged_out, "XSRF-TOKEN") == None
 end
+
+test "scheduled MoDB drain recovers orphaned claims after the lease expires"
+  files = Files.in_memory({})
+  rng = SecureRandom.seeded(71)
+  t0 = Time.parse("2026-11-22T06:00:00Z") or stop "t0"
+  c0 = Clock.fixed(t0)
+  path = Routes.ledger_db_path
+  assert Jobs.enqueue(files, path, rng, c0, "import.notify", Json.Null) is Ok(id)
+  assert Jobs.claim_next(files, path, c0, ["import.notify"]) is Ok(Some(claimed))
+  assert claimed.id == id
+  assert ApiTest.run_job(Main, "arvo.jobs.drain", Json.Null, files, c0, Env.of({}), rng) == Ok(Unit)
+  assert Jobs.list_recent(files.read_only, path, 1) == Ok([claimed])
+
+  later = Clock.fixed(t0 + 5.minutes)
+  assert ApiTest.run_job(Main, "arvo.jobs.drain", Json.Null, files, later, Env.of({}), rng) ==
+    Ok(Unit)
+  assert Jobs.list_recent(files.read_only, path, 1) is Ok(rows)
+  job = rows.first or stop "expected recovered job"
+  assert job.id == id and job.state == "completed" and job.attempts == 2
+end
+
+test "MoDB starter refuses to bootstrap without explicit credentials"
+  files = Files.in_memory({})
+  rng = SecureRandom.seeded(74)
+  t0 = Time.parse("2026-11-22T06:00:00Z") or stop "t0"
+  clock = Clock.fixed(t0)
+  req = Api.post("/login")
+  key = rng.bytes(32).to_hex
+  assert ApiTest.send(Main, req, files, clock, Env.of({"ARVO_SEED_PASSWORD": "seed"}), rng).status ==
+    500
+  assert ApiTest.send(Main, req, files, clock, Env.of({"ARVO_SECRET_KEY": key}), rng).status == 500
+  assert ApiTest.send(
+    Main,
+    req,
+    files,
+    clock,
+    Env.of({"ARVO_SECRET_KEY": key, "ARVO_SEED_PASSWORD": " "}),
+    rng
+  ).status ==
+    500
+  assert not files.read_only.exists?(Routes.ledger_db_path)
+end

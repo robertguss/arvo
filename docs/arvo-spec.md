@@ -180,7 +180,7 @@ end
 
 ## Part 2: Arvo Pure-Mo Framework API (`lib/arvo/*.mo`)
 
-Every module lives in `lib/arvo/` (loaded on `use Arvo.*`) and relies only on Mo's standard capabilities + Phase 1 primitives.
+Core modules live in `lib/arvo/` and rely only on Mo's standard capabilities and primitives. The SQLite adapters live in `lib/arvo/sqlite/`. In v0.2, use `Arvo.Sqlite.Audit`, `Arvo.Sqlite.Jobs`, and `Arvo.Sqlite.Migrations` instead of the former top-level modules. Import `Arvo.Sqlite.Sessions` for SQLite persistence and keep `Arvo.Session` for session types, configuration, and cookie helpers.
 
 ### Key Module Signatures
 
@@ -199,7 +199,7 @@ Arvo.Cookie.get(req: Api.Request, name: Text) : Option(Text)
 Arvo.Cookie.set(res: Api.Response, name: Text, value: Text, opts: CookieOptions) : Api.Response
 Arvo.Cookie.clear(res: Api.Response, name: Text, path: Text) : Api.Response
 
-## Arvo.Session (AEAD cookie + revocable `arvo_sessions` SQLite row)
+## Arvo.Session (storage-agnostic types and AEAD cookies)
 struct Session
   id: Text
   member_id: Text
@@ -207,11 +207,14 @@ struct Session
   expires_at: Time
 end
 
-Arvo.Session.create(db: Sqlite.Database, rng: SecureRandom, clock: Clock, key: Bytes, member_id: Text)
-  : Result((Session, Text), SessionError)
-Arvo.Session.load(req: Api.Request, db: Sqlite.Database, clock: Clock, key: Bytes)
-  : Result(Option(Session), SessionError)
-Arvo.Session.revoke(db: Sqlite.Database, session_id: Text) : Result(Unit, SqliteError)
+Arvo.Session.default_config(secure?: Bool) : SessionConfig
+
+## Arvo.Sqlite.Sessions (revocable `arvo_sessions` SQLite rows)
+Arvo.Sqlite.Sessions.create(db: Sqlite.Database, rng: SecureRandom, clock: Clock, key: Bytes, member_id: Text, cfg: Session.SessionConfig)
+  : Result((Session.Session, Text), Sessions.SessionError)
+Arvo.Sqlite.Sessions.load(req: Api.Request, db: Sqlite.Database, clock: Clock, key: Bytes, cfg: Session.SessionConfig)
+  : Result(Option(Session.Session), Sessions.SessionError)
+Arvo.Sqlite.Sessions.revoke(db: Sqlite.Database, session_id: Text) : Result(Unit, SqliteError)
 
 ## Arvo.Csrf (compatible with @inertiajs/react XSRF-TOKEN convention)
 Arvo.Csrf.verify(req: Api.Request, session: Session) : Bool
@@ -250,9 +253,10 @@ Arvo.Inertia.redirect(location: Text) : Api.Response             # 303 See Other
 Arvo.Inertia.validation_error(req: Api.Request, errors: Map(Text, List(Text))) : Api.Response
 Arvo.Inertia.version_mismatch?(req: Api.Request, cfg: InertiaConfig) : Option(Api.Response) # 409 + X-Inertia-Location
 
-## Arvo.Migrations & Arvo.Audit
-Arvo.Migrations.run(db: Sqlite.Database, clock: Clock, scripts: List((Int, Text, Text))) : Result(Int, SqliteError)
-Arvo.Audit.record(
+## Arvo.Sqlite.Migrations & Arvo.Sqlite.Audit
+Arvo.Sqlite.Migrations.run(db: Sqlite.Database, clock: Clock, migrations: List(Migrations.Migration))
+  : Result(Int, Migrations.MigrationError)
+Arvo.Sqlite.Audit.record(
   db: Sqlite.Database,
   rng: SecureRandom,
   clock: Clock,

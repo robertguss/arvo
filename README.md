@@ -177,7 +177,7 @@ mo serve main.mo --bind 127.0.0.1 --port 8080
 # Core + SQLite + examples/arvo-starter (automatically runs MoDB suite if ../modb exists)
 ./scripts/test.sh
 
-# Explicitly run the optional MoDB suite against a modb checkout anywhere on disk
+# Explicitly select a MoDB checkout, overriding any sibling checkout
 MODB_PATH=/path/to/modb ./scripts/test.sh
 ```
 

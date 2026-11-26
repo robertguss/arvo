@@ -118,8 +118,15 @@ fn load_from_store(store: Modb.Store, token_hash: Text, now: Time) : Result(
   Ok(Some((sess, row)))
 end
 
-## Updates `last_seen_at` to `now` for `session_id` if it still exists in `store`.
+## Advances `last_seen_at` to `now` for `session_id` if it still exists in `store`.
 fn touch_in_store(store: Modb.Store, session_id: Text, now: Time) : Result(
+  Modb.Store,
+  Table.TableError
+)
+  touch_if_due_in_store(store, session_id, now, 0)
+end
+
+fn touch_if_due_in_store(store: Modb.Store, session_id: Text, now: Time, interval_seconds: Int) : Result(
   Modb.Store,
   Table.TableError
 )
@@ -130,12 +137,19 @@ fn touch_in_store(store: Modb.Store, session_id: Text, now: Time) : Result(
       case try Table.tx_get(tx, tbl, session_id)
         None: Ok(tx)
         Some(row):
+          return Ok(tx) if not touch_due?(row, now, interval_seconds)
           var updated = row
           updated.last_seen_at = now
           Table.put(tx, tbl, session_id, updated)
       end
     end
   )
+end
+
+fn touch_due?(row: StoredSession, now: Time, interval_seconds: Int) : Bool
+  interval_seconds >= 0 and
+    now > row.last_seen_at and
+    (now - row.last_seen_at) >= interval_seconds.seconds
 end
 
 ## Atomically deletes `old_session_id` and inserts `mat` inside a single CoW commit.
@@ -297,15 +311,15 @@ fn load(
     Some(p): p
     None: return Ok(None)
   end
-  should_touch? = touch_interval_seconds >= 0 and
-    (now - stored.last_seen_at) >= touch_interval_seconds.seconds
-  if should_touch?
+  if touch_due?(stored, now, touch_interval_seconds)
     _touched = try Modb.with_exclusive_lock(
       files,
       db_path,
       fn(me) Storage(Table.Storage(me)) end,
       fn(s)
-        _ns = try touch_in_store(s, sess.id, now).map_error(fn(e) Storage(e) end)
+        _ns = try touch_if_due_in_store(s, sess.id, now, touch_interval_seconds).map_error(
+          fn(e) Storage(e) end
+        )
         Ok(Unit)
       end
     )
@@ -441,6 +455,19 @@ test "modb sessions support read-only loads, throttled touches, AAD binding, rot
     Error(_): stop "open_read_only"
   end
   assert txid_after_10m == txid_after_create + 1
+
+  # Requests that observed an older snapshot must recheck the touch against the current store.
+  assert Modb.with_exclusive_lock(
+    files,
+    path,
+    fn(e) Table.Storage(e) end,
+    fn(s)
+      within_interval = try touch_if_due_in_store(s, sess1.id, t0 + 15.minutes, 600)
+      older_request = try touch_if_due_in_store(within_interval, sess1.id, t0 + 9.minutes, 600)
+      Ok(Modb.txid(older_request))
+    end
+  ) ==
+    Ok(txid_after_10m)
 
   # Wrong key, wrong cookie name (AAD mismatch), and tampered cookie fail closed
   assert must_ok_msess(load_read_only(req1, rf, path, clock_10m, wrong_key, cfg)) == None

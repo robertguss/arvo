@@ -4,6 +4,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MO="${MO:-mo}"
 
+if [ "${MODB_PATH+x}" = x ] && { [ ! -f "$MODB_PATH/mo.toml" ] || [ ! -d "$MODB_PATH/src" ]; }; then
+  echo "ERROR: MODB_PATH must point to a MoDB checkout containing mo.toml and src: '$MODB_PATH'" >&2
+  exit 1
+fi
+
 echo "==> Checking core Arvo modules are SQLite-free"
 if grep -rn "Sqlite" "$ROOT"/lib/arvo/*.mo; then
   echo "ERROR: top-level core module references Sqlite!" >&2
@@ -42,15 +47,15 @@ run_modb_suite() {
   "$MO" test "$arvo_root/examples/arvo-modb-starter/main.mo"
 }
 
-if [ -d "$ROOT/../modb" ]; then
-  run_modb_suite "$ROOT"
-elif [ -n "${MODB_PATH:-}" ] && [ -d "$MODB_PATH" ]; then
+if [ "${MODB_PATH+x}" = x ]; then
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
   mkdir -p "$TMP/arvo" "$TMP/modb"
   tar -C "$ROOT" --exclude=.git --exclude=node_modules -cf - . | tar -C "$TMP/arvo" -xf -
   cp -a "$MODB_PATH/mo.toml" "$MODB_PATH/src" "$TMP/modb/"
   run_modb_suite "$TMP/arvo"
+elif [ -d "$ROOT/../modb" ]; then
+  run_modb_suite "$ROOT"
 else
   echo "==> Skipping optional MoDB tests (sibling ../modb not found; set MODB_PATH=/path/to/modb to run)"
 fi
