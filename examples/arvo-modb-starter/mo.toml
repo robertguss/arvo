@@ -1,0 +1,8 @@
+[package]
+name = "arvo-modb-starter"
+version = "0.2.0"
+
+[dependencies]
+arvo = { path = "../.." }
+arvo-modb = { path = "../../packages/arvo-modb" }
+modb = { path = "../../../modb" }

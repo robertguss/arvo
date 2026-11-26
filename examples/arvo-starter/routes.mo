@@ -13,14 +13,15 @@ create_bill,
 pay_bill,
 import_csv
 use Api
-use Arvo.Audit
 use Arvo.Auth
 use Arvo.Changeset
 use Arvo.Flash
 use Arvo.Form
 use Arvo.Inertia
-use Arvo.Migrations
 use Arvo.Session
+use Arvo.Sqlite.Audit
+use Arvo.Sqlite.Migrations
+use Arvo.Sqlite.Sessions
 use Json
 
 ## Authenticated household member + active SQLite-backed session.
@@ -111,7 +112,7 @@ fn app_migrations() : List(Migrations.Migration)
       display_name TEXT NOT NULL,
       created_at TEXT NOT NULL
     ) STRICT;
-    #{Session.schema_sql()}
+    #{Sessions.schema_sql()}
     #{Audit.schema_sql()}
     CREATE TABLE IF NOT EXISTS bills (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -206,7 +207,7 @@ fn authenticate(req: Api.Request, db: Sqlite.Database, rng: SecureRandom, clock:
 )
   try bootstrap_db(db, rng, clock, env)
   key = try app_secret_key(env)
-  maybe_sess = try Session.load(req, db, clock, key, session_cfg(env)).map_error(
+  maybe_sess = try Sessions.load(req, db, clock, key, session_cfg(env)).map_error(
     fn(e) ServerFailed(reason: "session load failed: #{e}") end
   )
   sess = try maybe_sess.or_fail(Unauthenticated)
@@ -307,7 +308,7 @@ fn post_login(req: Api.Request, db: Sqlite.Database, rng: SecureRandom, clock: C
   end
 
   scfg = session_cfg(env)
-  (sess, cookie_val) = try Session.create(db, rng, clock, key, mrow.id, scfg).map_error(
+  (sess, cookie_val) = try Sessions.create(db, rng, clock, key, mrow.id, scfg).map_error(
     fn(e) ServerFailed(reason: "session create failed: #{e}") end
   )
   _ev = try Audit.record(
@@ -334,7 +335,9 @@ fn post_logout(req: Api.Request, member: Member, db: Sqlite.Database, env: Env) 
   AppError
 )
   return Error(Forbidden) if not Auth.require_csrf(req, member.session)
-  _rev = try Session.revoke(db, member.session.id).map_error(fn(e) ServerFailed(reason: "#{e}") end)
+  _rev = try Sessions.revoke(db, member.session.id).map_error(
+    fn(e) ServerFailed(reason: "#{e}") end
+  )
   Ok(Auth.logout_response(Inertia.redirect("/login"), session_cfg(env)))
 end
 

@@ -5,9 +5,9 @@ Minimal full-stack reference application combining Mo's declarative `api` server
 ## Architecture Demonstrated
 
 - **Cross-module `api` routing (`main.mo` + `routes.mo`):** `scope "/bills"`, `scope "/imports"`, `static "/assets" from "public/assets"`, and `auth Routes.Member via Routes.authenticate` with both optional (`Option(Member)`) and required (`Member`) route bindings.
-- **App-level auth & CSRF (`Arvo.Auth`, `Arvo.Session`, `Arvo.Csrf`, `Arvo.Cookie`):** 2-email household allowlist, scrypt password hashing, AES-256-GCM sealed cookies backed by revocable SQLite `arvo_sessions` rows (storing only SHA-256 token digests), and `@inertiajs/react`-compatible `XSRF-TOKEN` / `X-XSRF-TOKEN` double-submit verification.
+- **App-level auth & CSRF (`Arvo.Auth`, `Arvo.Session`, `Arvo.Sqlite.Sessions`, `Arvo.Csrf`, `Arvo.Cookie`):** 2-email household allowlist, scrypt password hashing, AES-256-GCM sealed cookies backed by revocable SQLite `arvo_sessions` rows (storing only SHA-256 token digests), and `@inertiajs/react`-compatible `XSRF-TOKEN` / `X-XSRF-TOKEN` double-submit verification.
 - **Inertia v2 protocol (`Arvo.Inertia`, `Arvo.Flash`, `Arvo.Changeset`):** Vite dev HMR shell vs production `manifest.json` SHA-256 asset versioning, `409 Conflict` + `X-Inertia-Location` on version mismatch, `X-Inertia-Partial-Data` partial reloads, XSS-escaped `data-page` JSON, and sealed one-hop flash validation errors across `303 See Other` redirects.
-- **Multipart uploads, migrations & audit trail (`Arvo.Form`, `Arvo.Migrations`, `Arvo.Audit`):** Bounded `multipart/form-data` CSV import, checksum-verified `_arvo_migrations`, ULID-ordered `arvo_events` audit snapshots, and optimistic concurrency (`version` column + `Audit.ensure_updated`).
+- **Multipart uploads, migrations & audit trail (`Arvo.Form`, `Arvo.Sqlite.Migrations`, `Arvo.Sqlite.Audit`):** Bounded `multipart/form-data` CSV import, checksum-verified `_arvo_migrations`, ULID-ordered `arvo_events` audit snapshots, and optimistic concurrency (`version` column + `Audit.ensure_updated`).
 - **Zero-socket end-to-end testing (`Arvo.WebTest` + `ApiTest.send`):** Full browser cookie jar, CSRF, Inertia HTML/JSON, static `ETag`/`304`, and session revocation test suite running in memory in milliseconds:
 
 ```sh

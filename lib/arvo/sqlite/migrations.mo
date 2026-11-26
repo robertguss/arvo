@@ -1,6 +1,6 @@
 ## Ordered SQLite schema migration runner tracked in `_arvo_migrations` with SHA-256
 ## checksum verification, transactional application, and trigger-aware SQL statement splitting.
-module Arvo.Migrations
+module Arvo.Sqlite.Migrations
 expose Migration(..), MigrationError(..), split_statements, run, applied_versions
 use Crypto
 

@@ -1,6 +1,6 @@
 ## Durable SQLite-backed background job queue (`arvo_jobs`) with transactional enqueue,
 ## atomic `BEGIN IMMEDIATE` claiming, exponential backoff retries, and stale-lock recovery.
-module Arvo.Jobs
+module Arvo.Sqlite.Jobs
 expose JobRecord(..),
 JobError(..),
 schema_sql,
@@ -13,7 +13,7 @@ complete,
 fail_or_retry,
 requeue_stale_running,
 list_recent
-use Arvo.Audit
+use Arvo.Id
 use Json
 
 default_queue = "default"
@@ -45,7 +45,7 @@ table_ddl = "CREATE TABLE IF NOT EXISTS arvo_jobs (id TEXT PRIMARY KEY, queue TE
 index_ddl = "CREATE INDEX IF NOT EXISTS arvo_jobs_ready ON arvo_jobs (state, run_at)"
 select_cols = "id, queue, job_name, payload_json, state, attempts, max_attempts, run_at, locked_at, last_error, created_at, updated_at"
 
-## DDL creating `arvo_jobs` and its `(state, run_at)` readiness index (ready for `Arvo.Migrations`).
+## DDL creating `arvo_jobs` and its `(state, run_at)` readiness index (ready for `Arvo.Sqlite.Migrations`).
 fn schema_sql() : Text
   "#{table_ddl};\n#{index_ddl};"
 end
@@ -116,7 +116,7 @@ fn enqueue_at(
   run_at: Time,
   max_attempts: Int
 ) : Result(Text, SqliteError)
-  job_id = Audit.generate_id(rng, clock)
+  job_id = Id.ulid(rng, clock)
   now_iso = format_utc_iso(clock.now)
   run_iso = format_utc_iso(run_at)
   eff_queue = if queue.empty?: default_queue else: queue
