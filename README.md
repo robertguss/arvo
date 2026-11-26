@@ -46,6 +46,9 @@ In Mo, `use Arvo.<...>.<Name>` binds the final segment `<Name>`.
 | `Arvo.Inertia` | `Inertia` | Full Inertia v2 server protocol: HTML shell + `data-page` escaping, XHR JSON, Vite manifest & dev HMR, `409` version check, partial reloads (`X-Inertia-Partial-Data`), typed `render_page` / `PageContract` manifest helpers, `303` redirects. |
 | `Arvo.Oidc` | `Oidc` | OpenID Connect / OAuth 2.0 Authorization Code + PKCE (`S256`) client, discovery, AEAD state cookies, and domain allowlists. |
 | `Arvo.S3` | `S3` | Pure-Mo AWS Signature Version 4 presigned URLs (`PUT`/`GET`/`DELETE`) and signed requests for S3, R2, and MinIO. |
+| `Arvo.Mcp` | `Mcp` | Reusable Streamable HTTP MCP (`2025-03-26`) JSON-RPC 2.0 server with capability-safe `McpAction` dispatch, tools, and resources. |
+| `Arvo.Webhooks` | `Webhooks` | Signed outbound HMAC-SHA256 webhooks with replay-window verification, URL validation, and retry classification. |
+| `Arvo.Sse` | `Sse` | Server-Sent Events (`text/event-stream`) frame encoder, injection sanitization, keepalives, and `Last-Event-ID` cursors. |
 | `Arvo.WebTest` | `WebTest` | DB-agnostic in-memory browser & fluent `ApiTest.App` test harness with automatic cookie jar, `X-XSRF-TOKEN` injection, `data-page` / Inertia JSON parser, and Vitest fixture export (`record_inertia_fixture`). |
 | `Arvo.Snapshot` | `Snapshot` | Tamper-guarded golden snapshot testing (`Snapshot.expect_json` / `expect_text`) with `ARVO_UPDATE_SNAPSHOTS` gate and automatic secret redaction. |
 | `Arvo.Props` | `Props` | Property-based testing helpers (`forall`, shrinking generators) integrating directly with `mo test`. |
