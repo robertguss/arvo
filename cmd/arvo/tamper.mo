@@ -113,38 +113,19 @@ fn promise_blocks_changed?(old_source: Text, new_source: Text) : Bool
   extract_promise_blocks(old_source) != extract_promise_blocks(new_source)
 end
 
-fn unquote_git_path(path: Text) : Text
-  if path.starts_with?("\"") and path.ends_with?("\"") and path.byte_count >= 2
-    path.bytes.slice(1, path.byte_count - 1).decode_utf8 or path
-  else
-    path
-  end
-end
-
-## Parses changed file paths from `git status --porcelain` output (preserving both sides of renames).
+## Parses NUL-delimited porcelain v1 status with rename detection disabled.
 fn parse_git_status_paths(porcelain: Text) : List(Text)
   examples
     parse_git_status_paths(
-      " M routes.mo\n?? specs/features/bills.feature.md\nR  old.mo -> new.mo\n"
+      " M routes.mo\u{0}?? specs/features/bills.feature.md\u{0}D  old.mo\u{0}A  new.mo\u{0}"
     ) == ["routes.mo", "specs/features/bills.feature.md", "old.mo", "new.mo"]
   end
 
   var out = []
-  for raw in porcelain.lines
-    continue if raw.trim.empty? or raw.chars.size < 4
-    body = Text.from_chars(raw.chars.drop(3)).trim
-    if body.contains?(" -> ")
-      parts = body.split(" -> ")
-      old_p = unquote_git_path((parts.first or "").trim)
-      new_p = unquote_git_path(parts.drop(1).join(" -> ").trim)
-      if not old_p.empty?
-        out = out.append(old_p)
-      end
-      if not new_p.empty? and new_p != old_p
-        out = out.append(new_p)
-      end
-    else
-      out = out.append(unquote_git_path(body))
+  for raw in porcelain.split("\u{0}")
+    continue if raw.byte_count <= 3
+    if raw.bytes.slice(3, raw.byte_count).decode_utf8 is Some(path)
+      out = out.append(path)
     end
   end
   out
@@ -271,19 +252,20 @@ test "Tamper detects modified protected paths and promise block edits"
   assert (cb.first or "").contains?("x == 0")
   assert extract_promise_blocks("if x > 0\n  1\nend\n") == []
 
-  assert parse_git_status_paths("     \nxyz\n") == []
+  assert parse_git_status_paths("\u{0}xyz\u{0}") == []
   paths = parse_git_status_paths(
-    "\n   \nabc\n M x\n M \"\"\n M \"\"\n M \"\n M a\"\n M \"quoted path.mo\"\n M specs/features/bills.feature.md\n M routes.mo\n?? snapshots/home.snap.json\n M specs/features/bills.feature.md\n"
+    "\u{0}   \u{0}abc\u{0} M x\u{0} M \"\"\u{0} M \"\"\u{0} M \"\u{0} M a\"\u{0} M \"quoted path.mo\"\u{0} M specs/features/bills.feature.md\u{0} M routes.mo\u{0}?? snapshots/home.snap.json\u{0} M specs/features/bills.feature.md\u{0}?? snapshots/ étude -> plan\nfinal \u{0}"
   )
   assert paths.contains?("x")
-  assert paths.contains?("")
+  assert paths.contains?("\"\"")
   assert paths.contains?("\"")
   assert paths.contains?("a\"")
-  assert paths.contains?("quoted path.mo")
+  assert paths.contains?("\"quoted path.mo\"")
   assert not paths.contains?("c")
-  assert not paths.contains?("") == false
+  assert not paths.contains?("")
   globs = ["specs/features/**/*.feature.md", "snapshots/**/*"]
   assert detect_tampered_paths(paths, globs) == [
+    "snapshots/ étude -> plan\nfinal ",
     "snapshots/home.snap.json",
     "specs/features/bills.feature.md"
   ]

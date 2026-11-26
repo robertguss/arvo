@@ -155,7 +155,9 @@ end
 
 ## Verifies `arvo_events` count never shrinks and all ULID IDs and timestamps stay valid & non-decreasing.
 fn check_events_invariant(db: Sqlite.Database, prev_count: Int) : Result(Int, Text)
-  return Ok(0) if not try has_table(db, "arvo_events")
+  if not try has_table(db, "arvo_events")
+    return if prev_count > 0: Error("arvo_events shrank from #{prev_count} to 0") else: Ok(0)
+  end
   rows = try db.query("SELECT id, created_at FROM arvo_events ORDER BY rowid ASC", []).map_error(
     fn(e) "#{e}" end
   )
@@ -354,6 +356,19 @@ fn check_all_invariants(world: W, db: Sqlite.Database, clock: Clock, invariants:
   Ok(checked)
 end
 
+fn check_initial_invariants(
+  world: W,
+  db: Sqlite.Database,
+  clock: Clock,
+  invariants: List(Invariant(W))
+) : Result((Int, Int), (Text, Text))
+  events = try check_events_invariant(db, 0).map_error(
+    fn(reason) ("arvo_events_append_only", reason) end
+  )
+  checks = try check_all_invariants(world, db, clock, invariants)
+  Ok((events, checks))
+end
+
 ## Replays an explicit `steps` trace from `init_world(seed)`, checking `invariants` after every step.
 ## Returns `Ok((sys_events, checks))` or `Error((invariant_name, reason, failing_step_index))`.
 fn replay_steps(
@@ -366,17 +381,12 @@ fn replay_steps(
   (init_w, db, clock, _srng, _rng, app) = init_world(seed)
   var world = init_w
   var sys_count = 0
-  var checks_count = 0
-  var prev_events = 0
-
-  case check_events_invariant(db, prev_events)
-    Ok(n): prev_events = n
-    Error(r): return Error(("arvo_events_append_only", r, 0))
-  end
-  case check_all_invariants(world, db, clock, invariants)
-    Ok(c): checks_count += c
+  (initial_events, initial_checks) = case check_initial_invariants(world, db, clock, invariants)
+    Ok(counts): counts
     Error((iname, r)): return Error((iname, r, 0))
   end
+  var checks_count = initial_checks
+  var prev_events = initial_events
 
   for (idx, step) in steps.enumerate
     if step is System(event: _)
@@ -532,10 +542,9 @@ fn run(
     (init_w, db, clock, _srng, rng, app) = init_world(seed)
     var world = init_w
     var recorded = []
-    var prev_events = 0
 
-    case check_all_invariants(world, db, clock, invariants)
-      Ok(c): total_checks += c
+    (initial_events, initial_checks) = case check_initial_invariants(world, db, clock, invariants)
+      Ok(counts): counts
       Error((iname, reason)): return Error(
         SimFailure(
           seed: seed,
@@ -548,6 +557,8 @@ fn run(
         )
       )
     end
+    total_checks += initial_checks
+    var prev_events = initial_events
 
     for step_idx in 0..cfg.max_steps
       step = next_step(rng, world)
@@ -1411,6 +1422,35 @@ test "Arvo.Sim passes on locked workflow, discovers and shrinks optimistic-lock 
     []
   ) is
     Error(("arvo_events_append_only", _, 0))
+
+  next_event = fn(_r, _w) AppAction(actor_idx: 0, action: EnqueueSync) end
+  initial_cfg = SimConfig(
+    base_seed: 1,
+    seed_count: 1,
+    max_steps: 0,
+    shrink_budget: 0,
+    fault_probability_pct: 0
+  )
+  assert run(initial_cfg, init_bad_ev, next_event, apply_count_clock, []) is Error(bad_ev)
+  assert bad_ev.invariant_name == "arvo_events_append_only"
+  assert bad_ev.original_len == 0 and bad_ev.shrunk_steps.empty?
+
+  init_valid_ev = fn(seed)
+    (w, db, clk, srng, rng, app) = init_bad_ev(seed)
+    assert db.run("UPDATE arvo_events SET id = '01K00000000000000000000000'", []) == Ok(Unit)
+    (w, db, clk, srng, rng, app)
+  end
+  assert run(initial_cfg, init_valid_ev, next_event, apply_count_clock, []) is Ok(_)
+
+  drop_events = fn(w, _step, db, _clk, _app)
+    try db.run("DROP TABLE arvo_events", []).map_error(fn(e) "#{e}" end)
+    Ok(w)
+  end
+  assert run(default_config(1), init_valid_ev, next_event, drop_events, []) is Error(dropped_ev)
+  assert dropped_ev.invariant_name == "arvo_events_append_only"
+  assert dropped_ev.original_len == 1
+  assert replay_steps(1, dropped_ev.shrunk_steps, init_valid_ev, drop_events, []) ==
+    Error(("arvo_events_append_only", "arvo_events shrank from 1 to 0", 0))
 
   assert run(
     SimConfig(

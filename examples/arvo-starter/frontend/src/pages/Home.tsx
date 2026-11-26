@@ -18,7 +18,10 @@ export default function Home({
   function addBill(e: FormEvent) {
     e.preventDefault();
     setActionError(null);
-    form.post("/bills", { onSuccess: () => form.reset() });
+    form.post("/bills", {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      onSuccess: () => form.reset(),
+    });
   }
 
   async function markPaid(billId: number, expectedVersion: number) {
@@ -45,6 +48,8 @@ export default function Home({
         return;
       }
       router.reload();
+    } catch {
+      setActionError("Could not mark bill paid (network error).");
     } finally {
       setPayingId(null);
     }
@@ -98,11 +103,11 @@ export default function Home({
                   <button
                     type="button"
                     disabled={payingId === b.id}
-                    aria-label={`Mark paid ${b.name}`}
+                    aria-label={`Mark in flight ${b.name}`}
                     onClick={() => void markPaid(b.id, b.version)}
                     className="rounded border border-slate-400 px-2 py-1 text-xs font-medium text-slate-900"
                   >
-                    Mark paid
+                    Mark in flight
                   </button>
                 )}
               </div>

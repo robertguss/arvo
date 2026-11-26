@@ -53,7 +53,9 @@ describe("Login component with real Mo Inertia fixtures", () => {
     const submitBtn = screen.getByRole("button", { name: "Sign in" });
     expect(submitBtn).toBeEnabled();
     await user.click(submitBtn);
-    expect(postMock).toHaveBeenCalledWith("/login");
+    expect(postMock).toHaveBeenCalledWith("/login", {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
   });
 
   it("renders real validation errors, alert banners, and disabled state", () => {
