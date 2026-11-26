@@ -93,12 +93,116 @@ fn reset_starter_db(
   )
 end
 
-## Prints `PageContract` manifest (`--arvo-contracts`) or applies `--arvo-seed` / `--arvo-reset` profiles.
-fn main(args: Args, console: Console, sqlite: Sqlite, rng: SecureRandom, clock: Clock, env: Env) : Int
+fn export_starter_fixtures(
+  files: Files,
+  sqlite: Sqlite,
+  rng: SecureRandom,
+  clock: Clock,
+  env: Env
+) : Result(Int, Text)
+  db = try sqlite.open(":memory:").map_error(fn(e) "#{e}" end)
+  try Routes.bootstrap_db(db, rng, clock, env).map_error(fn(e) "#{e}" end)
+  rf = files.read_only
+
+  login_guest = try Routes.show_login(Api.get("/login"), None, rf, env).map_error(
+    fn(e) "#{e}" end
+  )
+  try WebTest.record_inertia_fixture(files, "login_guest", login_guest)
+
+  bad_login_req = Api.post("/login").with_bytes(
+    "email=intruder@evil.test&password=wrong".bytes,
+    "application/x-www-form-urlencoded"
+  )
+  bad_login_res = try Routes.post_login(bad_login_req, db, rng, clock, env).map_error(
+    fn(e) "#{e}" end
+  )
+  c_bad_login = WebTest.absorb(WebTest.new(), bad_login_res)
+  login_err_res = try Routes.show_login(
+    WebTest.prepare(c_bad_login, Api.get("/login")),
+    None,
+    rf,
+    env
+  ).map_error(fn(e) "#{e}" end)
+  try WebTest.record_inertia_fixture(files, "login_error", login_err_res)
+
+  ok_login_req = Api.post("/login").with_bytes(
+    "email=ada@household.local&password=horse-staple-battery".bytes,
+    "application/x-www-form-urlencoded"
+  )
+  ok_login_res = try Routes.post_login(ok_login_req, db, rng, clock, env).map_error(
+    fn(e) "#{e}" end
+  )
+  c_ada = WebTest.absorb(WebTest.new(), ok_login_res)
+  req_home = WebTest.prepare(c_ada, Api.get("/"))
+  ada = try Routes.authenticate(req_home, db, rng, clock, env).map_error(fn(e) "#{e}" end)
+  home_base = try Routes.home(req_home, Some(ada), db, rf, env, None).map_error(
+    fn(e) "#{e}" end
+  )
+  try WebTest.record_inertia_fixture(files, "home_baseline", home_base)
+
+  bad_bill_req = WebTest.prepare(
+    c_ada,
+    Api.post("/bills").with_bytes(
+      "name=&category=utilities&amount_cents=0".bytes,
+      "application/x-www-form-urlencoded"
+    )
+  )
+  bad_bill_res = try Routes.create_bill(bad_bill_req, ada, db, rng, clock, env).map_error(
+    fn(e) "#{e}" end
+  )
+  c_err = WebTest.absorb(c_ada, bad_bill_res)
+  home_err = try Routes.home(WebTest.prepare(c_err, Api.get("/")), Some(ada), db, rf, env, None)
+    .map_error(fn(e) "#{e}" end)
+  try WebTest.record_inertia_fixture(files, "home_validation_error", home_err)
+
+  pay_req = WebTest.prepare(c_ada, Api.post("/bills/1/pay"))
+  _paid = try Routes.pay_bill(
+    pay_req,
+    ada,
+    db,
+    rng,
+    clock,
+    env,
+    1,
+    Routes.PayInput(expected_version: 1, reason: Some("Paid via online banking"))
+  ).map_error(fn(e) "#{e}" end)
+  home_paid = try Routes.home(
+    WebTest.prepare(c_ada, Api.get("/")),
+    Some(ada),
+    db,
+    rf,
+    env,
+    None
+  ).map_error(fn(e) "#{e}" end)
+  try WebTest.record_inertia_fixture(files, "home_after_pay", home_paid)
+  Ok(5)
+end
+
+## Prints `PageContract` manifest (`--arvo-contracts`), exports Vitest fixtures, or applies `--arvo-seed` / `--arvo-reset` profiles.
+fn main(
+  args: Args,
+  console: Console,
+  files: Files,
+  sqlite: Sqlite,
+  rng: SecureRandom,
+  clock: Clock,
+  env: Env
+) : Int
   alist = args.list
   if alist.contains?("--arvo-contracts")
     console.print(Json.encode(Routes.contracts()))
     0
+  else if alist.contains?("--arvo-export-fixtures")
+    case export_starter_fixtures(files, sqlite, rng, clock, env)
+      Ok(count):
+        console.print(
+          Json.Object({"exported": Json.int(count), "dir": Json.String(".arvo/fixtures")}).to_text
+        )
+        0
+      Error(err):
+        console.error("fixture export failed: #{err}")
+        1
+    end
   else if alist.contains?("--arvo-seed")
     profile = case parse_flag_value(alist, "--arvo-seed")
       Some(p):
@@ -209,15 +313,52 @@ test "starter end-to-end flow via WebTest v2, query budgets, Seed profiles, and 
   app = ApiTest.start(Main, sql, clock, files, env, rng)
   assert sql.open("starter.sqlite") is Ok(db)
 
-  # 0. CLI entrypoint, migrations, seed/reset flags, & contracts manifest cover both pages cleanly
+  # 0. CLI entrypoint, migrations, seed/reset/fixture flags, & contracts manifest cover both pages cleanly
   assert (Routes.app_migrations().first or stop "migration").version == 1
+  rw_files = Files.in_memory(test_asset_map())
   c_contracts = Console.fake()
-  assert main(Args.of(["--arvo-contracts"]), c_contracts, sql, rng, clock, env) == 0
+  assert main(Args.of(["--arvo-contracts"]), c_contracts, rw_files, sql, rng, clock, env) == 0
   assert (c_contracts.printed.first or "").contains?("\"component\":\"Home\"")
   c_help = Console.fake()
-  assert main(Args.of([]), c_help, sql, rng, clock, env) == 0
+  assert main(Args.of([]), c_help, rw_files, sql, rng, clock, env) == 0
   assert (c_help.printed.first or "").contains?("mo serve main.mo")
   assert Routes.contracts().map(fn(c) c.component end) == ["Login", "Home"]
+
+  c_fix = Console.fake()
+  assert main(
+    Args.of(["--arvo-export-fixtures"]),
+    c_fix,
+    rw_files,
+    Sqlite.in_memory(),
+    rng,
+    clock,
+    env
+  ) ==
+    0
+  assert (c_fix.printed.first or "").contains?("\"exported\":5")
+  assert rw_files.exists?(".arvo/fixtures/Login/login_guest.json")
+  assert rw_files.exists?(".arvo/fixtures/Login/login_error.json")
+  assert rw_files.exists?(".arvo/fixtures/Home/home_baseline.json")
+  assert rw_files.exists?(".arvo/fixtures/Home/home_validation_error.json")
+  assert rw_files.exists?(".arvo/fixtures/Home/home_after_pay.json")
+  assert case rw_files.read_text(".arvo/fixtures/Home/home_after_pay.json")
+    Ok(t): t.contains?("\"in_flight\"")
+    Error(_): false
+  end
+  assert case rw_files.read_text(".arvo/fixtures/Home/home_validation_error.json")
+    Ok(t): t.contains?("can't be blank")
+    Error(_): false
+  end
+  assert main(
+    Args.of(["--arvo-export-fixtures"]),
+    Console.fake(),
+    Files.in_memory({".arvo": "blocker"}),
+    Sqlite.in_memory(),
+    rng,
+    clock,
+    env
+  ) ==
+    1
 
   # 0b. CLI --arvo-seed and --arvo-reset work deterministically and reject invalid args
   assert parse_flag_value(["--arvo-seed", "baseline", "--extra", "--db", "odd.sqlite"], "--db") ==
@@ -228,6 +369,7 @@ test "starter end-to-end flow via WebTest v2, query budgets, Seed profiles, and 
   assert main(
     Args.of(["--arvo-seed", "many_bills", "--db", "cli.sqlite"]),
     c_seed,
+    rw_files,
     sql_cli,
     rng,
     clock,
@@ -242,6 +384,7 @@ test "starter end-to-end flow via WebTest v2, query budgets, Seed profiles, and 
   assert main(
     Args.of(["--arvo-reset", "baseline", "--db", "cli.sqlite"]),
     c_rst,
+    rw_files,
     sql_cli,
     rng,
     clock,
@@ -252,23 +395,23 @@ test "starter end-to-end flow via WebTest v2, query budgets, Seed profiles, and 
   assert db_cli.query("SELECT id FROM bills", []) is Ok(rst_bills) and rst_bills.rows.size == 1
 
   c_bad_cli = Console.fake()
-  assert main(Args.of(["--arvo-seed"]), c_bad_cli, sql_cli, rng, clock, env) == 2
-  assert main(Args.of(["--arvo-seed", "--db"]), c_bad_cli, sql_cli, rng, clock, env) == 2
-  assert main(Args.of(["--arvo-seed", "nope"]), c_bad_cli, sql_cli, rng, clock, env) == 1
-  assert main(Args.of(["--arvo-seed", "baseline", "--db", "../bad.sqlite"]), c_bad_cli, sql_cli, rng, clock, env) == 1
-  assert main(Args.of(["--arvo-reset"]), c_bad_cli, sql_cli, rng, clock, env) == 2
-  assert main(Args.of(["--arvo-reset", "-x"]), c_bad_cli, sql_cli, rng, clock, env) == 2
-  assert main(Args.of(["--arvo-reset", "nope"]), c_bad_cli, sql_cli, rng, clock, env) == 1
-  assert main(Args.of(["--arvo-reset", "baseline", "--db", "../bad.sqlite"]), c_bad_cli, sql_cli, rng, clock, env) == 1
-  assert main(Args.of(["--arvo-reset", "baseline", "--db"]), c_bad_cli, sql_cli, rng, clock, env) == 2
-  assert main(Args.of(["--arvo-seed", "baseline", "--db", "--bad"]), c_bad_cli, sql_cli, rng, clock, env) == 2
-  assert main(Args.of(["--arvo-reset", "nope", "--db", "cli.sqlite"]), c_bad_cli, sql_cli, rng, clock, env) == 1
+  assert main(Args.of(["--arvo-seed"]), c_bad_cli, rw_files, sql_cli, rng, clock, env) == 2
+  assert main(Args.of(["--arvo-seed", "--db"]), c_bad_cli, rw_files, sql_cli, rng, clock, env) == 2
+  assert main(Args.of(["--arvo-seed", "nope"]), c_bad_cli, rw_files, sql_cli, rng, clock, env) == 1
+  assert main(Args.of(["--arvo-seed", "baseline", "--db", "../bad.sqlite"]), c_bad_cli, rw_files, sql_cli, rng, clock, env) == 1
+  assert main(Args.of(["--arvo-reset"]), c_bad_cli, rw_files, sql_cli, rng, clock, env) == 2
+  assert main(Args.of(["--arvo-reset", "-x"]), c_bad_cli, rw_files, sql_cli, rng, clock, env) == 2
+  assert main(Args.of(["--arvo-reset", "nope"]), c_bad_cli, rw_files, sql_cli, rng, clock, env) == 1
+  assert main(Args.of(["--arvo-reset", "baseline", "--db", "../bad.sqlite"]), c_bad_cli, rw_files, sql_cli, rng, clock, env) == 1
+  assert main(Args.of(["--arvo-reset", "baseline", "--db"]), c_bad_cli, rw_files, sql_cli, rng, clock, env) == 2
+  assert main(Args.of(["--arvo-seed", "baseline", "--db", "--bad"]), c_bad_cli, rw_files, sql_cli, rng, clock, env) == 2
+  assert main(Args.of(["--arvo-reset", "nope", "--db", "cli.sqlite"]), c_bad_cli, rw_files, sql_cli, rng, clock, env) == 1
   assert db_cli.query("SELECT id FROM bills", []) is Ok(after_bad_profile) and after_bad_profile == rst_bills
   assert db_cli.run(
     "CREATE TRIGGER fail_reset BEFORE INSERT ON bills BEGIN SELECT RAISE(ABORT, 'test failure'); END",
     []
   ) == Ok(Unit)
-  assert main(Args.of(["--arvo-reset", "baseline", "--db", "cli.sqlite"]), c_bad_cli, sql_cli, rng, clock, env) == 1
+  assert main(Args.of(["--arvo-reset", "baseline", "--db", "cli.sqlite"]), c_bad_cli, rw_files, sql_cli, rng, clock, env) == 1
   assert db_cli.query("SELECT id FROM bills", []) is Ok(after_failed_seed) and after_failed_seed == rst_bills
 
   # 1. Static asset ETag / 304 behavior
@@ -1556,4 +1699,47 @@ test "starter covers route boundaries, config, audit limit, and CSV edge cases"
   (_s_lim, lim_res) = WebTest.get(s13, app, "/")
   lim_home = WebTest.expect_inertia[Routes.HomeProps](lim_res, "Home")
   assert lim_home.audit_feed.size == 20
+
+  # 3. Inertia JSON POST support on /login & /bills (used by @inertiajs/react useForm) plus 422 on bad JSON
+  (s_j0, j_bad_login) = WebTest.send(
+    WebTest.start().with_header("Host", "localhost:8080"),
+    app,
+    Api.post("/login").with_bytes("{bad-json".bytes, "application/json")
+  )
+  _ = WebTest.expect_status(j_bad_login, 422)
+  (s_j1, j_arr_login) = WebTest.send(
+    s_j0,
+    app,
+    Api.post("/login").with_bytes("[]".bytes, "application/json")
+  )
+  _ = WebTest.expect_status(j_arr_login, 422)
+  (s_j2, j_ok_login) = WebTest.send(
+    s_j1,
+    app,
+    Api.post("/login").with_json(
+      Json.Object({
+        "email": Json.String("ada@household.local"),
+        "password": Json.String("horse-staple-battery"),
+        "remember": Json.Boolean(true),
+        "meta": Json.Null
+      })
+    )
+  )
+  _ = WebTest.expect_redirect(j_ok_login, "/")
+  (s_j3, j_ok_bill) = WebTest.send(
+    s_j2,
+    app,
+    Api.post("/bills").with_json(
+      Json.Object({
+        "name": Json.String("Json Bill"),
+        "category": Json.String("card"),
+        "amount_cents": Json.int(3100),
+        "tags": Json.Array([Json.String("monthly")])
+      })
+    )
+  )
+  _ = WebTest.expect_redirect(j_ok_bill, "/")
+  (_s_j4, j_home) = WebTest.follow_redirect(s_j3, app)
+  j_props = WebTest.expect_inertia[Routes.HomeProps](j_home, "Home")
+  assert j_props.bills.any?(fn(b) b.name == "Json Bill" and b.amount_cents == 3100 end)
 end
