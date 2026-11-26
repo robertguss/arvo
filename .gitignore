@@ -14,8 +14,19 @@
 # Frontend dependencies & build artifacts
 node_modules/
 .vite/
+.stryker-tmp/
+*.tsbuildinfo
 examples/arvo-starter/public/assets/
 examples/arvo-starter/public/manifest.json
+
+# Arvo generated test/verification artifacts (keep .arvo/skills/ tracked)
+.arvo/runs/
+.arvo/evidence/
+.arvo/dossier/
+.arvo/fixtures/
+.arvo/tmp/
+.arvo/replays/
+examples/*/.arvo/
 
 # OS / editor
 .DS_Store

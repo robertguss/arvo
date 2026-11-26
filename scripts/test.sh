@@ -49,6 +49,10 @@ for f in "$ROOT"/lib/arvo/fixtures/*.mo; do
   "$MO" check "$f"
 done
 
+echo "==> Checking and testing pure-Mo arvo CLI (cmd/arvo)"
+"$MO" check "$ROOT/cmd/arvo/main.mo"
+"$MO" test "$ROOT/cmd/arvo/main.mo"
+
 echo "==> Checking and testing examples/arvo-starter via mo.toml path dependency"
 "$MO" check "$ROOT/examples/arvo-starter/main.mo"
 "$MO" test "$ROOT/examples/arvo-starter/main.mo"
