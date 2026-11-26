@@ -102,85 +102,54 @@ fn kv_quote?(ch: Char) : Bool
   ch == '"' or ch == '\'' or ch == '(' or ch == ')' or ch == '{' or ch == '}' or ch == '[' or ch == ']'
 end
 
-fn redact_kv_word(word: Text) : Text
-  for sep in ["=", ":"]
-    if word.contains?(sep)
-      parts = word.split(sep)
-      k = parts.first or ""
-      v = parts.drop(1).join(sep)
-      low_k = k.trim.ascii_lowercase
-      if low_k != "http" and low_k != "https" and sensitive_name?(k) and not v.trim.empty?
-        return "#{k}#{sep}[REDACTED]"
-      end
-    end
-  end
-  word
-end
-
 fn redact_text(raw: Text) : Text
-  return "" if raw.empty?
-  var out = []
+  var key = ""
   var cur = []
-  flush = fn(buf)
-    w = Text.from_chars(buf)
-    redact_kv_word(w)
-  end
   for ch in raw.chars
-    if kv_delim?(ch) or kv_quote?(ch)
+    if ch == '=' or ch == ':'
+      token = if cur.empty?: key else: Text.from_chars(cur)
+      return "[REDACTED]" if sensitive_name?(token)
+      key = ""
+      cur = []
+    else if kv_delim?(ch) or kv_quote?(ch)
       if not cur.empty?
-        out = out.append(flush(cur))
+        key = Text.from_chars(cur)
+        scheme = key.ascii_lowercase
+        return "[REDACTED]" if scheme == "bearer" or scheme == "basic"
         cur = []
       end
-      out = out.append(ch.to_text)
     else
       cur = cur.append(ch)
     end
   end
-  if not cur.empty?
-    out = out.append(flush(cur))
-  end
-  joined = out.join("")
-  # Also mask `Bearer <credential>` and `Basic <credential>` phrases.
-  var final_tokens = []
-  var words = joined.split(" ")
-  var idx = 0
-  while idx < words.size
-    w = words.get(idx) or ""
-    lw = w.ascii_lowercase
-    if (lw == "bearer" or lw == "basic") and idx + 1 < words.size
-      final_tokens = final_tokens.append(w).append("[REDACTED]")
-      idx += 2
-    else
-      final_tokens = final_tokens.append(w)
-      idx += 1
-    end
-  end
-  final_tokens.join(" ")
+  raw
 end
 
-fn redact_path_query(raw_path: Text) : Text
-  return "" if raw_path.empty?
-  if not raw_path.contains?("?")
-    return raw_path
-  end
-  parts = raw_path.split("?")
-  base = parts.first or ""
-  qs = parts.drop(1).join("?")
-  clean_pairs = qs.split("&").map(fn(item)
-    if item.contains?("=")
-      kv = item.split("=")
-      k = kv.first or ""
-      v = kv.drop(1).join("=")
-      if sensitive_name?(k)
-        "#{k}=[REDACTED]"
-      else
-        "#{k}=#{redact_text(v)}"
-      end
+fn encode_query_part(part: Text) : Text
+  var encoded = []
+  bytes = part.bytes
+  var i = 0
+  while i < bytes.size
+    byte = bytes.get(i) or 0
+    b = byte.to_int
+    ch = b.to_char or ' '
+    if ch.ascii_letter? or ch.ascii_digit? or ch == '-' or ch == '.' or ch == '_' or ch == '~'
+      encoded = encoded.append(ch.to_text)
     else
-      redact_text(item)
+      encoded = encoded.append("%#{hex_lower_digit(b.floor_div(16))}#{hex_lower_digit(b.floor_mod(16))}")
     end
+    i += 1
+  end
+  encoded.join("")
+end
+
+fn redact_query(path: Text, query: List((Text, Text))) : Text
+  return path if query.empty?
+  pairs = query.map(fn(p)
+    value = if sensitive_name?(p.0): "[REDACTED]" else: redact_text(p.1)
+    "#{encode_query_part(p.0)}=#{encode_query_part(value)}"
   end)
-  "#{base}?#{clean_pairs.join("&")}"
+  "#{path}?#{pairs.join("&")}"
 end
 
 ## Redacts sensitive HTTP header values while preserving safe header names and values.
@@ -289,25 +258,13 @@ end
 
 ## Redacts credentials, cookies, query tokens, and password fields from an `Api.Request`.
 fn redact_request(req: Api.Request) : RedactedRequest
-  q_str = if req.query.empty?
-    ""
-  else
-    "?#{req.query.map(fn(p)
-      if sensitive_name?(p.0): "#{p.0}=[REDACTED]" else: "#{p.0}=#{redact_text(p.1)}"
-    end).join("&")}"
-  end
-  raw_body = req.body.decode_utf8 or ""
-  clean_body = if raw_body.trim.empty?
-    ""
-  else
-    case Json.parse(raw_body)
-      Ok(j): sanitize_json_field("", j).to_text
-      Error(_): "[NON_JSON_BODY #{raw_body.byte_count} bytes]"
-    end
+  clean_body = case req.body.decode_utf8
+    None: "[NON_JSON_BODY #{req.body.size} bytes]"
+    Some(raw_body): sanitize_body(raw_body)
   end
   RedactedRequest(
     method: req.method.ascii_uppercase,
-    path: redact_path_query("#{req.path}#{q_str}"),
+    path: redact_query(req.path, req.query),
     headers: redact_headers(req.headers),
     body_text: clean_body
   )
@@ -345,22 +302,32 @@ fn encode_bundle(bundle: FailureBundle) : Text
   bundle.to_json.pretty
 end
 
-fn sanitize_redacted_body(raw_body: Text) : Text
+fn sanitize_body(raw_body: Text) : Text
   return "" if raw_body.trim.empty?
-  return raw_body if raw_body.starts_with?("[NON_JSON_BODY ")
   case Json.parse(raw_body)
     Ok(j): sanitize_json_field("", j).to_text
     Error(_): "[NON_JSON_BODY #{raw_body.byte_count} bytes]"
   end
 end
 
+fn sanitize_redacted_body(raw_body: Text) : Text
+  if raw_body.starts_with?("[NON_JSON_BODY ") and raw_body.ends_with?(" bytes]")
+    count = (raw_body.split(" ").get(1) or "").to_int
+    if count is Some(n)
+      return raw_body if n >= 0 and raw_body == "[NON_JSON_BODY #{n} bytes]"
+    end
+  end
+  sanitize_body(raw_body)
+end
+
 ## Decodes and re-enforces secret redaction on a serialized `FailureBundle` JSON document.
 fn decode_bundle(raw: Text) : Result(FailureBundle, Text)
   b = try Json.decode_strict[FailureBundle](raw).map_error(fn(e) e.to_text end)
   req_clean = b.request.map(fn(r)
+    req = Api.request(r.method, r.path)
     RedactedRequest(
-      method: r.method.ascii_uppercase,
-      path: redact_path_query(r.path),
+      method: req.method,
+      path: redact_query(req.path, req.query),
       headers: redact_headers(r.headers),
       body_text: sanitize_redacted_body(r.body_text)
     )
@@ -674,6 +641,13 @@ test "Arvo.Replay redacts secrets across headers, JSON bodies, env maps, and emi
   end
   assert leaky_json.contains?("keep=ok")
   assert leaky_json.contains?("ada@household.local")
+  assert redact_text("password: \"fake multiword value\"") == "[REDACTED]"
+  assert redact_text("Bearer\tfake_value") == "[REDACTED]"
+  assert redact_text("request failed at https://example.invalid") == "request failed at https://example.invalid"
+  query_req = Api.get("/cb?name=Fran%C3%A7ois%26Co%2B&%74oken=fake_value")
+  cleaned_query = redact_request(query_req).path
+  assert Api.get(cleaned_query).query == [("name", "François&Co+"), ("token", "[REDACTED]")]
+  assert not cleaned_query.contains?("fake_value")
 
   # Tampered JSON bundle passed to decode_bundle must also have path/body/job/audit/error stripped
   raw_unredacted = """
@@ -700,6 +674,8 @@ test "Arvo.Replay redacts secrets across headers, JSON bodies, env maps, and emi
   for tsec in ["tamper_q", "tamper_hdr", "tamper_body", "tamper_env", "tamper_err"]
     assert not recleaned_txt.contains?(tsec)
   end
+  assert decode_bundle(raw_unredacted.replace("token=tamper_q", "%74oken=tamper_q")) == Ok(recleaned)
+  assert sanitize_redacted_body("[NON_JSON_BODY fake_value bytes]") == "[NON_JSON_BODY 32 bytes]"
 
   # S1 injection hardening: `#{}`, `\t`, and ASCII control chars escaped safely
   esc_inj = escape_mo_str("boom \#{40 + 2}\t\u{0007}line")
