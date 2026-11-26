@@ -222,6 +222,7 @@ fn run_strength_phase(
         sum = Dossier.parse_mo_strength_json(out.stdout)
         suite_ok? = out.ok? and
           sum.original_passed? and
+          not sum.partial? and
           sum.invalid == 0 and
           sum.survived == 0 and
           sum.scored > 0 and
@@ -501,7 +502,13 @@ fn run_semantic_mutants_phase(
         )
         continue
     end
-    _w = app_files.write_text(target_file, mutated)
+    if app_files.write_text(target_file, mutated) is Error(e)
+      err_msgs = err_msgs.append("#{probe}: writing #{target_rel} failed (#{e})")
+      outcomes = outcomes.append(
+        SemanticProbeOutcome(name: probe, status: "error", detail: "#{e}", ms: elapsed_ms(clock, p_start))
+      )
+      continue
+    end
 
     to = default_timeouts()
     entry_arg = join_rel(app_dir, "#{probe_rel}/#{cfg.entry}")
@@ -547,7 +554,7 @@ fn run_semantic_mutants_phase(
         )
       Ok(test_out):
         sum = Dossier.parse_mo_test_json(test_out.stdout)
-        caught? = (not test_out.ok?) or sum.failed > 0 or sum.stopped > 0 or sum.errors > 0
+        caught? = sum.errors == 0 and (sum.failed > 0 or sum.stopped > 0)
         if caught?
           killed_cnt += 1
           outcomes = outcomes.append(
@@ -555,6 +562,16 @@ fn run_semantic_mutants_phase(
               name: probe,
               status: "killed",
               detail: "caught (failed=#{sum.failed + sum.stopped}, errors=#{sum.errors})",
+              ms: elapsed_ms(clock, p_start)
+            )
+          )
+        else if not test_out.ok? or sum.errors > 0 or sum.passed == 0
+          err_msgs = err_msgs.append("#{probe}: test runner did not report a completed test run (#{test_out.stderr.trim})")
+          outcomes = outcomes.append(
+            SemanticProbeOutcome(
+              name: probe,
+              status: "error",
+              detail: "test runner did not report a completed test run (errors=#{sum.errors})",
               ms: elapsed_ms(clock, p_start)
             )
           )
@@ -942,12 +959,8 @@ test "SemanticMutants runs --strength discovery/scoring and Spec 2.4 Web-Semanti
     sm_ok_replies = sm_ok_replies.append((Command.spec("mo", ["check", entry_p]), Command.ok_output("")))
     ok_test_out = if probe == "weaken_required_auth"
       Command.ok_output(stop_json)
-    else if probe == "drop_optimistic_lock"
-      Command.ok_output(err_json)
     else if probe == "bypass_escape_html"
       Command.ok_output(fail_json)
-    else if probe == "disable_foreign_keys"
-      Command.output(1, pass_json, "nonzero exit")
     else
       Command.output(1, fail_json, "fail")
     end
@@ -959,6 +972,10 @@ test "SemanticMutants runs --strength discovery/scoring and Spec 2.4 Web-Semanti
     )
     t_out = if probe == "strip_require_csrf"
       Command.ok_output(pass_json)
+    else if probe == "drop_optimistic_lock"
+      Command.ok_output(err_json)
+    else if probe == "disable_foreign_keys"
+      Command.output(1, pass_json, "nonzero exit")
     else
       Command.output(1, fail_json, "fail")
     end
@@ -987,7 +1004,7 @@ test "SemanticMutants runs --strength discovery/scoring and Spec 2.4 Web-Semanti
     ev_sm_ok.survived == Some(0)
   assert not f_sm.exists?("examples/app/.arvo/tmp/sm/strip_require_csrf/main.mo")
   assert f_sm.read_text("examples/app/.arvo/dossier/semantic-mutants.json") is Ok(sm_ok_txt)
-  assert sm_ok_txt.split("caught (failed=1, errors=0)").size == 4
+  assert sm_ok_txt.split("caught (failed=1, errors=0)").size == 6
 
   ev_sm_surv = run_semantic_mutants_phase(
     "examples/app",
@@ -999,8 +1016,10 @@ test "SemanticMutants runs --strength discovery/scoring and Spec 2.4 Web-Semanti
     Clock.fixed(t0)
   )
   assert ev_sm_surv.status == "fail" and ev_sm_surv.survived == Some(1) and
-    ev_sm_surv.kill_rate == Some(0.8)
+    ev_sm_surv.kill_rate == Some(0.4)
   assert (ev_sm_surv.detail or "").contains?("E_SEMANTIC_MUTANT_SURVIVED")
+  assert f_sm.read_text("examples/app/.arvo/dossier/semantic-mutants.json") is Ok(sm_fail_txt)
+  assert sm_fail_txt.split("\"status\": \"error\"").size == 3
 
   # Blocked scratch dir / compile error / missing body failures all fail closed cleanly
   f_blk_sm = Files.in_memory({"routes.mo": routes_fixture, ".arvo": "blocker"})

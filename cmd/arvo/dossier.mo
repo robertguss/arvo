@@ -51,6 +51,7 @@ end
 ## Aggregated intent-strength metrics parsed from `mo test --json --strength`.
 struct MoStrengthSummary
   original_passed?: Bool
+  partial?: Bool
   scored: Int
   killed: Int
   survived: Int
@@ -184,6 +185,7 @@ end
 ## Parses NDJSON output from `mo test --json --strength DIR TARGET`.
 fn parse_mo_strength_json(ndjson: Text) : MoStrengthSummary
   var orig_ok? = false
+  var partial? = false
   var scored = 0
   var killed = 0
   var survived = 0
@@ -210,11 +212,12 @@ fn parse_mo_strength_json(ndjson: Text) : MoStrengthSummary
           out = doc.text_at("outcome") or ""
           if out == "survived"
             surv_names = surv_names.append(nm)
-          else if out == "invalid" or out == "defect" or out == "changes_intent"
+          else if out == "invalid" or out == "defect" or out == "changes_intent" or out == "unfinished"
             inv_names = inv_names.append(nm)
           end
         else if rec == "strength_summary"
           orig_ok? = doc.text_at("original") == Some("passed")
+          partial? = doc.bool_at("partial") or false
           scored = doc.int_at("scored") or 0
           killed = doc.int_at("killed") or 0
           survived = doc.int_at("survived") or 0
@@ -227,10 +230,11 @@ fn parse_mo_strength_json(ndjson: Text) : MoStrengthSummary
 
   MoStrengthSummary(
     original_passed?: orig_ok?,
+    partial?: partial?,
     scored: scored,
     killed: killed,
     survived: survived,
-    invalid: invalid,
+    invalid: if invalid >= inv_names.size: invalid else: inv_names.size,
     kill_rate: rate,
     surviving_versions: surv_names,
     invalid_versions: inv_names
@@ -444,6 +448,15 @@ test "Dossier formats Spec 6.1 NDJSON events, parses mo test --json --mutants, a
     sf.kill_rate == 0.0
   assert sf.surviving_versions == ["bad_surv.mo"]
   assert sf.invalid_versions == ["bad_inv.mo", "bad_def.mo", "bad_int.mo"]
+
+  current_ndjson = """
+    {"record":"strength_case","name":"broken.mo","outcome":"defect","scored":false}
+    {"record":"strength_case","name":"timeout.mo","outcome":"unfinished","scored":false}
+    {"record":"strength_summary","original":"passed","scored":1,"killed":1,"survived":0,"kill_rate":1.0,"partial":true}
+    """
+  current = parse_mo_strength_json(current_ndjson)
+  assert current.original_passed? and current.partial? and current.invalid == 2
+  assert current.invalid_versions == ["broken.mo", "timeout.mo"]
 
   empty_s = parse_mo_strength_json("")
   assert not empty_s.original_passed? and

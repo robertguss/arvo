@@ -119,7 +119,13 @@ function attachFailClosedListeners(page, state, baseUrl) {
   });
 }
 
+// Inertia's NProgress bar (role="bar") lingers briefly after navigation; scan and capture the settled page.
+async function waitForInertiaIdle(page) {
+  await page.locator("#nprogress").waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
+}
+
 async function assertAxeClean(page, pageLabel, state) {
+  await waitForInertiaIdle(page);
   const results = await new AxeBuilder({ page }).analyze();
   const bad = results.violations.filter(
     (v) => v.impact === "critical" || v.impact === "serious",
@@ -141,6 +147,7 @@ async function capturePageArtifacts(page, label, evidenceAbs) {
   });
   const pngPath = path.join(evidenceAbs, `${label}.png`);
   const ariaPath = path.join(evidenceAbs, `${label}.aria.txt`);
+  await waitForInertiaIdle(page);
   await page.screenshot({ path: pngPath, fullPage: true, animations: "disabled" });
   const ariaYaml = await page.locator("body").ariaSnapshot();
   fs.writeFileSync(ariaPath, `${ariaYaml}\n`, "utf8");
@@ -286,7 +293,7 @@ async function runDriveViewport(browser, opts, vp, appDirAbs, evidenceAbs, visua
     state.scenariosPassed.push(`bills.feature.md: Create bill + @db-check (${vp.name})`);
 
     // 3. Mark bill paid -> persistence across reload -> @db-check -> stale 409 conflict
-    await page.getByRole("button", { name: "Mark paid Electric & Gas <Utility>" }).click();
+    await page.getByRole("button", { name: "Mark in flight Electric & Gas <Utility>" }).click();
     await page.getByText("Electric & Gas <Utility> (in_flight)").waitFor();
     await page.reload({ waitUntil: "networkidle" });
     await page.getByText("Electric & Gas <Utility> (in_flight)").waitFor();
@@ -334,7 +341,7 @@ async function runDriveViewport(browser, opts, vp, appDirAbs, evidenceAbs, visua
     }
     state.dbChecksPassed += 1;
     state.scenariosPassed.push(
-      `bills.feature.md: Mark paid + @db-check + 409 conflict (${vp.name})`,
+      `bills.feature.md: Mark in flight + @db-check + 409 conflict (${vp.name})`,
     );
 
     // 4. Sign out returns to /login
@@ -480,6 +487,7 @@ async function runSingleCapture(opts, appDirAbs, evidenceAbs, isVideo) {
       }
     } else {
       await assertAxeClean(page, `screenshot-${vp.name}`, state);
+      await waitForInertiaIdle(page);
       await page.screenshot({ path: outAbs, fullPage: true, animations: "disabled" });
       const ariaPath = outAbs.replace(/\.png$/, ".aria.txt");
       fs.writeFileSync(ariaPath, `${await page.locator("body").ariaSnapshot()}\n`, "utf8");
