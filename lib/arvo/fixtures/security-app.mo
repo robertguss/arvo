@@ -241,8 +241,5 @@ fn pay_item(req: Api.Request, member: SecMember, id: Int, body: SecPayInput, env
   if not env_flag?(env, "BUG_NO_CSRF")
     return Error(SecForbidden) if not Auth.require_csrf(req, member.session)
   end
-  if env_flag?(env, "BUG_NO_STRICT_JSON")
-    return Ok({"id": id, "version": body.expected_version + 1})
-  end
   Ok({"id": id, "version": body.expected_version + 1})
 end

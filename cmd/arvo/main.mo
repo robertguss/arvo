@@ -785,31 +785,22 @@ fn run_sim_cmd(
   end
 end
 
-fn resolve_tamper_base(
-  explicit_base: Option(Text),
-  cfg_base: Option(Text),
-  cmd: Command,
-  git_dur: Duration
-) : Result(Text, Text)
-  chosen = case explicit_base
-    Some(_): explicit_base
-    None: cfg_base
-  end
-  if chosen is Some(bref)
-    if cmd.run("git", ["merge-base", "HEAD", bref], git_dur) is Ok(mb_out)
-      mb = mb_out.stdout.trim
-      if mb_out.ok? and not mb.empty?
-        return Ok(mb)
-      end
+fn resolve_ref_to_merge_base(bref: Text, cmd: Command, git_dur: Duration) : Result(Text, Text)
+  if cmd.run("git", ["merge-base", "HEAD", bref], git_dur) is Ok(mb_out)
+    mb = mb_out.stdout.trim
+    if mb_out.ok? and not mb.empty?
+      return Ok(mb)
     end
-    if cmd.run("git", ["rev-parse", "--verify", bref], git_dur) is Ok(rv_out)
-      if rv_out.ok?
-        return Ok(bref)
-      end
-    end
-    return Error("cannot resolve tamper --base ref '#{bref}'")
   end
+  if cmd.run("git", ["rev-parse", "--verify", bref], git_dur) is Ok(rv_out)
+    if rv_out.ok?
+      return Ok(bref)
+    end
+  end
+  Error("cannot resolve tamper --base ref '#{bref}'")
+end
 
+fn resolve_default_tamper_base(cmd: Command, git_dur: Duration) : Result(Text, Text)
   for cand in ["origin/main", "main"]
     if cmd.run("git", ["rev-parse", "--verify", cand], git_dur) is Ok(rv_out)
       if rv_out.ok?
@@ -858,15 +849,6 @@ fn run_tamper_phase(
   end
   effective_prefix = if app_dir == ".": git_prefix else: "#{git_prefix}#{app_dir}/"
 
-  compare_ref = case resolve_tamper_base(base_opt, cfg.base_ref, cmd, git_dur)
-    Ok(r): r
-    Error(berr):
-      ms_err = elapsed_ms(clock, t0)
-      var ev = Dossier.new_event(ts, tier, "tamper_check", "warn", ms_err)
-      ev.detail = Some("tamper base resolution failed: #{berr}")
-      return ev
-  end
-
   fdir_clean = cfg.features_dir.drop_suffix("/") or cfg.features_dir
   sdir_clean = cfg.strength_dir.drop_suffix("/") or cfg.strength_dir
   fedir_clean = cfg.frontend_dir.drop_suffix("/") or cfg.frontend_dir
@@ -881,10 +863,58 @@ fn run_tamper_phase(
     ]
   )
   repo_toml = if effective_prefix.empty?: "arvo.toml" else: "#{effective_prefix}arvo.toml"
-  if cmd.run("git", ["show", "#{compare_ref}:#{repo_toml}"], git_dur) is Ok(base_toml)
-    if base_toml.ok?
-      if Config.parse(base_toml.stdout) is Ok(base_cfg)
-        effective_globs = merge_tamper_globs(effective_globs, base_cfg.tamper_globs)
+
+  # Never honor working-tree `arvo.toml` `base_ref`: only accept `--base` or trusted base copy.
+  var read_compare_toml? = true
+  compare_ref = case base_opt
+    Some(explicit_ref):
+      case resolve_ref_to_merge_base(explicit_ref, cmd, git_dur)
+        Ok(r): r
+        Error(berr):
+          ms_err = elapsed_ms(clock, t0)
+          var ev = Dossier.new_event(ts, tier, "tamper_check", "warn", ms_err)
+          ev.detail = Some("tamper base resolution failed: #{berr}")
+          return ev
+      end
+    None:
+      default_ref = case resolve_default_tamper_base(cmd, git_dur)
+        Ok(r): r
+        Error(berr):
+          ms_err = elapsed_ms(clock, t0)
+          var ev = Dossier.new_event(ts, tier, "tamper_check", "warn", ms_err)
+          ev.detail = Some("tamper base resolution failed: #{berr}")
+          return ev
+      end
+      var chosen = default_ref
+      read_compare_toml? = false
+      if cmd.run("git", ["show", "#{default_ref}:#{repo_toml}"], git_dur) is Ok(def_toml)
+        if def_toml.ok?
+          if Config.parse(def_toml.stdout) is Ok(def_cfg)
+            effective_globs = merge_tamper_globs(effective_globs, def_cfg.tamper_globs)
+            if def_cfg.base_ref is Some(trusted_bref)
+              case resolve_ref_to_merge_base(trusted_bref, cmd, git_dur)
+                Ok(tr):
+                  chosen = tr
+                  read_compare_toml? = tr != default_ref
+                Error(berr):
+                  ms_err = elapsed_ms(clock, t0)
+                  var ev = Dossier.new_event(ts, tier, "tamper_check", "warn", ms_err)
+                  ev.detail = Some("tamper base resolution failed: #{berr}")
+                  return ev
+              end
+            end
+          end
+        end
+      end
+      chosen
+  end
+
+  if read_compare_toml?
+    if cmd.run("git", ["show", "#{compare_ref}:#{repo_toml}"], git_dur) is Ok(base_toml)
+      if base_toml.ok?
+        if Config.parse(base_toml.stdout) is Ok(base_cfg)
+          effective_globs = merge_tamper_globs(effective_globs, base_cfg.tamper_globs)
+        end
       end
     end
   end
@@ -921,26 +951,27 @@ fn run_tamper_phase(
       if strip_repo_prefix(rp, effective_prefix) is Some(rel_p)
         app_changed = app_changed.append(rel_p)
       end
-      # Check every .mo file across the entire repository for modified or removed promise blocks
-      repo_rel = strip_repo_prefix(rp, git_prefix) or rp
-      if repo_rel.ends_with?(".mo") and not repo_mo_checked.contains?(repo_rel)
-        repo_mo_checked = repo_mo_checked.append(repo_rel)
-        old_res = cmd.run("git", ["show", "#{compare_ref}:#{rp}"], git_dur)
-        if old_res is Ok(old_out)
-          if old_out.ok?
-            cur_res = case strip_repo_prefix(rp, effective_prefix)
-              Some(in_app): files.read_text(in_app)
-              None: root_files.read_text(repo_rel)
-            end
-            case cur_res
-              Ok(cur_src):
-                if Tamper.promise_blocks_changed?(old_out.stdout, cur_src)
-                  tampered = tampered.append("#{repo_rel} (promise)")
-                end
-              Error(_):
-                if not Tamper.extract_promise_blocks(old_out.stdout).empty?
-                  tampered = tampered.append("#{repo_rel} (promise removed)")
-                end
+      # Check every .mo file under the current working prefix for modified or removed promise blocks
+      if strip_repo_prefix(rp, git_prefix) is Some(repo_rel)
+        if repo_rel.ends_with?(".mo") and not repo_mo_checked.contains?(repo_rel)
+          repo_mo_checked = repo_mo_checked.append(repo_rel)
+          old_res = cmd.run("git", ["show", "#{compare_ref}:#{rp}"], git_dur)
+          if old_res is Ok(old_out)
+            if old_out.ok?
+              cur_res = case strip_repo_prefix(rp, effective_prefix)
+                Some(in_app): files.read_text(in_app)
+                None: root_files.read_text(repo_rel)
+              end
+              case cur_res
+                Ok(cur_src):
+                  if Tamper.promise_blocks_changed?(old_out.stdout, cur_src)
+                    tampered = tampered.append("#{repo_rel} (promise)")
+                  end
+                Error(_):
+                  if not Tamper.extract_promise_blocks(old_out.stdout).empty?
+                    tampered = tampered.append("#{repo_rel} (promise removed)")
+                  end
+              end
             end
           end
         end
@@ -1937,6 +1968,112 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
   assert vt_jsonl.contains?("main.mo (promise)")
   assert vt_jsonl.contains?("lib/other.mo (promise)")
   assert vt_jsonl.contains?("lib/deleted_promise.mo (promise removed)")
+
+  gen_empty_r2 = Codegen.generate_ts([], None)
+  # Security R2-1: working-tree arvo.toml setting base_ref="HEAD" must NOT hide edits from origin/main
+  files_sneaky = Files.in_memory({
+    "arvo.toml": "[app]\nentry = \"main.mo\"\n[testing]\nbase_ref = \"HEAD\"\n",
+    "main.mo": "module Main\nfn f(x: Int) : Int\n  promise\n    true\n  end\n  x\nend\n",
+    "frontend/src/arvo.gen.ts": gen_empty_r2
+  })
+  replies_sneaky = Command.replies([
+    (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.ok_output("[]")),
+    (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
+    (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
+    (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
+    (Command.spec("git", ["rev-parse", "--verify", "origin/main"]), Command.ok_output("origin/main\n")),
+    (Command.spec("git", ["merge-base", "HEAD", "origin/main"]), Command.ok_output("trusted_base\n")),
+    (Command.spec("git", ["show", "trusted_base:arvo.toml"]), Command.ok_output("[app]\nentry = \"main.mo\"\n")),
+    (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output("")),
+    (Command.spec("git", ["diff", "--no-renames", "--name-only", "trusted_base"]), Command.ok_output("arvo.toml\nmain.mo\n")),
+    (
+      Command.spec("git", ["show", "trusted_base:main.mo"]),
+      Command.ok_output("module Main\nfn f(x: Int) : Int\n  promise\n    result == x\n  end\n  x\nend\n")
+    )
+  ])
+  c_sneaky = Console.fake()
+  assert run_cli(
+    Args.of(["verify", "--tier", "fast"]),
+    c_sneaky,
+    files_sneaky,
+    Command.fake(replies_sneaky),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert c_sneaky.printed.any?(fn(l) l.contains?("PASS WITH CONTRACT CHANGES") end)
+  assert files_sneaky.read_text(".arvo/dossier/verify.jsonl") is Ok(sneaky_jsonl)
+  assert sneaky_jsonl.contains?("\"phase\":\"tamper_check\",\"status\":\"warn\"")
+  assert sneaky_jsonl.contains?("arvo.toml")
+  assert sneaky_jsonl.contains?("main.mo (promise)")
+
+  # Trusted base_ref read from <default_ref>:arvo.toml is honored cleanly
+  files_trusted_cfg = Files.in_memory({
+    "arvo.toml": "[app]\nentry = \"main.mo\"\n",
+    "main.mo": "module Main\n",
+    "frontend/src/arvo.gen.ts": gen_empty_r2
+  })
+  replies_trusted_cfg = Command.replies([
+    (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.ok_output("[]")),
+    (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
+    (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
+    (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
+    (Command.spec("git", ["rev-parse", "--verify", "origin/main"]), Command.ok_output("origin/main\n")),
+    (Command.spec("git", ["merge-base", "HEAD", "origin/main"]), Command.ok_output("def_sha\n")),
+    (
+      Command.spec("git", ["show", "def_sha:arvo.toml"]),
+      Command.ok_output("[app]\nentry = \"main.mo\"\n[testing]\nbase_ref = \"release/v1\"\n")
+    ),
+    (Command.spec("git", ["merge-base", "HEAD", "release/v1"]), Command.ok_output("rel_sha\n")),
+    (Command.spec("git", ["show", "rel_sha:arvo.toml"]), Command.ok_output("[app]\nentry = \"main.mo\"\n")),
+    (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output("")),
+    (Command.spec("git", ["diff", "--no-renames", "--name-only", "rel_sha"]), Command.ok_output(""))
+  ])
+  assert run_cli(
+    Args.of(["verify", "--tier", "fast"]),
+    Console.fake(),
+    files_trusted_cfg,
+    Command.fake(replies_trusted_cfg),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert files_trusted_cfg.read_text(".arvo/dossier/verify.jsonl") is Ok(trusted_jsonl)
+  assert trusted_jsonl.contains?("0 contract edits (base=rel_sha)")
+
+  # Finding R2-4: subfolder cwd (git_prefix != "") must not flag sibling .mo outside cwd as promise removed
+  files_sub = Files.in_memory({
+    "arvo.toml": "[app]\nentry = \"main.mo\"\n",
+    "main.mo": "module Main\n",
+    "frontend/src/arvo.gen.ts": gen_empty_r2
+  })
+  replies_sub = Command.replies([
+    (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.ok_output("[]")),
+    (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
+    (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
+    (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("apps/web/\n")),
+    (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output(" M lib/outside.mo\n")),
+    (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output("lib/outside.mo\n")),
+    (
+      Command.spec("git", ["show", "HEAD:lib/outside.mo"]),
+      Command.ok_output("module Outside\nfn k() : Int\n  promise\n    true\n  end\n  1\nend\n")
+    )
+  ])
+  assert run_cli(
+    Args.of(["verify", "--tier", "fast"]),
+    Console.fake(),
+    files_sub,
+    Command.fake(replies_sub),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert files_sub.read_text(".arvo/dossier/verify.jsonl") is Ok(sub_jsonl)
+  assert sub_jsonl.contains?("\"phase\":\"tamper_check\",\"status\":\"pass\"")
+  assert not sub_jsonl.contains?("outside.mo")
 
   # T5: inline *_feature_spec drift in main.mo fails `feature --validate` and `verify`
   drifted_main = "module Main\nlogin_feature_spec = \"\"\"\n#{valid_feature_doc}\n- drifted gotcha\n\"\"\"\n"

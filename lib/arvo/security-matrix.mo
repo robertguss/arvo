@@ -149,7 +149,7 @@ fn synthesize_schema_sample_named(schema: Json, field_name: Text) : Json
         sample_item = synthesize_schema_sample_named(item_schema, field_name)
         var arr = []
         var idx = 0
-        while idx < min_items and idx < 4
+        while idx < min_items and idx < 64
           arr = arr.append(sample_item)
           idx += 1
         end
@@ -900,6 +900,14 @@ test "SecurityMatrix passes cleanly on hardened routes and catches every injecte
   assert unsafe_redirect_target?("//other.example/x")
   assert unsafe_redirect_target?("/local?next=evil.test")
   assert not unsafe_redirect_target?("/bills?page=1")
+  assert synthesize_schema_sample(
+    Json.Object({
+      "type": Json.String("array"),
+      "minItems": Json.int(5),
+      "items": Json.Object({"type": Json.String("integer")})
+    })
+  ) ==
+    Json.Array([Json.int(1), Json.int(1), Json.int(1), Json.int(1), Json.int(1)])
 
   assert logout_route?(
     ApiTest.RouteSpec(

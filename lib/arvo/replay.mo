@@ -94,14 +94,6 @@ fn sensitive_env_key?(key: Text) : Bool
   sensitive_name?(key)
 end
 
-fn redact_bearer_prefix(tok: Text, prefix_len: Int, scheme: Text) : Option(Text)
-  prefix = Text.from_chars(tok.chars.take(prefix_len))
-  rest = Text.from_chars(tok.chars.drop(prefix_len)).trim
-  return None if rest.empty?
-  _ = prefix
-  Some("#{scheme} [REDACTED]")
-end
-
 fn kv_delim?(ch: Char) : Bool
   ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or ch == '&' or ch == ';' or ch == ','
 end
@@ -163,7 +155,6 @@ fn redact_text(raw: Text) : Text
       idx += 1
     end
   end
-  _ = redact_bearer_prefix("", 0, "")
   final_tokens.join(" ")
 end
 

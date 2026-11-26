@@ -147,7 +147,7 @@ fn run_vitest_phase(
     cfg
   )
 
-  cur_sha = Control.compute_build_sha(files, cfg, cmd, env)
+  cur_sha = Control.compute_build_sha_in_app(app_dir, files, cfg, cmd, env)
   case validate_vitest_evidence(app_dir, cfg, files, cur_sha)
     Error(msg): fail_event(t, tier, "vitest_fixtures", msg, clock)
     Ok((passed, failed)):
@@ -290,7 +290,7 @@ fn run_browser_e2e_phase(
     cfg
   )
 
-  cur_sha = Control.compute_build_sha(files, cfg, cmd, env)
+  cur_sha = Control.compute_build_sha_in_app(app_dir, files, cfg, cmd, env)
   all_reports = list_files_recursive(files, ".arvo/evidence").filter(
     fn(p) p.ends_with?("/e2e-report.json") end
   ).map(fn(p) ".arvo/evidence/#{p}" end)
@@ -379,7 +379,7 @@ fn run_stryker_phase(
     cfg
   )
 
-  cur_sha = Control.compute_build_sha(files, cfg, cmd, env)
+  cur_sha = Control.compute_build_sha_in_app(app_dir, files, cfg, cmd, env)
   repro = "cd #{join_rel(app_dir, fdir)} && npm run stryker"
   if check_meta_sha(files, ".arvo/evidence/stryker-meta.json", cur_sha, "Stryker", repro) is
     Error(msg)

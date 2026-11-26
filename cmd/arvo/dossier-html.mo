@@ -845,7 +845,7 @@ fn generate_dossier(
   total_ms = total_ms_opt or computed_ms
 
   rf = app_files.read_only
-  build_sha = Control.compute_build_sha(rf, cfg, cmd, env)
+  build_sha = Control.compute_build_sha_in_app(app_dir, rf, cfg, cmd, env)
   e2e = load_e2e_view(rf, build_sha)
   sc = load_statechart_view(rf)
   entry_src = case rf.read_text(cfg.entry)
@@ -1049,8 +1049,6 @@ test "DossierHtml renders 6-section static HTML, embeds base64 PNGs, and keeps P
     Bytes.from_hex("89504e470d0a1a0a") or Bytes.empty,
     "IHDR".bytes
   ])
-  png_sample_text = Bytes.from_hex("89504e470d0a1a0a").map(fn(_) "ok" end) or "ok"
-  _ = png_sample_text
   f_full = Files.in_memory({
     "main.mo": api_src,
     ".arvo/dossier/verify.jsonl": "#{all_jsonl}\n",

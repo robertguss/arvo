@@ -12,6 +12,7 @@ valid_run_id?,
 parse_control_args,
 detect_sqlite_filename,
 compute_build_sha,
+compute_build_sha_in_app,
 run_control_cmd
 use Command
 use Config
@@ -416,10 +417,17 @@ fn collect_sha_source_paths(app_files: ReadFiles, cfg: Config.ArvoConfig) : List
   paths
 end
 
-## Computes deterministic build identity: git HEAD (plus dirty worktree fingerprint if dirty), `ARVO_GIT_HEAD`, or source SHA-256.
-fn compute_build_sha(app_files: ReadFiles, cfg: Config.ArvoConfig, cmd: Command, env: Env) : Text
+## Computes deterministic build identity relative to `app_dir`: git HEAD (+ dirty worktree fingerprint), `ARVO_GIT_HEAD`, or source SHA-256.
+fn compute_build_sha_in_app(
+  app_dir: Text,
+  app_files: ReadFiles,
+  cfg: Config.ArvoConfig,
+  cmd: Command,
+  env: Env
+) : Text
   t = default_control_timeouts()
   paths = collect_sha_source_paths(app_files, cfg)
+  clean_app = app_dir.drop_suffix("/") or app_dir
   if cmd.run("git", ["rev-parse", "HEAD"], t.git_secs.seconds) is Ok(out)
     sha = out.stdout.trim
     if out.ok? and not sha.empty?
@@ -431,6 +439,19 @@ fn compute_build_sha(app_files: ReadFiles, cfg: Config.ArvoConfig, cmd: Command,
             dirty_unknown? = true
           else if not st_out.stdout.trim.empty?
             dirty_chunks = dirty_chunks.append("STATUS\n#{st_out.stdout}")
+            var git_prefix = ""
+            if st_out.stdout.lines.any?(fn(ln) ln.trim.starts_with?("?? ") end)
+              if cmd.run("git", ["rev-parse", "--show-prefix"], t.git_secs.seconds) is Ok(pfx_out)
+                if pfx_out.ok?
+                  git_prefix = pfx_out.stdout.trim
+                end
+              end
+            end
+            effective_prefix = if clean_app == "." or clean_app.empty?
+              git_prefix
+            else
+              "#{git_prefix}#{clean_app}/"
+            end
             for st_line in st_out.stdout.lines
               trimmed = st_line.trim
               if trimmed.starts_with?("?? ")
@@ -440,8 +461,13 @@ fn compute_build_sha(app_files: ReadFiles, cfg: Config.ArvoConfig, cmd: Command,
                 else
                   raw_u
                 end
-                if app_files.read_text(clean_u) is Ok(utxt)
-                  dirty_chunks = dirty_chunks.append("UNTRACKED:#{clean_u}\n#{utxt}")
+                rel_u = if effective_prefix.empty?
+                  clean_u
+                else
+                  clean_u.drop_prefix(effective_prefix) or clean_u
+                end
+                if app_files.read_text(rel_u) is Ok(utxt)
+                  dirty_chunks = dirty_chunks.append("UNTRACKED:#{rel_u}\n#{utxt}")
                 end
               end
             end
@@ -485,6 +511,11 @@ fn compute_build_sha(app_files: ReadFiles, cfg: Config.ArvoConfig, cmd: Command,
     end
   end
   "src:#{Crypto.sha256(parts.join("\n---\n").bytes).to_hex}"
+end
+
+## Computes deterministic build identity when `app_files` is already rooted at the repository root.
+fn compute_build_sha(app_files: ReadFiles, cfg: Config.ArvoConfig, cmd: Command, env: Env) : Text
+  compute_build_sha_in_app(".", app_files, cfg, cmd, env)
 end
 
 fn run_dir_rel(run_id: Text) : Text
@@ -781,7 +812,7 @@ fn run_launch_inner(
     return Error("seed '#{seed}' failed:\n#{seed_out.stderr.trim}\n#{seed_out.stdout.trim}")
   end
 
-  build_sha = compute_build_sha(app_files.read_only, cfg, cmd, env)
+  build_sha = compute_build_sha_in_app(app_dir, app_files.read_only, cfg, cmd, env)
 
   # Always start `mo serve` and wait for ready.json BEFORE any loopback client spawns
   loop_cmd = cmd.allow_loopback(net)
@@ -867,7 +898,7 @@ fn run_doctor(
 
   alive? = pid_alive?(cmd, handle.pid)
   http_ok? = probe_http_ok?(handle.url, net)
-  cur_sha = compute_build_sha(app_files, cfg, cmd, env)
+  cur_sha = compute_build_sha_in_app(app_dir, app_files, cfg, cmd, env)
   sha_ok? = cur_sha == handle.build_sha
 
   db_path = join_path(app_dir, "#{run_dir_rel(run_id)}/data/#{handle.sqlite_file}")
@@ -1206,7 +1237,7 @@ fn run_control_cmd(
       console.print(control_usage())
       0
     ShaCmd:
-      console.print(compute_build_sha(app_files.read_only, cfg, cmd, env))
+      console.print(compute_build_sha_in_app(app_dir, app_files.read_only, cfg, cmd, env))
       0
     LaunchCmd(seed: seed, run_id: rid_opt, oneshot?: oneshot?): run_launch(
       app_dir,
@@ -1803,6 +1834,40 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
   )
   assert sha_dirty_b.starts_with?("abc1234-dirty-")
   assert sha_dirty_a != sha_dirty_b
+
+  # Finding R2-2: untracked files under --app DIR (even outside src/pages & src/lib) update dirty SHA
+  files_sub_u = Files.in_memory({
+    "main.mo": "module Main\n",
+    "frontend/src/components/Widget.tsx": "export const v = 1;\n"
+  })
+  rep_sub_u = Command.replies([
+    (Command.spec("git", ["rev-parse", "HEAD"]), Command.ok_output("abc1234\n")),
+    (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("mono/\n")),
+    (
+      Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
+      Command.ok_output("?? mono/examples/app/frontend/src/components/Widget.tsx\n")
+    ),
+    (Command.spec("git", ["diff", "HEAD"]), Command.ok_output(""))
+  ])
+  sha_sub_u1 = compute_build_sha_in_app(
+    "examples/app",
+    files_sub_u.read_only,
+    cfg,
+    Command.fake(rep_sub_u),
+    Env.of({})
+  )
+  assert files_sub_u.write_text("frontend/src/components/Widget.tsx", "export const v = 2;\n") ==
+    Ok(Unit)
+  sha_sub_u2 = compute_build_sha_in_app(
+    "examples/app",
+    files_sub_u.read_only,
+    cfg,
+    Command.fake(rep_sub_u),
+    Env.of({})
+  )
+  assert sha_sub_u1.starts_with?("abc1234-dirty-")
+  assert sha_sub_u2.starts_with?("abc1234-dirty-")
+  assert sha_sub_u1 != sha_sub_u2
 
   rep_clean = Command.replies([
     (Command.spec("git", ["rev-parse", "HEAD"]), Command.ok_output("abc1234\n")),

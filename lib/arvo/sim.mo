@@ -1061,7 +1061,7 @@ test "Arvo.Sim passes on locked workflow, discovers and shrinks optimistic-lock 
     shrink_budget: 200,
     fault_probability_pct: 15
   )
-  assert run(buggy_cfg, init_buggy, next_sim_step, apply_sim_world, invs) is Error(failure)
+  assert run(buggy_cfg, init_buggy, next_sim_step, apply_sim_test, invs) is Error(failure)
   assert failure.invariant_name == "single_bill_payment"
   assert failure.shrunk_steps.size == 2
   assert failure.shrunk_steps.size <= failure.original_len
@@ -1079,10 +1079,10 @@ test "Arvo.Sim passes on locked workflow, discovers and shrinks optimistic-lock 
     shrink_budget: 200,
     fault_probability_pct: 15
   )
-  assert run(replay_cfg, init_buggy, next_sim_step, apply_sim_world, invs) is Error(repro)
+  assert run(replay_cfg, init_buggy, next_sim_step, apply_sim_test, invs) is Error(repro)
   assert repro.shrunk_steps == failure.shrunk_steps
   assert repro.invariant_name == failure.invariant_name
-  assert replay_steps(failure.seed, failure.shrunk_steps, init_buggy, apply_sim_world, invs) is
+  assert replay_steps(failure.seed, failure.shrunk_steps, init_buggy, apply_sim_test, invs) is
     Error((iname_r, _reason_r, idx_r))
   assert iname_r == "single_bill_payment"
   assert idx_r == 1
