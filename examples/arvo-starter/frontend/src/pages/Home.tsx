@@ -45,6 +45,8 @@ export default function Home({
         return;
       }
       router.reload();
+    } catch {
+      setActionError("Could not mark bill paid (network error).");
     } finally {
       setPayingId(null);
     }

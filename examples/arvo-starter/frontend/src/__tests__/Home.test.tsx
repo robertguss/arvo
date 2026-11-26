@@ -109,6 +109,12 @@ describe("Home component with real Mo Inertia fixtures", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("{}", { status: 500 }));
     await user.click(screen.getByRole("button", { name: "Mark paid Electric & Gas <Utility>" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("HTTP 500");
+
+    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await user.click(screen.getByRole("button", { name: "Mark paid Electric & Gas <Utility>" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("network error");
+    expect(screen.getByRole("button", { name: "Mark paid Electric & Gas <Utility>" })).toBeEnabled();
+    expect(routerReloadMock).not.toHaveBeenCalled();
   });
 
   it("hides Mark paid on in_flight fixture and renders real validation errors", () => {
