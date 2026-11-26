@@ -7,7 +7,9 @@ export default function Login({ allowlist_hint, errors, flash }: LoginPageProps)
 
   function submit(e: FormEvent) {
     e.preventDefault();
-    form.post("/login");
+    form.post("/login", {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
   }
 
   return (

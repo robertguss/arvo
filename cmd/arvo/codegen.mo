@@ -24,7 +24,7 @@ fn valid_ts_ident?(name: Text) : Bool
 end
 
 fn format_prop_key(name: Text) : Text
-  if valid_ts_ident?(name): name else: "\"#{name}\""
+  if valid_ts_ident?(name): name else: Json.String(name).to_text
 end
 
 fn safe_component_ident(component: Text) : Text
@@ -39,7 +39,7 @@ fn safe_component_ident(component: Text) : Text
     end
   end
   out = Text.from_chars(chars)
-  if out.empty?: "Page" else: out
+  if out.empty? or (out.chars.first or '_').ascii_digit?: "Page#{out}" else: out
 end
 
 fn object_props_ts(props_map: Map(Text, Json)) : Text
@@ -52,12 +52,7 @@ end
 ## Translates a Mo `Json.schema[T]()` node into its TypeScript type representation (Spec 5.1).
 fn schema_to_ts(schema: Json) : Text
   if schema.path("enum") is Some(Json.Array(enum_items))
-    lits = enum_items.map(fn(item)
-      case item
-        Json.String(s): "\"#{s}\""
-        Json.Null | Json.Boolean(_) | Json.Number(_) | Json.Array(_) | Json.Object(_): item.to_text
-      end
-    end)
+    lits = enum_items.map(fn(item) item.to_text end)
     return lits.join(" | ") if not lits.empty?
   end
 
@@ -171,7 +166,7 @@ fn generate_ts(contracts: List(Inertia.PageContract), openapi: Option(Json)) : T
 
   endpoints = collect_openapi_endpoints(openapi)
   if not endpoints.empty?
-    ep_union = endpoints.map(fn(ep) "  | \"#{ep}\"" end)
+    ep_union = endpoints.map(fn(ep) "  | #{Json.String(ep).to_text}" end)
     lines = lines.append("export type ArvoApiEndpoint =")
     lines = lines.concat(ep_union)
     lines = lines.append(";").append("")
@@ -263,6 +258,10 @@ test "Codegen translates all Mo Json.schema types into deterministic TypeScript 
   assert ts.contains?("  Home: HomePageProps;")
   assert ts.contains?("export type ArvoApiEndpoint =")
   assert ts.contains?("  | \"POST /bills/{id}/pay\"")
+  assert format_prop_key("quoted\"\\name") == "\"quoted\\\"\\\\name\""
+  assert safe_component_ident("123/Start") == "Page123Start"
+  assert schema_to_ts(Json.Object({"enum": Json.Array([Json.String("a\nb\"c")])})) ==
+    "\"a\\nb\\\"c\""
 
   assert schema_to_ts(
     Json.Object({
