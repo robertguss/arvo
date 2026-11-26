@@ -6,6 +6,7 @@ use Arvo.Testing.Feature
 use Codegen
 use Command
 use Config
+use Control
 use Dossier
 use Json
 use Tamper
@@ -17,6 +18,7 @@ enum CliCmd
   VerifyCmd(tier: Text, json?: Bool, changed?: Bool, base_ref: Option(Text))
   FeatureCmd(validate?: Bool, manifest_out: Option(Text), dir: Option(Text))
   SimCmd(entry: Option(Text), only: Option(Text))
+  ControlCmd(sub: Control.ControlCmd)
 end
 
 ## Parsed CLI invocation combining `--app DIR` target (default `"."`) and `CliCmd`.
@@ -75,6 +77,7 @@ fn usage(topic: Option(Text)) : Text
         --only NAME   Run only the named simulation check
         -h, --help    Show this help
       """
+    Some("control"): Control.control_usage()
     Some(_) | None: """
       Arvo Verification & Testing CLI (pure Mo)
 
@@ -85,6 +88,7 @@ fn usage(topic: Option(Text)) : Text
         verify [--app DIR] [--tier fast|feature|full] [--json]  Run verification checks, tamper check, and write verify.jsonl
         feature [--app DIR] [--validate] [--manifest OUT] [DIR] Parse .feature.md specs and export @browser manifest
         sim [--app DIR] [--entry FILE] [--only NAME]            Run Arvo.Sim simulation tests
+        control <subcmd> [--app DIR] [flags]                    Manage isolated runtime instances (launch, doctor, inspect, reset, drive, cleanup)
 
       Run `arvo <command> --help` for command-specific flags.
       """
@@ -227,6 +231,12 @@ fn parse_args(args: List(Text)) : Result(CliCmd, Text)
     parse_feature_args(rest)
   else if sub == "sim"
     parse_sim_args(rest)
+  else if sub == "control"
+    case Control.parse_control_args(rest)
+      Ok(Control.ControlHelpCmd): Ok(HelpCmd(topic: Some("control")))
+      Ok(c): Ok(ControlCmd(sub: c))
+      Error(e): Error(e)
+    end
   else
     Error("unknown command '#{sub}'. Run `arvo --help` to see available commands.")
   end
@@ -1152,7 +1162,15 @@ fn run_verify_cmd(
 end
 
 ## Executes the CLI command using explicit capabilities (usable directly from both `main` and tests).
-fn run_cli(args: Args, console: Console, files: Files, cmd: Command, clock: Clock, _env: Env) : Int
+fn run_cli(
+  args: Args,
+  console: Console,
+  files: Files,
+  cmd: Command,
+  clock: Clock,
+  env: Env,
+  net: Network
+) : Int
   inv = case parse_invocation(args.list)
     Ok(c): c
     Error(msg):
@@ -1200,12 +1218,28 @@ fn run_cli(args: Args, console: Console, files: Files, cmd: Command, clock: Cloc
       console
     )
     SimCmd(entry: e, only: o): run_sim_cmd(app_dir, e, o, app_files.read_only, cmd, console)
+    ControlCmd(sub: sub_cmd):
+      cfg = case Config.load(app_files.read_only)
+        Ok(c): c
+        Error(e):
+          console.error("arvo control: #{e}")
+          return 1
+      end
+      Control.run_control_cmd(app_dir, sub_cmd, cfg, app_files, cmd, clock, env, net, console)
   end
 end
 
 ## Entry point installed as `arvo`.
-fn main(args: Args, console: Console, files: Files, cmd: Command, clock: Clock, env: Env) : Int
-  run_cli(args, console, files, cmd, clock, env)
+fn main(
+  args: Args,
+  console: Console,
+  files: Files,
+  cmd: Command,
+  clock: Clock,
+  env: Env,
+  net: Network
+) : Int
+  run_cli(args, console, files, cmd, clock, env, net)
 end
 
 struct FakeProps
@@ -1265,6 +1299,11 @@ test "parse_args handles all commands, help flags, and rejects unknown options c
     Ok(SimCmd(entry: Some("app.mo"), only: Some("Sim.test.1")))
   assert parse_args(["sim", "--only", "S", "--entry", "e.mo"]) ==
     Ok(SimCmd(entry: Some("e.mo"), only: Some("S")))
+  assert parse_args(["control", "--help"]) == Ok(HelpCmd(topic: Some("control")))
+  assert parse_args(["control", "doctor", "--run-id", "r1"]) ==
+    Ok(ControlCmd(sub: Control.DoctorCmd(run_id: "r1")))
+  assert parse_args(["control", "bogus"]) is Error(_)
+  assert usage(Some("control")).contains?("cleanup")
 
   assert parse_args(["bogus"]) is Error(_)
   assert parse_args(["verify", "--tier", "bogus"]) is Error(_)
@@ -1371,7 +1410,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert c_help.printed.any?(fn(l) l.contains?("Commands:") end)
@@ -1381,7 +1421,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     2
 
@@ -1393,7 +1434,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files.exists?("frontend/src/arvo.gen.ts")
@@ -1407,7 +1449,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
 
@@ -1419,7 +1462,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files.exists?(".arvo/manifest.json")
@@ -1434,7 +1478,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert c_sim.printed.any?(fn(l) l.contains?("Arvo Sim: PASS") end)
@@ -1447,7 +1492,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files.exists?(".arvo/dossier/verify.jsonl")
@@ -1463,7 +1509,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files.read_text(".arvo/dossier/verify.jsonl") is Ok(vfeat_jsonl)
@@ -1481,7 +1528,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert c_vfull.printed.any?(fn(l) l.contains?("[SKIP] browser_e2e") end)
@@ -1555,7 +1603,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_tamper,
     Command.fake(replies_tamper),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert c_tamper.printed.any?(fn(l) l.contains?("PASS WITH CONTRACT CHANGES") end)
@@ -1594,7 +1643,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_sneaky,
     Command.fake(replies_sneaky),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert c_sneaky.printed.any?(fn(l) l.contains?("PASS WITH CONTRACT CHANGES") end)
@@ -1631,7 +1681,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_trusted_cfg,
     Command.fake(replies_trusted_cfg),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files_trusted_cfg.read_text(".arvo/dossier/verify.jsonl") is Ok(trusted_jsonl)
@@ -1661,7 +1712,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_sub,
     Command.fake(replies_sub),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files_sub.read_text(".arvo/dossier/verify.jsonl") is Ok(sub_jsonl)
@@ -1682,7 +1734,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_drift,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   assert c_drift.printed_errors.any?(fn(e) e.contains?("drifted from specs/features/login.feature.md") end)
@@ -1696,7 +1749,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_tamper,
     Command.fake(replies_tamper),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   assert c_stale.printed_errors.any?(fn(e) e.contains?("contract drift detected") end)
@@ -1712,7 +1766,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_no_gen,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   # Create new parent dir gen_out/ when missing + generate at root pdir="."
@@ -1722,7 +1777,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_no_gen,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files_no_gen.exists?("gen_out/arvo.gen.ts")
@@ -1736,7 +1792,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_root_out,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files_root_out.exists?("arvo.gen.ts")
@@ -1752,7 +1809,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_root_out,
     Command.fake(replies_probe_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert not files_root_out.exists?("arvo-contracts-probe.mo")
@@ -1768,7 +1826,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_root_out,
     Command.fake(replies_probe_bad),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   assert c_pbad.printed_errors.any?(fn(e) e.contains?("probe bad") end)
@@ -1791,7 +1850,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files,
     Command.fake(replies_tsc_bad),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   assert c_tsc_bad.printed_errors.any?(fn(e)
@@ -1810,7 +1870,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_missing_page,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   assert c_miss.printed_errors.any?(fn(e) e.contains?("missing frontend page component") end)
@@ -1822,7 +1883,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_bad_cfg,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   assert run_cli(
@@ -1831,7 +1893,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_bad_cfg,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   assert run_cli(
@@ -1840,7 +1903,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_bad_cfg,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   assert run_cli(
@@ -1849,7 +1913,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_bad_cfg,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
 
@@ -1860,7 +1925,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   files_bad_feat = Files.in_memory({
@@ -1874,7 +1940,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_bad_feat,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   files_bad_manifest = Files.in_memory({
@@ -1889,7 +1956,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_bad_manifest,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   assert run_cli(
@@ -1898,7 +1966,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_bad_manifest,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
 
@@ -1923,7 +1992,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_missing_page,
     Command.fake(replies_fail_verify),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   assert run_cli(
@@ -1932,7 +2002,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_missing_page,
     Command.fake(replies_ok).allow_programs([]),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   assert run_cli(
@@ -1941,7 +2012,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_missing_page,
     Command.fake(replies_fail_verify),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   assert files_missing_page.read_text(".arvo/dossier/verify.jsonl") is Ok(vf_bad)
@@ -1961,7 +2033,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_verify_no_gen,
     Command.fake(replies_ok),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
   assert not files_verify_no_gen.exists?("gen_out/arvo.gen.ts")
@@ -1982,7 +2055,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_only_tsconfig,
     Command.fake(replies_no_tsc),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   files_only_tsc = Files.in_memory({
@@ -1997,7 +2071,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_only_tsc,
     Command.fake(replies_no_tsc),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
 
@@ -2012,7 +2087,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_only_tsconfig,
     Command.fake(replies_probe_bracket),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
 
@@ -2041,7 +2117,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       files_only_tsconfig,
       Command.fake(rep_one),
       Clock.fixed(t0),
-      Env.of({})
+      Env.of({}),
+      Network.fake({})
     ) ==
       1
     assert run_cli(
@@ -2050,7 +2127,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       files_only_tsconfig,
       Command.fake(rep_one),
       Clock.fixed(t0),
-      Env.of({})
+      Env.of({}),
+      Network.fake({})
     ) ==
       1
   end
@@ -2069,7 +2147,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_only_tsconfig,
     Command.fake(rep_nonzero_okjson),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
 
@@ -2093,7 +2172,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_star_glob,
     Command.fake(rep_blank_diff),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files_star_glob.read_text(".arvo/dossier/verify.jsonl") is Ok(v_star)
@@ -2152,7 +2232,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_mono,
     Command.fake(replies_mono),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files_mono.exists?("examples/app/frontend/src/arvo.gen.ts")
@@ -2163,7 +2244,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_mono,
     Command.fake(replies_mono),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert run_cli(
@@ -2172,7 +2254,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_mono,
     Command.fake(replies_mono),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert run_cli(
@@ -2181,7 +2264,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_mono,
     Command.fake(replies_mono),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   c_mono_v = Console.fake()
@@ -2191,7 +2275,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_mono,
     Command.fake(replies_mono),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files_mono.exists?("examples/app/.arvo/dossier/browser-features.json")
@@ -2207,7 +2292,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_missing_page,
     Command.fake(replies_ok).allow_programs([]),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     1
 
@@ -2249,7 +2335,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_worktree,
     Command.fake(git_fail_replies),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files_worktree.read_text(".arvo/dossier/verify.jsonl") is Ok(wt_init_j)
@@ -2276,7 +2363,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_worktree,
     Command.fake(partial_git_fail_replies),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files_worktree.read_text(".arvo/dossier/verify.jsonl") is Ok(wt_clean_j)
@@ -2301,7 +2389,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_worktree,
     Command.fake(status_fail_diff_ok_replies),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files_worktree.read_text(".arvo/dossier/verify.jsonl") is Ok(wt_stfail_j)
@@ -2325,7 +2414,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_worktree,
     Command.fake(git_fail_replies),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert c_wt_warn.printed.any?(fn(l) l.contains?("PASS WITH CONTRACT CHANGES") end)
@@ -2341,7 +2431,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_worktree,
     Command.fake(git_fail_replies),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files_worktree.read_text(".arvo/dossier/verify.jsonl") is Ok(wt_warn2_j)
@@ -2359,7 +2450,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_worktree,
     Command.fake(git_fail_replies),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files_worktree.read_text(".arvo/dossier/verify.jsonl") is Ok(wt_rev_j)
@@ -2373,7 +2465,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     files_worktree,
     Command.fake(git_fail_replies),
     Clock.fixed(t0),
-    Env.of({})
+    Env.of({}),
+    Network.fake({})
   ) ==
     0
   assert files_worktree.read_text(".arvo/dossier/verify.jsonl") is Ok(wt_corrupt_j)
@@ -2432,10 +2525,35 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       f_mut,
       Command.fake(rep_mut),
       Clock.fixed(t0),
-      Env.of({})
+      Env.of({}),
+      Network.fake({})
     ) ==
       expect_code
     assert f_mut.read_text(".arvo/dossier/verify.jsonl") is Ok(mj)
     assert mj.contains?(expect_frag)
   end
+
+  # `arvo control --help` and bad config error exit
+  c_ctl_h = Console.fake()
+  assert run_cli(
+    Args.of(["control", "--help"]),
+    c_ctl_h,
+    files,
+    Command.fake(replies_ok),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert c_ctl_h.printed.any?(fn(l) l.contains?("cleanup") end)
+  assert run_cli(
+    Args.of(["control", "doctor", "--run-id", "r1"]),
+    Console.fake(),
+    files_bad_cfg,
+    Command.fake(replies_ok),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    1
 end
