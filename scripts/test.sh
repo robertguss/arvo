@@ -67,14 +67,14 @@ echo "==> Validating starter Executable Feature Maps and contract sync"
 echo "==> Checking Arvo.Testing.Statechart models, replay, and sync commits"
 # Statechart models check repository-level SQLite/core session modules cleanly from repo root.
 # In linked git worktrees (.git is a pointer file outside $ROOT, blocked by Landlock), bridge real host git diff.
-if [ -f "$ROOT/.git" ]; then
-  jobs_diff="$(git -C "$ROOT" diff --name-only dbaaf0311d379d828af75ab08b6fa2b61ce9e839 -- lib/arvo/sqlite/jobs.mo)"
-  sess_diff="$(git -C "$ROOT" diff --name-only dbaaf0311d379d828af75ab08b6fa2b61ce9e839 -- lib/arvo/sqlite/sessions.mo lib/arvo/session.mo)"
-  sync_diff="$(printf '%s\n%s\n' "$jobs_diff" "$sess_diff" | sed '/^$/d' | sort -u)"
-  ARVO_GIT_DIFF_FILES="$sync_diff" "$MO" run "$ROOT/cmd/arvo/main.mo" statechart check
-else
+(
+  cd "$ROOT"
+  if [ -f .git ]; then
+    sync_diff="$(git diff --name-only dbaaf0311d379d828af75ab08b6fa2b61ce9e839 -- lib/arvo/sqlite/jobs.mo lib/arvo/sqlite/sessions.mo lib/arvo/session.mo)"
+    export ARVO_GIT_DIFF_FILES="$sync_diff"
+  fi
   "$MO" run "$ROOT/cmd/arvo/main.mo" statechart check
-fi
+)
 
 run_modb_suite() {
   local arvo_root="$1"

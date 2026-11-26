@@ -702,6 +702,7 @@ fn replay_session_path(
   var cur_cookie = ""
   var old_cookie = ""
   var expected_auth? = false
+  var actual_auth? = false
   for act in actions
     case act
       CreateSession:
@@ -716,6 +717,16 @@ fn replay_session_path(
         )
         cur_id = s2.id
         cur_cookie = ck2
+        old_session = try Sessions.load(
+          Api.get("/").with_header("Cookie", "#{cfg.cookie_name}=#{old_cookie}"),
+          db,
+          clock,
+          key,
+          cfg
+        ).map_error(fn(e) "#{e}" end)
+        if old_session is Some(_)
+          return Error("MODEL_DRIFT: old rotated cookie accepted by real Arvo.Session.load")
+        end
         expected_auth? = true
       ReplayOldCookie:
         loaded = try Sessions.load(
@@ -738,17 +749,17 @@ fn replay_session_path(
         _n = try Sessions.prune_expired(db, clock).map_error(fn(e) "#{e}" end)
         expected_auth? = false
     end
-  end
-  loaded_cur = try Sessions.load(
-    Api.get("/").with_header("Cookie", "#{cfg.cookie_name}=#{cur_cookie}"),
-    db,
-    clock,
-    key,
-    cfg
-  ).map_error(fn(e) "#{e}" end)
-  actual_auth? = loaded_cur is Some(_)
-  if actual_auth? != expected_auth?
-    return Error("MODEL_DRIFT: expected auth=#{expected_auth?}, real Session.load=#{actual_auth?}")
+    loaded_cur = try Sessions.load(
+      Api.get("/").with_header("Cookie", "#{cfg.cookie_name}=#{cur_cookie}"),
+      db,
+      clock,
+      key,
+      cfg
+    ).map_error(fn(e) "#{e}" end)
+    actual_auth? = loaded_cur is Some(_)
+    if actual_auth? != expected_auth?
+      return Error("MODEL_DRIFT: expected auth=#{expected_auth?}, real Session.load=#{actual_auth?}")
+    end
   end
   Ok(actual_auth?)
 end
@@ -889,6 +900,14 @@ test "Arvo.Statechart explores Jobs and Session cleanly, replays real code, and 
     Clock.fixed(t0)
   ) ==
     Ok(true)
+  assert replay_session_path(
+    [CreateSession, RotateSession, RevokeSession],
+    sess_cfg,
+    Sqlite.in_memory(),
+    SecureRandom.seeded(22),
+    Clock.fixed(t0)
+  ) ==
+    Ok(false)
   assert replay_session_path(
     [CreateSession, RevokeSession],
     sess_cfg,
