@@ -29,6 +29,7 @@ struct ArvoConfig
   strength_min_kill_rate: Float
   viewports: List(Viewport)
   visual_parity_max_diff_pixels: Int
+  base_ref: Option(Text)
   tamper_globs: List(Text)
 end
 
@@ -56,6 +57,7 @@ fn default_config() : ArvoConfig
       Viewport(name: "desktop", width: 1280, height: 800)
     ],
     visual_parity_max_diff_pixels: 0,
+    base_ref: None,
     tamper_globs: [
       "specs/features/**/*.feature.md",
       "snapshots/**/*",
@@ -322,10 +324,20 @@ fn parse(toml_text: Text) : Result(ArvoConfig, Text)
         cfg.visual_parity_max_diff_pixels = try val.to_int.or_fail(
           "invalid visual_parity_max_diff_pixels '#{val}'"
         )
+      else if key == "base_ref"
+        parsed_ref = (try unquote_string(val)).trim
+        cfg.base_ref = if parsed_ref.empty?: None else: Some(parsed_ref)
       end
     else if section == "testing.tamper_protected"
       if key == "globs"
-        cfg.tamper_globs = try parse_string_list(val)
+        custom_globs = try parse_string_list(val)
+        var merged = cfg.tamper_globs
+        for g in custom_globs
+          if not merged.contains?(g)
+            merged = merged.append(g)
+          end
+        end
+        cfg.tamper_globs = merged
       end
     end
   end
@@ -398,7 +410,16 @@ test "Config parses Spec 4.2 arvo.toml with multiline arrays, viewports, comment
     Viewport(name: "desktop\\", width: 1280, height: 800)
   ]
   assert cfg.visual_parity_max_diff_pixels == 2
-  assert cfg.tamper_globs == ["specs/features/**/*.feature.md", "snapshots/**/*"]
+  assert cfg.tamper_globs == default_config().tamper_globs
+  assert parse("[testing.tamper_protected]\nglobs = []\n") is Ok(cfg_empty_globs)
+  assert cfg_empty_globs.tamper_globs == default_config().tamper_globs
+  assert parse(
+    "[testing]\nbase_ref = \"origin/release\"\n[testing.tamper_protected]\nglobs = [\"custom/**/*\"]\n"
+  ) is
+    Ok(cfg_custom_tamper)
+  assert cfg_custom_tamper.base_ref == Some("origin/release")
+  assert cfg_custom_tamper.tamper_globs.contains?("arvo.toml")
+  assert cfg_custom_tamper.tamper_globs.contains?("custom/**/*")
 
   def = default_config()
   assert def.max_queries_per_get == 10

@@ -225,10 +225,13 @@ fn parse_gherkin_block(path: Text, start_line: Int, lines: List(Text)) : Result(
 
   flush_scenario = fn(sc_opt, sc_steps, existing)
     case sc_opt
-      Some((sname, sc_tags, sc_line)): existing.append(
-        Scenario(name: sname, tags: sc_tags, steps: sc_steps, line: sc_line)
-      )
-      None: existing
+      Some((sname, sc_tags, sc_line)):
+        if sc_steps.empty?
+          Error(ParseError(path: path, line: sc_line, message: "Scenario '#{sname}' contains no steps"))
+        else
+          Ok(existing.append(Scenario(name: sname, tags: sc_tags, steps: sc_steps, line: sc_line)))
+        end
+      None: Ok(existing)
     end
   end
 
@@ -252,6 +255,15 @@ fn parse_gherkin_block(path: Text, start_line: Int, lines: List(Text)) : Result(
       if not pending_tags.empty?
         return Error(ParseError(path: path, line: lnum, message: "tags cannot precede Background:"))
       end
+      if in_background? or cur_scen is Some(_) or not scenarios.empty?
+        return Error(
+          ParseError(
+            path: path,
+            line: lnum,
+            message: "Background: must appear before any Scenario: and at most once"
+          )
+        )
+      end
       in_background? = true
       prev_kind = None
       continue
@@ -262,7 +274,7 @@ fn parse_gherkin_block(path: Text, start_line: Int, lines: List(Text)) : Result(
         background = cur_steps
         in_background? = false
       else
-        scenarios = flush_scenario(cur_scen, cur_steps, scenarios)
+        scenarios = try flush_scenario(cur_scen, cur_steps, scenarios)
       end
       clean_name = sname.trim
       if clean_name.empty?
@@ -333,7 +345,7 @@ fn parse_gherkin_block(path: Text, start_line: Int, lines: List(Text)) : Result(
   if in_background?
     background = cur_steps
   else
-    scenarios = flush_scenario(cur_scen, cur_steps, scenarios)
+    scenarios = try flush_scenario(cur_scen, cur_steps, scenarios)
   end
 
   if scenarios.empty?
@@ -920,4 +932,37 @@ test "Feature parses 4-H2 .feature.md, executes in-memory scenarios with tables,
   assert parse("tbl.feature.md", stray_table) is Error(pe_tbl)
   assert pe_tbl.line == 8
   assert pe_tbl.message.contains?("data table row has no preceding step")
+
+  bg_after_scen = """
+    # T
+    ## Sub-features
+    ## How to get to it (user POV)
+    ## Scenarios
+    ```gherkin
+    Feature: T
+      Scenario: A
+        Given x
+      Background:
+        Given bg
+      Scenario: B
+        Then y
+    ```
+    ## Gotchas
+    """
+  assert parse("bg_late.feature.md", bg_after_scen) is Error(pe_bg)
+  assert pe_bg.message.contains?("before any Scenario:")
+
+  empty_scen = """
+    # T
+    ## Sub-features
+    ## How to get to it (user POV)
+    ## Scenarios
+    ```gherkin
+    Feature: T
+      Scenario: Empty
+    ```
+    ## Gotchas
+    """
+  assert parse("empty_scen.feature.md", empty_scen) is Error(pe_emp)
+  assert pe_emp.message.contains?("contains no steps")
 end

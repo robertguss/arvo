@@ -12,6 +12,7 @@ use Arvo.Audit
 use Arvo.Jobs
 use Arvo.Replay
 use Command
+use Control
 use Json
 
 ## Timeout budget used by `arvo replay`.
@@ -112,6 +113,11 @@ fn parse_capture_args(rest: List(Text)) : Result(ReplayCmdArgs, Text)
     end
     i += 1
   end
+  if not Control.valid_run_id?(id)
+    return Error(
+      "invalid --id '#{id}': use only ASCII letters, digits, '.', '_', or '-' (not starting with '.')"
+    )
+  end
   Ok(
     CaptureCmd(
       id: id,
@@ -183,7 +189,7 @@ end
 
 fn query_readonly_rows(cmd: Command, db_path: Text, sql_q: Text) : List(Json)
   t = default_timeouts()
-  case cmd.run("sqlite3", ["-readonly", "-json", db_path, sql_q], t.sqlite_secs.seconds)
+  case cmd.run("sqlite3", ["-safe", "-readonly", "-json", db_path, sql_q], t.sqlite_secs.seconds)
     Error(_): []
     Ok(out):
       if not out.ok?
@@ -280,6 +286,12 @@ fn run_replay_cmd(
       db_path: db_path,
       out_path: out_path
     ):
+      if not Control.valid_run_id?(id)
+        console.error(
+          "arvo replay capture: invalid --id '#{id}': use only ASCII letters, digits, '.', '_', or '-'"
+        )
+        return 1
+      end
       var req = Api.request(method.ascii_uppercase, path)
       if not body.empty?
         req = req.with_bytes(body.bytes, "application/json")
@@ -352,6 +364,9 @@ test "ReplayCmd parses capture/gen args, redacts secrets from Env/DB, and genera
   assert parse_replay_args(["bogus"]) is Error(_)
   assert parse_replay_args(["capture", "--bad"]) is Error(_)
   assert parse_replay_args(["capture", "--id"]) is Error(_)
+  assert parse_replay_args(["capture", "--id", "../../frontend/package"]) is Error(_)
+  assert parse_replay_args(["capture", "--id", ".hidden"]) is Error(_)
+  assert parse_replay_args(["capture", "--id", "bad/slash"]) is Error(_)
   assert parse_replay_args(["capture", "--out"]) is Error(_)
   assert parse_replay_args(["gen"]) is Error(_)
   assert parse_replay_args(["gen", "a.json", "b.json"]) is Error(_)
@@ -392,6 +407,7 @@ test "ReplayCmd parses capture/gen args, redacts secrets from Env/DB, and genera
         Command.spec(
           "sqlite3",
           [
+            "-safe",
             "-readonly",
             "-json",
             "app.sqlite",
@@ -406,6 +422,7 @@ test "ReplayCmd parses capture/gen args, redacts secrets from Env/DB, and genera
         Command.spec(
           "sqlite3",
           [
+            "-safe",
             "-readonly",
             "-json",
             "app.sqlite",
@@ -515,4 +532,24 @@ test "ReplayCmd parses capture/gen args, redacts secrets from Env/DB, and genera
     1
   assert run_replay_cmd(ReplayHelpCmd, files, cmd, Clock.fixed(t0), env, Console.fake()) == 0
   assert replay_usage().contains?("capture")
+  assert parse_replay_args(["capture", "--id", "../bad"]) is Error(_)
+  assert run_replay_cmd(
+    CaptureCmd(
+      id: "../bad",
+      kind: "http_500",
+      method: "GET",
+      path: "/",
+      body: "",
+      error_msg: "e",
+      commit: "c",
+      db_path: None,
+      out_path: None
+    ),
+    files,
+    cmd,
+    Clock.fixed(t0),
+    env,
+    Console.fake()
+  ) ==
+    1
 end

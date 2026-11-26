@@ -112,7 +112,8 @@ fn check_sync_commit(
   base_files = extract_covered_file_paths(covered_files)
   return (true, "in_sync (#{short_sha})") if base_files.empty?
 
-  git_args = ["diff", "--name-only", "#{sync_commit}..HEAD", "--"].concat(base_files)
+  # Include both committed changes and uncommitted working-tree changes since `sync_commit`.
+  git_args = ["diff", "--name-only", sync_commit, "--"].concat(base_files)
   case cmd.run("git", git_args, t.git_secs.seconds)
     Ok(out):
       if out.ok?
@@ -133,8 +134,12 @@ fn check_sync_commit(
     if not hits.empty?
       return (false, "STALE_FORMAL_CHECK: changed since #{short_sha}: #{hits.join(", ")}")
     end
+    return (true, "in_sync (#{short_sha}; env)")
   end
-  (true, "in_sync (#{short_sha})")
+  (
+    false,
+    "STALE_FORMAL_CHECK: git diff failed for #{short_sha}; ensure git history is intact or update sync_commit"
+  )
 end
 
 ## Discovers `.tla` formal specs under `specs/formal` when present.
@@ -196,6 +201,7 @@ struct SingleChartOutcome
   slug: Text
   states: Int
   transitions: Int
+  truncated?: Bool
   violations: Int
   in_sync?: Bool
   sync_detail: Text
@@ -213,6 +219,7 @@ fn outcome_to_json(o: SingleChartOutcome) : Json
     "slug": Json.String(o.slug),
     "states": Json.int(o.states),
     "transitions": Json.int(o.transitions),
+    "truncated": Json.Boolean(o.truncated?),
     "violations": Json.int(o.violations),
     "in_sync": Json.Boolean(o.in_sync?),
     "sync_detail": Json.String(o.sync_detail),
@@ -261,6 +268,7 @@ fn evaluate_and_write(
       slug: "jobs",
       states: j_rep.states_explored,
       transitions: j_rep.transitions_explored,
+      truncated?: j_rep.truncated?,
       violations: j_rep.violations.size,
       in_sync?: j_sync?,
       sync_detail: j_sync_msg,
@@ -276,6 +284,7 @@ fn evaluate_and_write(
       slug: "session",
       states: s_rep.states_explored,
       transitions: s_rep.transitions_explored,
+      truncated?: s_rep.truncated?,
       violations: s_rep.violations.size,
       in_sync?: s_sync?,
       sync_detail: s_sync_msg,
@@ -292,6 +301,8 @@ fn evaluate_and_write(
   total_transitions = j_rep.transitions_explored + s_rep.transitions_explored
   charts_ok? = j_rep.violations.empty? and
     s_rep.violations.empty? and
+    not j_rep.truncated? and
+    not s_rep.truncated? and
     j_sync? and
     s_sync? and
     not j_broken.violations.empty? and
@@ -361,6 +372,7 @@ fn run_statechart_cmd(
             outcomes.map(fn(o)
               Json.Object({
                 "title": Json.String(o.title),
+                "truncated": Json.Boolean(o.truncated?),
                 "violations": Json.int(o.violations),
                 "in_sync": Json.Boolean(o.in_sync?),
                 "sync_detail": Json.String(o.sync_detail),
@@ -437,14 +449,14 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
     (
       Command.spec(
         "git",
-        ["diff", "--name-only", "623f404124b5bf27f13a595a0dc174a997f49dee..HEAD", "--", "lib/arvo/jobs.mo"]
+        ["diff", "--name-only", "623f404124b5bf27f13a595a0dc174a997f49dee", "--", "lib/arvo/jobs.mo"]
       ),
       Command.ok_output("\n")
     ),
     (
       Command.spec(
         "git",
-        ["diff", "--name-only", "4ea7e818b88a38fe86021a500fd866e0aa392557..HEAD", "--", "lib/arvo/session.mo"]
+        ["diff", "--name-only", "4ea7e818b88a38fe86021a500fd866e0aa392557", "--", "lib/arvo/session.mo"]
       ),
       Command.ok_output("\n")
     ),
@@ -508,14 +520,14 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
     (
       Command.spec(
         "git",
-        ["diff", "--name-only", "623f404124b5bf27f13a595a0dc174a997f49dee..HEAD", "--", "lib/arvo/jobs.mo"]
+        ["diff", "--name-only", "623f404124b5bf27f13a595a0dc174a997f49dee", "--", "lib/arvo/jobs.mo"]
       ),
       Command.ok_output("lib/arvo/jobs.mo\n")
     ),
     (
       Command.spec(
         "git",
-        ["diff", "--name-only", "4ea7e818b88a38fe86021a500fd866e0aa392557..HEAD", "--", "lib/arvo/session.mo"]
+        ["diff", "--name-only", "4ea7e818b88a38fe86021a500fd866e0aa392557", "--", "lib/arvo/session.mo"]
       ),
       Command.ok_output("")
     ),
@@ -544,14 +556,14 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
     Command.fake(
       Command.replies([
         (
-          Command.spec("git", ["diff", "--name-only", "f11ca6ffc25128538844c952cb0b3bf4cafee177..HEAD", "--", "lib/arvo/jobs.mo"]),
+          Command.spec("git", ["diff", "--name-only", "f11ca6ffc25128538844c952cb0b3bf4cafee177", "--", "lib/arvo/jobs.mo"]),
           Command.output(128, "", "not a git repository")
         )
       ])
     ),
     Env.of({})
   )
-  assert wt_clean? and wt_msg == "in_sync (f11ca6ff)"
+  assert not wt_clean? and wt_msg.contains?("STALE_FORMAL_CHECK")
 
   # Replay failure, blocked filesystem, and TLA+ discovered + failing/missing TLC branches
   rep_replay_fail = Command.replies([

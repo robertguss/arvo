@@ -12,7 +12,7 @@ Activate before fixing any reported user bug, CI regression, or production failu
 1. **Capture & Reproduce Twice:**
    - If reproducing from a failing run or production incident, capture a sanitized `Arvo.Replay` bundle (`Cookie`, `Authorization`, `X-XSRF-TOKEN`, `Set-Cookie`, and secret env vars redacted automatically):
      ```bash
-     arvo replay capture --app examples/arvo-starter --run-id repro-1 --method POST --path /bills/1/pay --out .arvo/replays/bug.json
+     arvo replay capture --app examples/arvo-starter --id repro-1 --method POST --path /bills/1/pay --out .arvo/replays/bug.json
      arvo replay gen --app examples/arvo-starter .arvo/replays/bug.json --out .arvo/replays/replay-regression.mo
      ```
    - Otherwise launch an isolated runtime via `arvo control`, drive/trigger the failing step, inspect SQLite & audit logs read-only (`arvo control inspect --sql ...` / `--audit`), then run `arvo control reset --run-id repro-1 --seed baseline` and confirm the bug reproduces identically a second time.

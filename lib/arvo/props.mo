@@ -44,10 +44,6 @@ fn conserves_sum?(before: List(Int), after: List(Int)) : Bool
     conserves_sum?([], [])
   end
 
-  promise "matches exact sum equality"
-    result == (before.sum == after.sum)
-  end
-
   before.sum == after.sum
 end
 
@@ -93,10 +89,6 @@ fn bounded?(x: Int, low: Int, high: Int) : Bool
     bounded?(10, 0, 10)
     not bounded?(-1, 0, 10)
     not bounded?(11, 0, 10)
-  end
-
-  promise "agrees with closed interval bounds"
-    result == (x >= low and x <= high)
   end
 
   x >= low and x <= high

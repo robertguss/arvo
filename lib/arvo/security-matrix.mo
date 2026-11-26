@@ -32,6 +32,9 @@ end
 
 ## Categories of security, protocol, and database invariants checked by `SecurityMatrix`.
 enum AuditCheckKind
+  RoutesDiscovered
+  OpenApiValid
+  RouteHealthy
   UnauthAccessRejected
   CsrfMissingRejected
   CsrfForgedRejected
@@ -104,12 +107,12 @@ fn openapi_path_key(path_template: Text) : Text
 end
 
 ## Synthesizes a minimal JSON value satisfying a compiler-derived OpenAPI / JSON Schema node.
-fn synthesize_schema_sample(schema: Json) : Json
+fn synthesize_schema_sample_named(schema: Json, field_name: Text) : Json
   case schema.path("anyOf")
     Some(Json.Array(alts)):
       for alt in alts
         if alt.text_at("type") != Some("null")
-          return synthesize_schema_sample(alt)
+          return synthesize_schema_sample_named(alt, field_name)
         end
       end
       return Json.Null
@@ -129,11 +132,31 @@ fn synthesize_schema_sample(schema: Json) : Json
     Some("string"):
       case schema.text_at("format")
         Some("date-time"): Json.String("2026-01-01T00:00:00Z")
+        Some("email"): Json.String("audit@example.test")
         Some("decimal"): Json.String("1")
         Some("bigint"): Json.String("1")
-        Some(_) | None: Json.String("x")
+        Some(_) | None:
+          if field_name.ascii_lowercase.contains?("email")
+            Json.String("audit@example.test")
+          else
+            Json.String("x")
+          end
       end
-    Some("array"): Json.Array([])
+    Some("array"):
+      min_items = schema.int_at("minItems") or 0
+      if min_items > 0
+        item_schema = schema.path("items") or Json.Object({"type": Json.String("string")})
+        sample_item = synthesize_schema_sample_named(item_schema, field_name)
+        var arr = []
+        var idx = 0
+        while idx < min_items and idx < 4
+          arr = arr.append(sample_item)
+          idx += 1
+        end
+        Json.Array(arr)
+      else
+        Json.Array([])
+      end
     Some("object"):
       req_names = case schema.list_at("required")
         Some(items): items.filter_map(fn(j)
@@ -149,13 +172,17 @@ fn synthesize_schema_sample(schema: Json) : Json
         Some(Json.Object(props)):
           for rname in req_names
             pschema = props.get(rname) or Json.Object({})
-            obj = obj.set(rname, synthesize_schema_sample(pschema))
+            obj = obj.set(rname, synthesize_schema_sample_named(pschema, rname))
           end
         None | Some(_): Unit
       end
       Json.Object(obj)
     Some(_) | None: Json.Object({})
   end
+end
+
+fn synthesize_schema_sample(schema: Json) : Json
+  synthesize_schema_sample_named(schema, "")
 end
 
 fn route_json_sample(openapi: Option(Json), method: Text, path_template: Text) : Json
@@ -216,13 +243,17 @@ fn build_request(method: Text, path: Text, has_json?: Bool, json_sample: Json, h
 end
 
 fn raw_data_page_unsafe?(raw_attr: Text, parsed_ok?: Bool) : Bool
-  raw_attr.contains?("<") or raw_attr.contains?(">") or raw_attr.contains?("'") or not parsed_ok?
+  raw_attr.trim.empty? or
+    raw_attr.contains?("<") or
+    raw_attr.contains?(">") or
+    raw_attr.contains?("'") or
+    not parsed_ok?
 end
 
 fn inertia_html_response?(res: Api.Response) : Bool
   res.status == 200 and
     (res.header("Content-Type") or "").contains?("text/html") and
-    res.text.contains?("data-page=")
+    (res.text.contains?("data-page=\"") or res.text.contains?("data-page='"))
 end
 
 fn valid_version_conflict?(res: Api.Response) : Bool
@@ -234,11 +265,19 @@ fn logout_rejected?(res: Api.Response) : Bool
 end
 
 fn extract_raw_data_page(html: Text) : Option(Text)
-  marker = "data-page=\""
-  parts = html.split(marker)
-  return None if parts.size < 2
-  after = parts.drop(1).join(marker)
-  Some(after.split("\"").first or "")
+  if html.contains?("data-page=\"")
+    marker = "data-page=\""
+    parts = html.split(marker)
+    after = parts.drop(1).join(marker)
+    return Some(after.split("\"").first or "")
+  end
+  if html.contains?("data-page='")
+    smarker = "data-page='"
+    sparts = html.split(smarker)
+    safter = sparts.drop(1).join(smarker)
+    return Some(safter.split("'").first or "")
+  end
+  None
 end
 
 fn unsafe_redirect_target?(loc: Text) : Bool
@@ -321,6 +360,88 @@ fn check_fk_enabled(db: Sqlite.Database) : Option(AuditFinding)
   end
 end
 
+fn strict_json_probe_findings(
+  m: Text,
+  path: Text,
+  sample_res: Api.Response,
+  bad_json_res: Api.Response,
+  unknown_res: Api.Response
+) : List(AuditFinding)
+  var out = []
+  if bad_json_res.status != 422
+    out = out.append(
+      make_finding(
+        StrictJsonRejected,
+        m,
+        path,
+        "422 on malformed JSON",
+        "#{bad_json_res.status}",
+        "-H 'Content-Type: application/json' -d '{not-valid-json'"
+      )
+    )
+  else if sample_res.status == 422 and bad_json_res.text == sample_res.text
+    out = out.append(
+      make_finding(
+        StrictJsonRejected,
+        m,
+        path,
+        "422 on malformed JSON distinguishable from plain sample",
+        "plain sample also returned identical 422: #{sample_res.text}",
+        "-H 'Content-Type: application/json' -d '{not-valid-json'"
+      )
+    )
+  end
+
+  if unknown_res.status != 422
+    out = out.append(
+      make_finding(
+        StrictJsonRejected,
+        m,
+        path,
+        "422 on unknown JSON field",
+        "#{unknown_res.status}",
+        "-H 'Content-Type: application/json' -d '{\"__arvo_unknown_field__\":true}'"
+      )
+    )
+  else if sample_res.status == 422 and unknown_res.text == sample_res.text
+    out = out.append(
+      make_finding(
+        StrictJsonRejected,
+        m,
+        path,
+        "422 on unknown JSON field distinguishable from plain sample",
+        "plain sample also returned identical 422: #{sample_res.text}",
+        "-H 'Content-Type: application/json' -d '{\"__arvo_unknown_field__\":true}'"
+      )
+    )
+  end
+  out
+end
+
+fn check_routes_and_openapi(ordered: List(ApiTest.RouteSpec), openapi: Option(Json)) : List(
+  AuditFinding
+)
+  var out = []
+  if ordered.empty?
+    out = out.append(
+      make_finding(RoutesDiscovered, "ROUTES", "/", ">= 1 discovered route", "0 routes", "")
+    )
+  end
+  if openapi is None
+    out = out.append(
+      make_finding(
+        OpenApiValid,
+        "OPENAPI",
+        "/openapi.json",
+        "valid OpenAPI JSON document",
+        "invalid or unparseable openapi_json()",
+        ""
+      )
+    )
+  end
+  out
+end
+
 ## Audits every route discovered via `app.routes()` fail-closed against `db` and `authed_session`.
 fn run(app: ApiTest.App, db: Sqlite.Database, authed_session: WebTest.Session, cfg: AuditConfig) : AuditReport
   ordered = order_routes(app.routes())
@@ -328,8 +449,8 @@ fn run(app: ApiTest.App, db: Sqlite.Database, authed_session: WebTest.Session, c
     Ok(doc): Some(doc)
     Error(_): None
   end
-  var findings = []
-  var checks_run = 0
+  var findings = check_routes_and_openapi(ordered, openapi)
+  var checks_run = 2
 
   checks_run += 1
   if check_fk_enabled(db) is Some(fk_finding)
@@ -414,23 +535,16 @@ fn run(app: ApiTest.App, db: Sqlite.Database, authed_session: WebTest.Session, c
 
     if r.has_json_body? and unsafe?
       checks_run += 1
+      (_sps, sample_res) = WebTest.send(
+        authed_base,
+        app,
+        Api.request(m, path).with_header("Host", cfg.host_header).with_json(sample_json)
+      )
       bad_json_req = Api.request(m, path).with_header("Host", cfg.host_header).with_bytes(
         "{not-valid-json".bytes,
         "application/json"
       )
       (_bjs, bad_json_res) = WebTest.send(authed_base, app, bad_json_req)
-      if bad_json_res.status != 422
-        findings = findings.append(
-          make_finding(
-            StrictJsonRejected,
-            m,
-            path,
-            "422 on malformed JSON",
-            "#{bad_json_res.status}",
-            "-H 'Content-Type: application/json' -d '{not-valid-json'"
-          )
-        )
-      end
 
       checks_run += 1
       unknown_map = case sample_json
@@ -446,17 +560,8 @@ fn run(app: ApiTest.App, db: Sqlite.Database, authed_session: WebTest.Session, c
           Json.Object(unknown_map)
         )
       )
-      if unknown_res.status != 422
-        findings = findings.append(
-          make_finding(
-            StrictJsonRejected,
-            m,
-            path,
-            "422 on unknown JSON field",
-            "#{unknown_res.status}",
-            "-H 'Content-Type: application/json' -d '{\"__arvo_unknown_field__\":true}'"
-          )
-        )
+      for sjf in strict_json_probe_findings(m, path, sample_res, bad_json_res, unknown_res)
+        findings = findings.append(sjf)
       end
     end
 
@@ -508,6 +613,21 @@ fn run(app: ApiTest.App, db: Sqlite.Database, authed_session: WebTest.Session, c
         )
       end
 
+      checks_run += 1
+      if get_res.status >= 500 or get_res.status == 404 or
+        (not is_public? and unauth_rejected?(get_res))
+        findings = findings.append(
+          make_finding(
+            RouteHealthy,
+            m,
+            path,
+            "200/3xx healthy route response",
+            "status #{get_res.status}",
+            ""
+          )
+        )
+      end
+
       if inertia_html_response?(get_res)
         checks_run += 1
         raw_attr = extract_raw_data_page(get_res.text) or ""
@@ -520,6 +640,41 @@ fn run(app: ApiTest.App, db: Sqlite.Database, authed_session: WebTest.Session, c
               path,
               "escaped data-page JSON without raw <, >, or '",
               "unescaped or invalid data-page attribute",
+              ""
+            )
+          )
+        end
+
+        checks_run += 1
+        canary_sep = if path.contains?("?"): "&" else: "?"
+        canary_path = "#{path}#{canary_sep}_arvo_xss=%3Cscript%3E%27%22"
+        (_xs, xss_res) = WebTest.send(
+          use_session,
+          app,
+          Api.get(canary_path).with_header("Host", cfg.host_header)
+        )
+        xss_attr = extract_raw_data_page(xss_res.text) or ""
+        xss_parsed? = WebTest.inertia_page(xss_res) is Ok(_)
+        if xss_res.status >= 500
+          findings = findings.append(
+            make_finding(
+              RouteHealthy,
+              m,
+              canary_path,
+              "200 healthy response under XSS canary query",
+              "status #{xss_res.status}",
+              ""
+            )
+          )
+        else if xss_res.text.contains?("<script>") or
+          raw_data_page_unsafe?(xss_attr, xss_parsed?)
+          findings = findings.append(
+            make_finding(
+              InertiaHtmlEscaped,
+              m,
+              path,
+              "escaped HTML and data-page under _arvo_xss canary probe",
+              "reflected or unescaped <script> / data-page",
               ""
             )
           )
@@ -678,7 +833,7 @@ test "SecurityMatrix passes cleanly on hardened routes and catches every injecte
   assert_clean(clean)
   assert format_report(clean).contains?("SecurityMatrix: PASS")
   assert clean.routes_checked == 6
-  assert clean.checks_run == 31
+  assert clean.checks_run == 37
 
   # Check exact base vs full checks_run (+1 for MigrationIdempotent) and boundary max_queries_per_get
   sql_b = Sqlite.in_memory()
@@ -696,7 +851,7 @@ test "SecurityMatrix passes cleanly on hardened routes and catches every injecte
     max_queries_per_get: 4
   )
   rep_base = run(app_b, db_b, auth_b, cfg_exact)
-  assert rep_base.checks_run == 30
+  assert rep_base.checks_run == 36
   assert passed?(rep_base)
   auth_b2 = login_test_session(app_b)
   rep_full = run_full(app_b, db_b, clk_b, auth_b2, cfg_exact, SecurityApp.app_migrations())
@@ -793,9 +948,30 @@ test "SecurityMatrix passes cleanly on hardened routes and catches every injecte
   r_n1 = run_with_flags({"BUG_N_PLUS_ONE": "1"})
   assert r_n1.findings.any?(fn(f) f.check == QueryBudgetRespected and f.path == "/" end)
 
-  # Prove able to fail: unescaped <script> inside data-page
+  # Prove able to fail: unescaped <script> inside data-page, plain-seed unescaped data-page, and reflected _arvo_xss canary
   r_xss = run_with_flags({"BUG_XSS": "1"})
   assert r_xss.findings.any?(fn(f) f.check == InertiaHtmlEscaped and f.path == "/" end)
+  r_xss_plain = run_with_flags({"BUG_XSS_PLAIN": "1"})
+  assert r_xss_plain.findings.any?(fn(f) f.check == InertiaHtmlEscaped and f.path == "/" end)
+  r_xss_ref = run_with_flags({"BUG_XSS_REFLECT": "1"})
+  assert r_xss_ref.findings.any?(fn(f) f.check == InertiaHtmlEscaped and f.path == "/" end)
+
+  # Prove able to fail: authenticated GET returning 500
+  r_500 = run_with_flags({"BUG_HOME_500": "1"})
+  assert r_500.findings.any?(fn(f) f.check == RouteHealthy and f.path == "/" end)
+
+  # Prove able to fail: empty route list & broken OpenAPI document (F3)
+  assert check_routes_and_openapi([], None).map(fn(f) f.check end) == [
+    RoutesDiscovered,
+    OpenApiValid
+  ]
+
+  # Prove able to fail: indistinguishable plain-sample 422 on strict-JSON probe (F5)
+  r422 = Api.text_response(422, "invalid input")
+  r200 = Api.text_response(200, "ok")
+  assert strict_json_probe_findings("POST", "/items", r422, r422, r422).size == 2
+  assert strict_json_probe_findings("POST", "/items", r200, r422, r422).empty?
+  assert strict_json_probe_findings("POST", "/items", r200, r422, r200).size == 1
 
   # Prove able to fail: missing 409 X-Inertia-Version mismatch handling
   r_stale = run_with_flags({"BUG_STALE_VER": "1"})
@@ -841,6 +1017,26 @@ test "synthesize_schema_sample covers all OpenAPI schema primitives, formats, en
   ) ==
     Json.String("1")
   assert synthesize_schema_sample(Json.Object({"type": Json.String("string")})) == Json.String("x")
+  assert synthesize_schema_sample(
+    Json.Object({"type": Json.String("string"), "format": Json.String("email")})
+  ) ==
+    Json.String("audit@example.test")
+  assert synthesize_schema_sample(
+    Json.Object({
+      "type": Json.String("object"),
+      "required": Json.Array([Json.String("email")]),
+      "properties": Json.Object({"email": Json.Object({"type": Json.String("string")})})
+    })
+  ) ==
+    Json.Object({"email": Json.String("audit@example.test")})
+  assert synthesize_schema_sample(
+    Json.Object({
+      "type": Json.String("array"),
+      "minItems": Json.int(2),
+      "items": Json.Object({"type": Json.String("integer")})
+    })
+  ) ==
+    Json.Array([Json.int(1), Json.int(1)])
   assert synthesize_schema_sample(
     Json.Object({"enum": Json.Array([Json.String("pending"), Json.String("paid")])})
   ) ==

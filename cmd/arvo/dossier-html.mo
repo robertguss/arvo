@@ -59,6 +59,7 @@ struct ChartView
   title: Text
   states: Int
   transitions: Int
+  truncated?: Bool
   violations: Int
   in_sync?: Bool
   sync_detail: Text
@@ -68,6 +69,7 @@ end
 
 struct StatechartView
   present?: Bool
+  ok?: Bool
   replay_detail: Text
   charts: List(ChartView)
 end
@@ -233,15 +235,7 @@ end
 
 ## Counts whitespace-separated tokens across lines (used to enforce `< 150` words in `pr-summary.md`).
 fn count_words(text: Text) : Int
-  var total = 0
-  for raw in text.lines
-    for tok in raw.trim.split(" ")
-      if not tok.trim.empty?
-        total += 1
-      end
-    end
-  end
-  total
+  text.words.size
 end
 
 fn short_sha_of(sha: Text) : Text
@@ -297,6 +291,26 @@ fn empty_e2e_view() : E2eView
   )
 end
 
+fn valid_evidence_png_path?(p: Text) : Bool
+  t = p.trim
+  not t.empty? and
+    t.starts_with?(".arvo/evidence/") and
+    not t.contains?("..") and
+    not t.contains?("\\")
+end
+
+fn png_magic?(b: Bytes) : Bool
+  b.size >= 8 and
+    (b.get(0) or 0).to_int == 137 and
+    (b.get(1) or 0).to_int == 80 and
+    (b.get(2) or 0).to_int == 78 and
+    (b.get(3) or 0).to_int == 71 and
+    (b.get(4) or 0).to_int == 13 and
+    (b.get(5) or 0).to_int == 10 and
+    (b.get(6) or 0).to_int == 26 and
+    (b.get(7) or 0).to_int == 10
+end
+
 fn load_e2e_view(files: ReadFiles, cur_sha: Text) : E2eView
   case find_e2e_report_path(files, cur_sha)
     None: empty_e2e_view()
@@ -309,9 +323,13 @@ fn load_e2e_view(files: ReadFiles, cur_sha: Text) : E2eView
             Ok(doc):
               var shots = []
               for sp in json_text_array(doc, "screenshots")
-                uri = case files.read_bytes(sp)
-                  Ok(b): Some("data:image/png;base64,#{bytes_to_base64(b)}")
-                  Error(_): None
+                uri = if valid_evidence_png_path?(sp)
+                  case files.read_bytes(sp)
+                    Ok(b): if png_magic?(b): Some("data:image/png;base64,#{bytes_to_base64(b)}") else: None
+                    Error(_): None
+                  end
+                else
+                  None
                 end
                 shots = shots.append(
                   VisualShot(label: shot_label_from_path(sp), rel_path: sp, data_uri: uri)
@@ -338,7 +356,7 @@ fn load_e2e_view(files: ReadFiles, cur_sha: Text) : E2eView
 end
 
 fn empty_statechart_view() : StatechartView
-  StatechartView(present?: false, replay_detail: "", charts: [])
+  StatechartView(present?: false, ok?: false, replay_detail: "", charts: [])
 end
 
 fn load_statechart_view(files: ReadFiles) : StatechartView
@@ -360,6 +378,7 @@ fn load_statechart_view(files: ReadFiles) : StatechartView
           title: item.text_at("title") or "Statechart",
           states: item.int_at("states") or 0,
           transitions: item.int_at("transitions") or 0,
+          truncated?: json_bool_at(item, "truncated"),
           violations: item.int_at("violations") or 0,
           in_sync?: json_bool_at(item, "in_sync"),
           sync_detail: item.text_at("sync_detail") or "",
@@ -369,7 +388,12 @@ fn load_statechart_view(files: ReadFiles) : StatechartView
       )
     end
   end
-  StatechartView(present?: true, replay_detail: doc.text_at("replay_detail") or "", charts: charts)
+  StatechartView(
+    present?: true,
+    ok?: json_bool_at(doc, "ok"),
+    replay_detail: doc.text_at("replay_detail") or "",
+    charts: charts
+  )
 end
 
 fn collect_modified_contracts(events: List(Dossier.VerifyEvent)) : List(Text)
@@ -411,11 +435,16 @@ fn render_tamper_banner(events: List(Dossier.VerifyEvent)) : Text
   end
 end
 
-fn render_visual_strip(e2e: E2eView) : Text
+fn render_visual_strip(e2e: E2eView, build_sha: Text) : Text
   if not e2e.present?
     return "<section id=\"visual-proof\" class=\"card\">\n  <h2>2. Visual-First Proof Strip</h2>\n  <p class=\"muted\">No Playwright E2E evidence recorded under <code>.arvo/evidence/</code>.</p>\n</section>"
   end
-  meta = "<p class=\"meta\">Run <code>#{html_escape(e2e.run_id)}</code> · Viewports: <strong>#{html_escape(
+  stale_badge = if not e2e.build_sha.empty? and e2e.build_sha != build_sha
+    " <span class=\"pill badge-warn\">STALE EVIDENCE (e2e=#{html_escape(short_sha_of(e2e.build_sha))})</span>"
+  else
+    ""
+  end
+  meta = "<p class=\"meta\">Run <code>#{html_escape(e2e.run_id)}</code>#{stale_badge} · Viewports: <strong>#{html_escape(
     e2e.viewports.join(", ")
   )}</strong> · Scenarios: <strong>#{e2e.scenarios_passed.size}</strong> · Axe violations: <strong>#{e2e
     .axe_count}</strong> · Console/Page/5xx/Assets: <strong>#{e2e.console_errors}/#{e2e.page_errors}/#{e2e
@@ -508,33 +537,52 @@ fn render_scorecard_section(events: List(Dossier.VerifyEvent)) : Text
     .join("")}</tbody></table>\n</section>"
 end
 
-fn render_route_matrix(routes: List(RouteEntry), cfg: Config.ArvoConfig) : Text
+fn chart_verified?(c: ChartView) : Bool
+  c.violations == 0 and c.in_sync? and c.broken_caught? and not c.truncated?
+end
+
+fn render_route_matrix(
+  routes: List(RouteEntry),
+  cfg: Config.ArvoConfig,
+  events: List(Dossier.VerifyEvent)
+) : Text
   if routes.empty?
     return "<section id=\"route-matrix\" class=\"card\">\n  <h2>5. Route Security &amp; Query-Budget Matrix</h2>\n  <p class=\"muted\">No <code>api</code> route entries parsed from <code>#{html_escape(
       cfg.entry
     )}</code>.</p>\n</section>"
   end
+  mo_test_status = case find_event(events, "mo_test")
+    Some(ev):
+      if ev.status == "pass"
+        "not measured per-route (mo_test pass)"
+      else
+        "not measured per-route (mo_test #{ev.status})"
+      end
+    None: "not measured per-route"
+  end
   var rows = []
   for rt in routes
     key = "#{rt.method} #{rt.path}"
     auth_lbl = if cfg.public_routes.contains?(key)
-      "Public"
+      "Public (config)"
     else
-      "Auth Required"
+      "Auth Required (config)"
     end
     csrf_lbl = if rt.method == "GET"
       "N/A (GET)"
     else if cfg.csrf_exempt_routes.contains?(key)
-      "Exempt"
+      "Exempt (config)"
     else
-      "CSRF Enforced"
+      "CSRF Enforced (config)"
     end
     rows = rows.append(
-      "<tr><td><code>#{html_escape(key)}</code></td><td><code>#{html_escape(rt.handler)}</code></td><td>#{auth_lbl}</td><td>#{csrf_lbl}</td><td>Inertia.escape_html</td><td>Checked</td><td>&le; #{cfg
-        .max_queries_per_get}</td></tr>"
+      "<tr><td><code>#{html_escape(key)}</code></td><td><code>#{html_escape(rt.handler)}</code></td><td>#{auth_lbl}</td><td>#{csrf_lbl}</td><td>#{html_escape(
+        mo_test_status
+      )}</td><td>#{html_escape(mo_test_status)}</td><td>not measured per-route (budget &le; #{cfg
+        .max_queries_per_get})</td></tr>"
     )
   end
-  "<section id=\"route-matrix\" class=\"card\">\n  <h2>5. Route Security &amp; Query-Budget Matrix</h2>\n  <table><thead><tr><th>Route</th><th>Handler</th><th>Auth</th><th>CSRF</th><th>XSS</th><th>409 / 422</th><th>Queries/Max</th></tr></thead><tbody>#{rows
+  "<section id=\"route-matrix\" class=\"card\">\n  <h2>5. Route Security &amp; Query-Budget Matrix</h2>\n  <table><thead><tr><th>Route</th><th>Handler</th><th>Auth Policy</th><th>CSRF Policy</th><th>XSS</th><th>409 / 422</th><th>Queries / Budget</th></tr></thead><tbody>#{rows
     .join("")}</tbody></table>\n</section>"
 end
 
@@ -637,10 +685,10 @@ fn render_index_html(
     <span class="pill #{v_cls}">#{html_escape(verdict)}</span>
   </header>
   #{render_tamper_banner(events)}
-  #{render_visual_strip(e2e)}
+  #{render_visual_strip(e2e, build_sha)}
   #{render_statecharts_section(sc)}
   #{render_scorecard_section(events)}
-  #{render_route_matrix(routes, cfg)}
+  #{render_route_matrix(routes, cfg, events)}
   #{render_decisions_and_attention(verdict, events, decisions)}
   </main>
   </body>
@@ -650,6 +698,22 @@ end
 
 fn find_event(events: List(Dossier.VerifyEvent), phase: Text) : Option(Dossier.VerifyEvent)
   events.find(fn(e) e.phase == phase end)
+end
+
+fn pr_summary_shot_path(rel_path: Text) : Text
+  case rel_path.drop_prefix(".arvo/")
+    Some(rest): "../#{rest}"
+    None: rel_path
+  end
+end
+
+fn trim_pr_summary_under_limit(sections: List(Text), max_words: Int) : Text
+  joined = "#{sections.join("\n\n")}\n"
+  return joined if count_words(joined) <= max_words
+  # Trim excess lines/tokens cleanly so pr-summary.md is always strictly < 150 words.
+  wlist = joined.words
+  kept = wlist.take(max_words - 1).join(" ")
+  "#{kept} ...\n"
 end
 
 ## Renders a concise plain-words PR Markdown summary strictly under 150 words.
@@ -684,16 +748,30 @@ fn render_pr_summary(
         .db_checks_passed} DB checks, #{e2e.visual_diff_pixels} diff px"
     )
   end
+  var failed_charts = []
   if sc.present?
-    bullets = bullets.append("- Statecharts: #{sc.charts.size} verified (replay ok)")
+    verified_cnt = sc.charts.filter(chart_verified?).size
+    sc_note = if sc.ok? and verified_cnt == sc.charts.size and not sc.charts.empty?
+      "replay ok"
+    else
+      "attention required"
+    end
+    bullets = bullets.append("- Statecharts: #{verified_cnt}/#{sc.charts.size} verified (#{sc_note})")
+    for c in sc.charts
+      if not chart_verified?(c)
+        failed_charts = failed_charts.append(c.title)
+      end
+    end
   end
 
   var shot_lines = []
   var shown = 0
   for s in e2e.shots
     break if shown >= 2
-    shot_lines = shot_lines.append("![#{s.label}](#{s.rel_path})")
-    shown += 1
+    if s.data_uri is Some(_)
+      shot_lines = shot_lines.append("![#{s.label}](#{pr_summary_shot_path(s.rel_path)})")
+      shown += 1
+    end
   end
 
   mods = collect_modified_contracts(events)
@@ -701,6 +779,11 @@ fn render_pr_summary(
   var calls = []
   if not failed_phases.empty?
     calls = calls.append("- Fix failed phases: #{failed_phases.join(", ")}")
+  end
+  if not failed_charts.empty?
+    calls = calls.append("- Review statechart issues: #{failed_charts.join(", ")}")
+  else if sc.present? and not sc.ok?
+    calls = calls.append("- Review statechart replay failure")
   end
   if not mods.empty?
     calls = calls.append("- Review modified contracts: #{mods.take(5).join(", ")}")
@@ -722,7 +805,7 @@ fn render_pr_summary(
     sections = sections.append(shot_lines.join("\n"))
   end
   sections = sections.append("## Calls Waiting on Human\n#{calls_md}")
-  "#{sections.join("\n\n")}\n"
+  trim_pr_summary_under_limit(sections, 149)
 end
 
 ## Generates `.arvo/dossier/index.html` and `.arvo/dossier/pr-summary.md` from verify events and evidence.
@@ -830,7 +913,7 @@ test "DossierHtml renders 6-section static HTML, embeds base64 PNGs, and keeps P
   assert compute_verdict([ev_p, ev_w, ev_f]) == "FAIL"
   assert compute_verdict([ev_p, ev_w]) == "PASS WITH CONTRACT CHANGES"
   assert compute_verdict([ev_p]) == "PASS"
-  assert count_words("  hello  world\n\none\ttwo\n") == 3
+  assert count_words("  hello  world\n\none\ttwo\n") == 4
   assert bytes_to_base64("foob".bytes) == "Zm9vYg=="
   assert bytes_to_base64("fooba".bytes) == "Zm9vYmE="
 
@@ -962,7 +1045,12 @@ test "DossierHtml renders 6-section static HTML, embeds base64 PNGs, and keeps P
     Dossier.event_to_json(ev_stry)
   ].join("\n")
 
-  png_sample = "PNGDATA"
+  png_sample_bytes = Bytes.join([
+    Bytes.from_hex("89504e470d0a1a0a") or Bytes.empty,
+    "IHDR".bytes
+  ])
+  png_sample_text = Bytes.from_hex("89504e470d0a1a0a").map(fn(_) "ok" end) or "ok"
+  _ = png_sample_text
   f_full = Files.in_memory({
     "main.mo": api_src,
     ".arvo/dossier/verify.jsonl": "#{all_jsonl}\n",
@@ -970,14 +1058,16 @@ test "DossierHtml renders 6-section static HTML, embeds base64 PNGs, and keeps P
     ".arvo/dossier/decisions.tsv": "ts\tphase\tdecision\twhy\tevidence\tresult\n2026-11-25T10:00:00Z\tverify\tRun full\tAll gates\tverify.jsonl\tpass\n",
     ".arvo/evidence/a_stale/e2e-report.json": "{\"build_sha\":\"old\",\"run_id\":\"stale\"}",
     ".arvo/evidence/r_e2e/e2e-report.json": e2e_json,
-    ".arvo/evidence/r_e2e/login-mobile.png": png_sample,
-    ".arvo/evidence/r_e2e/home-desktop.png": "abc"
+    ".arvo/evidence/r_e2e/login-mobile.png": "placeholder",
+    ".arvo/evidence/r_e2e/home-desktop.png": "not-a-png",
+    "secret.txt": "TOP_SECRET"
   })
+  assert f_full.write_bytes(".arvo/evidence/r_e2e/login-mobile.png", png_sample_bytes) == Ok(Unit)
 
   out_res = generate_dossier("examples/starter", "", cfg, f_full, None, None, git_cmd, Env.of({}))
   assert out_res is Ok(out)
   assert out.verdict == "PASS WITH CONTRACT CHANGES"
-  assert out.screenshots_embedded == 2
+  assert out.screenshots_embedded == 1
   assert out.pr_word_count < 150
   assert f_full.read_text(".arvo/dossier/index.html") is Ok(html_txt)
   assert html_txt.contains?("Build SHA: <code>sha_dossier_</code>")
@@ -988,15 +1078,18 @@ test "DossierHtml renders 6-section static HTML, embeds base64 PNGs, and keeps P
   assert html_txt.contains?("1. Tamper Alert Banner — Contract Changed")
   assert html_txt.contains?("specs/a.feature.md")
   assert html_txt.contains?("2. Visual-First Proof Strip")
-  assert html_txt.contains?("data:image/png;base64,#{bytes_to_base64(png_sample.bytes)}")
+  assert html_txt.contains?("data:image/png;base64,#{bytes_to_base64(png_sample_bytes)}")
+  assert html_txt.contains?("Image unreadable: .arvo/evidence/r_e2e/home-desktop.png")
   assert html_txt.contains?("Image unreadable: .arvo/evidence/r_e2e/missing.png")
   assert html_txt.contains?("3. Formal Statecharts")
   assert html_txt.contains?("<pre class=\"mermaid\">stateDiagram-v2")
   assert html_txt.contains?("in sync") and html_txt.contains?("stale")
   assert html_txt.contains?("4. Adversarial &amp; Mutation Scorecard")
   assert html_txt.contains?("5. Route Security &amp; Query-Budget Matrix")
-  assert html_txt.contains?("Auth Required") and html_txt.contains?("Public")
-  assert html_txt.contains?("CSRF Enforced") and html_txt.contains?("Exempt")
+  assert html_txt.contains?("Auth Required (config)") and html_txt.contains?("Public (config)")
+  assert html_txt.contains?("CSRF Enforced (config)") and html_txt.contains?("Exempt (config)")
+  assert html_txt.contains?("not measured per-route")
+  assert not html_txt.contains?("Inertia.escape_html")
   assert html_txt.contains?("&le; 8")
   assert html_txt.contains?("6. Decision Trail")
   assert html_txt.contains?("Attention")
@@ -1006,10 +1099,28 @@ test "DossierHtml renders 6-section static HTML, embeds base64 PNGs, and keeps P
   assert pr_txt.contains?("- Strength suites: 23/23 killed")
   assert pr_txt.contains?("- Semantic probes: 5/5 caught")
   assert pr_txt.contains?("- Stryker TS: 92/100 killed")
-  assert pr_txt.contains?("![login-mobile](.arvo/evidence/r_e2e/login-mobile.png)")
-  assert pr_txt.contains?("![home-desktop](.arvo/evidence/r_e2e/home-desktop.png)")
+  assert pr_txt.contains?("- Statecharts: 1/2 verified (attention required)")
+  assert pr_txt.contains?("- Review statechart issues: Arvo.Session Lifecycle")
+  assert pr_txt.contains?("![login-mobile](../evidence/r_e2e/login-mobile.png)")
+  assert not pr_txt.contains?("home-desktop.png")
   assert not pr_txt.contains?("missing.png")
   assert pr_txt.contains?("Review modified contracts: specs/a.feature.md")
+
+  # Word cap and traversal rejection checks (D1/D2/security)
+  assert not valid_evidence_png_path?("../../secret.txt")
+  assert not valid_evidence_png_path?(".arvo/evidence/../secret.png")
+  assert not png_magic?("notpng123".bytes)
+  huge_sc = StatechartView(present?: true, ok?: true, replay_detail: "ok", charts: [])
+  var huge_evs = []
+  var hi = 0
+  while hi < 40
+    var he = Dossier.new_event("t", "full", "phase_#{hi}_long_name_for_word_cap_testing", "fail", 1)
+    he.detail = Some("long failure detail")
+    huge_evs = huge_evs.append(he)
+    hi += 1
+  end
+  big_pr = render_pr_summary("full", "sha_big", 100, huge_evs, empty_e2e_view(), huge_sc)
+  assert count_words(big_pr) < 150
 
   # 5. Clean PASS path (with tamper_check pass, sparse e2e/statechart defaults, empty chart list, corrupt fallbacks)
   ev_clean = [

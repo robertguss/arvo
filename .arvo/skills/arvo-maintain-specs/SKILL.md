@@ -11,7 +11,7 @@ Run this workflow daily, on schedule, or after major route/UI churn to keep `spe
 
 1. **Read-Only Feature Audit (Parallel Per Feature File):**
    - Inspect every file under `specs/features/*.feature.md` alongside its corresponding routes, handlers, and frontend TSX pages (using read-only inspection only).
-   - Validate structural conformance (`Summary`, `Sub-features`, `How to get to it (user POV)`, `Scenarios` with valid Gherkin, `Gotchas`):
+   - Validate structural conformance (`Sub-features`, `How to get to it (user POV)`, `Scenarios` with valid Gherkin, `Gotchas`):
      ```bash
      arvo feature --app examples/arvo-starter --validate
      ```

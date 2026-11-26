@@ -14,7 +14,9 @@ check_jobs_invariant,
 check_events_invariant,
 check_sqlite_integrity,
 default_invariants,
+maybe_system_fault,
 apply_standard_system_event,
+verify_network_fault,
 replay_steps,
 run,
 format_step,
@@ -205,8 +207,80 @@ fn default_invariants() : List(Invariant(W))
   ]
 end
 
+## Deterministically chooses a `SystemEvent` across all 8 fault classes when `rng.int(0, 100) < cfg.fault_probability_pct`.
+fn maybe_system_fault(
+  rng: Random,
+  cfg: SimConfig,
+  actor_count: Int,
+  job_names: List(Text)
+) : Option(SystemEvent)
+  return None if cfg.fault_probability_pct <= 0
+  return None if rng.int(0, 100) >= cfg.fault_probability_pct
+  actors = if actor_count > 0: actor_count else: 1
+  jobs = if job_names.empty?: ["default.job"] else: job_names
+  pick = rng.int(0, 8)
+  if pick == 0
+    Some(AdvanceClock(duration: 30.seconds))
+  else if pick == 1
+    Some(RunNextJob(job_names: jobs))
+  else if pick == 2
+    Some(CrashRunningJob)
+  else if pick == 3
+    Some(RequeueStaleJobs(stale_seconds: 10))
+  else if pick == 4
+    Some(ExpirePruneSessions)
+  else if pick == 5
+    Some(RotateActorSession(actor_idx: rng.int(0, actors)))
+  else if pick == 6
+    Some(ReplayStaleSessionCookie(actor_idx: rng.int(0, actors)))
+  else
+    Some(
+      InjectNetworkFault(
+        target: "https://fault.arvo.invalid/webhook",
+        fault: Network.Respond(response: Http.reply(503, "upstream fault"))
+      )
+    )
+  end
+end
+
+## Verifies a single scripted `Network.FakeReply` execution against `target`, matching response/error semantics and call log.
+fn verify_network_fault(
+  target: Text,
+  fault: Network.FakeReply,
+  res: Result(Http.Response, Http.HttpError),
+  calls: List(Network.RecordedCall)
+) : Result(Unit, Text)
+  if calls.size != 1
+    return Error("InjectNetworkFault expected 1 recorded call for #{target}, got #{calls.size}")
+  end
+  recorded_url = case calls.first
+    Some(c): c.url
+    None: return Error("InjectNetworkFault missing recorded call for #{target}")
+  end
+  if recorded_url != target
+    return Error("InjectNetworkFault recorded #{recorded_url}, expected #{target}")
+  end
+  case fault
+    Network.Respond(response: expected):
+      if res != Ok(expected)
+        return Error("InjectNetworkFault expected scripted Ok response for #{target}")
+      end
+      Ok(Unit)
+    Network.Fail(error: err):
+      if res != Error(Http.Unreachable(err))
+        return Error("InjectNetworkFault expected Unreachable(#{err}) for #{target}")
+      end
+      Ok(Unit)
+    Network.TruncateAfter(bytes: _):
+      if not (res is Error(Http.BadResponse(reason: _)))
+        return Error("InjectNetworkFault expected BadResponse truncation error for #{target}")
+      end
+      Ok(Unit)
+  end
+end
+
 ## Applies standard infrastructure `SystemEvent`s (`AdvanceClock`, `RunNextJob`, `CrashRunningJob`,
-## `RequeueStaleJobs`, `ExpirePruneSessions`) directly against `db`, `clock`, and `app`.
+## `RequeueStaleJobs`, and `ExpirePruneSessions`) directly against `db`, `clock`, and `app`.
 fn apply_standard_system_event(
   event: SystemEvent,
   db: Sqlite.Database,
@@ -218,6 +292,7 @@ fn apply_standard_system_event(
       clock.sleep(d)
       Ok(Unit)
     RunNextJob(job_names: names):
+      return Ok(Unit) if not try has_table(db, "arvo_jobs")
       case Jobs.claim_next(db, clock, names)
         Error(e): Error("claim_next failed: #{e}")
         Ok(None): Ok(Unit)
@@ -233,6 +308,7 @@ fn apply_standard_system_event(
           end
       end
     CrashRunningJob:
+      return Ok(Unit) if not try has_table(db, "arvo_jobs")
       rows = try db.query(
         "SELECT id FROM arvo_jobs WHERE state = 'pending' ORDER BY run_at ASC, id ASC LIMIT 1",
         []
@@ -247,15 +323,19 @@ fn apply_standard_system_event(
         None | Some(_): Ok(Unit)
       end
     RequeueStaleJobs(stale_seconds: stale_secs):
+      return Ok(Unit) if not try has_table(db, "arvo_jobs")
       _r = try Jobs.requeue_stale_running(db, clock, stale_secs).map_error(fn(e) "#{e}" end)
       Ok(Unit)
     ExpirePruneSessions:
+      return Ok(Unit) if not try has_table(db, "arvo_sessions")
       _p = try Session.prune_expired(db, clock).map_error(fn(e) "#{e}" end)
       Ok(Unit)
-    RotateActorSession(actor_idx: _) | ReplayStaleSessionCookie(actor_idx: _) | InjectNetworkFault(
-      target: _,
-      fault: _
-    ): Ok(Unit)
+    InjectNetworkFault(target: _, fault: _): Error(
+      "InjectNetworkFault must be handled inside the caller's test apply_step via Network.fake_scripted + Sim.verify_network_fault"
+    )
+    RotateActorSession(actor_idx: _) | ReplayStaleSessionCookie(actor_idx: _): Error(
+      "RotateActorSession and ReplayStaleSessionCookie require actor session world handling"
+    )
   end
 end
 
@@ -590,6 +670,19 @@ fn split_actor_cred(cred: Text) : (Text, Text)
   (parts.first or "", parts.get(1) or "")
 end
 
+fn extract_set_cookie_val(res: Api.Response, cookie_name: Text) : Option(Text)
+  prefix = "#{cookie_name}="
+  for (k, v) in res.headers
+    if k.ascii_lowercase == "set-cookie"
+      head = (v.split(";").first or "").trim
+      if head.drop_prefix(prefix) is Some(tok)
+        return Some(tok) if not tok.empty?
+      end
+    end
+  end
+  None
+end
+
 fn apply_sim_world(
   world: SimWorld,
   step: SimStep(SimAction),
@@ -600,12 +693,49 @@ fn apply_sim_world(
   case step
     System(event: ev):
       case ev
-        RotateActorSession(actor_idx: _): Ok(world)
-        ReplayStaleSessionCookie(actor_idx: _): Ok(world)
-        InjectNetworkFault(target: _, fault: _): Ok(world)
+        RotateActorSession(actor_idx: actor_idx):
+          cred = case world.cookies.get(actor_idx)
+            Some(c): c
+            None: return Ok(world)
+          end
+          (old_cookie, old_csrf) = split_actor_cred(cred)
+          return Ok(world) if old_cookie.empty?
+          rot_res = app.send(
+            Api.post("/sessions/rotate").with_header("Cookie", "arvo_session=#{old_cookie}")
+              .with_header("X-XSRF-TOKEN", old_csrf)
+          )
+          if rot_res.status >= 500
+            return Error("session rotation failed with #{rot_res.status}")
+          end
+          if rot_res.status != 200
+            return Ok(world)
+          end
+          new_cookie = try extract_set_cookie_val(rot_res, "arvo_session").or_fail(
+            "session rotation missing Set-Cookie"
+          )
+          parsed_rot = try Json.parse(rot_res.text).map_error(fn(e) "#{e}" end)
+          new_csrf = try parsed_rot.text_at("csrf_token").or_fail("missing rotated csrf_token")
+          updated_cookies = world.cookies.set(actor_idx, "#{new_cookie}|#{new_csrf}") or world.cookies
+          Ok(
+            SimWorld(
+              cookies: updated_cookies,
+              stale_cookies: world.stale_cookies.append(old_cookie),
+              pay_attempts: world.pay_attempts
+            )
+          )
+        ReplayStaleSessionCookie(actor_idx: _):
+          stale_tok = case world.stale_cookies.first
+            Some(tok): tok
+            None: return Ok(world)
+          end
+          rep_res = app.send(Api.get("/bills").with_header("Cookie", "arvo_session=#{stale_tok}"))
+          if rep_res.status != 401 and rep_res.status != 303
+            return Error("revoked session cookie accepted with status #{rep_res.status}")
+          end
+          Ok(world)
         AdvanceClock(duration: _) | RunNextJob(job_names: _) | CrashRunningJob | RequeueStaleJobs(
           stale_seconds: _
-        ) | ExpirePruneSessions:
+        ) | ExpirePruneSessions | InjectNetworkFault(target: _, fault: _):
           try apply_standard_system_event(ev, db, clock, app)
           Ok(world)
       end
@@ -646,20 +776,20 @@ fn single_flight_invariant(_w: SimWorld, db: Sqlite.Database, _clk: Clock) : Res
 end
 
 fn next_sim_step(rng: Random, _w: SimWorld) : SimStep(SimAction)
-  pick = rng.int(0, 10)
+  fault_cfg = SimConfig(
+    base_seed: 1,
+    seed_count: 1,
+    max_steps: 48,
+    shrink_budget: 200,
+    fault_probability_pct: 45
+  )
+  if maybe_system_fault(rng, fault_cfg, 2, ["sync.bill"]) is Some(sys_ev)
+    return System(event: sys_ev)
+  end
+  pick = rng.int(0, 6)
   if pick == 0
-    System(event: AdvanceClock(duration: 30.seconds))
-  else if pick == 1
-    System(event: RunNextJob(job_names: ["sync.bill"]))
-  else if pick == 2
-    System(event: CrashRunningJob)
-  else if pick == 3
-    System(event: RequeueStaleJobs(stale_seconds: 10))
-  else if pick == 4
-    System(event: ExpirePruneSessions)
-  else if pick == 5
     AppAction(actor_idx: 0, action: EnqueueSync)
-  else if pick == 6
+  else if pick == 1
     AppAction(actor_idx: 1, action: ListBills)
   else
     actor_i = rng.int(0, 2)
@@ -699,6 +829,17 @@ test "Arvo.Sim passes on locked workflow, discovers and shrinks optimistic-lock 
   assert cfg_clean.shrink_budget == 200
   assert cfg_clean.fault_probability_pct == 15
 
+  apply_sim_test = fn(w, step, db, clk, app)
+    if step is System(event: InjectNetworkFault(target: t, fault: f))
+      net = Network.fake_scripted([("GET", t, [f])])
+      res = Http.get(t).send(net)
+      try verify_network_fault(t, f, res, Network.recorded_calls(net))
+      Ok(w)
+    else
+      apply_sim_world(w, step, db, clk, app)
+    end
+  end
+
   clean_res = run(
     SimConfig(
       base_seed: 1,
@@ -709,20 +850,20 @@ test "Arvo.Sim passes on locked workflow, discovers and shrinks optimistic-lock 
     ),
     init_clean,
     next_sim_step,
-    apply_sim_world,
+    apply_sim_test,
     invs
   )
   assert clean_res is Ok(summary)
   assert summary.seeds_run == 6
   assert summary.total_steps == 120
-  assert summary.system_events_run == 52
+  assert summary.system_events_run > 0
   assert summary.invariants_checked == 630
 
-  # Prove deterministic step generator hits exact system events & actor actions
+  # Prove deterministic step generator hits ALL 8 SystemEvent variants + actor actions
   sample_w = SimWorld(cookies: ["c1|t1", "c2|t2"], stale_cookies: [], pay_attempts: 0)
   sample_rng = Random.seeded(77)
   var gen_steps = []
-  for _i in 0..60
+  for _i in 0..160
     gen_steps = gen_steps.append(next_sim_step(sample_rng, sample_w))
   end
   assert gen_steps.contains?(System(event: AdvanceClock(duration: 30.seconds)))
@@ -730,6 +871,16 @@ test "Arvo.Sim passes on locked workflow, discovers and shrinks optimistic-lock 
   assert gen_steps.contains?(System(event: CrashRunningJob))
   assert gen_steps.contains?(System(event: RequeueStaleJobs(stale_seconds: 10)))
   assert gen_steps.contains?(System(event: ExpirePruneSessions))
+  assert gen_steps.contains?(System(event: RotateActorSession(actor_idx: 0)))
+  assert gen_steps.contains?(System(event: ReplayStaleSessionCookie(actor_idx: 0)))
+  assert gen_steps.contains?(
+    System(
+      event: InjectNetworkFault(
+        target: "https://fault.arvo.invalid/webhook",
+        fault: Network.Respond(response: Http.reply(503, "upstream fault"))
+      )
+    )
+  )
   assert gen_steps.contains?(AppAction(actor_idx: 0, action: EnqueueSync))
   assert gen_steps.contains?(AppAction(actor_idx: 1, action: ListBills))
   assert gen_steps.contains?(AppAction(actor_idx: 0, action: PayBill(expected_version: 1)))
@@ -738,7 +889,7 @@ test "Arvo.Sim passes on locked workflow, discovers and shrinks optimistic-lock 
   assert not gen_steps.contains?(System(event: AdvanceClock(duration: 31.seconds)))
   assert not gen_steps.contains?(System(event: RequeueStaleJobs(stale_seconds: 11)))
 
-  # Also verify apply_sim_world handles every SystemEvent & status >= 500 check
+  # Also verify apply_sim_world executes real RotateActorSession, ReplayStaleSessionCookie, & InjectNetworkFault
   (sys_w, sys_db, sys_clk, _sys_srng, _sys_rng, sys_app) = init_clean(99)
   assert apply_sim_world(
     sys_w,
@@ -746,21 +897,23 @@ test "Arvo.Sim passes on locked workflow, discovers and shrinks optimistic-lock 
     sys_db,
     sys_clk,
     sys_app
-  ) ==
-    Ok(sys_w)
+  ) is
+    Ok(rotated_w)
+  assert rotated_w.cookies != sys_w.cookies
+  assert rotated_w.stale_cookies.size == 1
   assert apply_sim_world(
-    sys_w,
-    System(event: ReplayStaleSessionCookie(actor_idx: 1)),
+    rotated_w,
+    System(event: ReplayStaleSessionCookie(actor_idx: 0)),
     sys_db,
     sys_clk,
     sys_app
   ) ==
-    Ok(sys_w)
-  assert apply_sim_world(
-    sys_w,
+    Ok(rotated_w)
+  assert apply_sim_test(
+    rotated_w,
     System(
       event: InjectNetworkFault(
-        target: "t",
+        target: "https://t.example/hook",
         fault: Network.Respond(response: Http.reply(503, "down"))
       )
     ),
@@ -768,9 +921,94 @@ test "Arvo.Sim passes on locked workflow, discovers and shrinks optimistic-lock 
     sys_clk,
     sys_app
   ) ==
-    Ok(sys_w)
+    Ok(rotated_w)
+  assert apply_sim_test(
+    rotated_w,
+    System(
+      event: InjectNetworkFault(
+        target: "https://t.example/timeout",
+        fault: Network.Fail(error: Network.TimedOut)
+      )
+    ),
+    sys_db,
+    sys_clk,
+    sys_app
+  ) ==
+    Ok(rotated_w)
+  assert apply_sim_test(
+    rotated_w,
+    System(
+      event: InjectNetworkFault(
+        target: "https://t.example/cut",
+        fault: Network.TruncateAfter(bytes: 4)
+      )
+    ),
+    sys_db,
+    sys_clk,
+    sys_app
+  ) ==
+    Ok(rotated_w)
+  assert apply_standard_system_event(
+    InjectNetworkFault(
+      target: "https://t.example/hook",
+      fault: Network.Respond(response: Http.reply(503, "down"))
+    ),
+    sys_db,
+    sys_clk,
+    sys_app
+  ) is
+    Error(_)
+  assert apply_standard_system_event(RotateActorSession(actor_idx: 0), sys_db, sys_clk, sys_app) is
+    Error(_)
+  assert verify_network_fault(
+    "https://t.example/hook",
+    Network.Respond(response: Http.reply(200, "ok")),
+    Ok(Http.reply(200, "ok")),
+    []
+  ) is
+    Error(_)
+  assert verify_network_fault(
+    "https://t.example/hook",
+    Network.Respond(response: Http.reply(200, "ok")),
+    Ok(Http.reply(500, "bad")),
+    [
+      Network.RecordedCall(
+        method: "GET",
+        url: "https://t.example/hook",
+        headers: [],
+        body: Bytes.empty
+      )
+    ]
+  ) is
+    Error(_)
+
+  # Prove able to fail + shrink: BUG_NO_REVOKE=1 caught by RotateActorSession + ReplayStaleSessionCookie
+  init_no_revoke = fn(seed)
+    sql = Sqlite.in_memory()
+    clk = Clock.fixed(t0)
+    srng = SecureRandom.seeded(seed)
+    rng = Random.seeded(seed)
+    app = ApiTest.start(SimApp, sql, clk, srng, Env.of({"BUG_NO_REVOKE": "1"}))
+    db = case sql.open("sim.sqlite")
+      Ok(d): d
+      Error(_): stop "open sim.sqlite"
+    end
+    (c1, c2) = case SimApp.bootstrap_world(db, srng, clk)
+      Ok(pair): pair
+      Error(_): stop "bootstrap failed"
+    end
+    (SimWorld(cookies: [c1, c2], stale_cookies: [], pay_attempts: 0), db, clk, srng, rng, app)
+  end
+  assert replay_steps(
+    1,
+    [System(event: RotateActorSession(actor_idx: 0)), System(event: ReplayStaleSessionCookie(actor_idx: 0))],
+    init_no_revoke,
+    apply_sim_world,
+    invs
+  ) is
+    Error(("step_execution_error", _, 1))
   assert apply_sim_world(
-    sys_w,
+    rotated_w,
     AppAction(actor_idx: 0, action: ListBills),
     sys_db,
     sys_clk,

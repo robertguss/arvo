@@ -113,29 +113,39 @@ fn promise_blocks_changed?(old_source: Text, new_source: Text) : Bool
   extract_promise_blocks(old_source) != extract_promise_blocks(new_source)
 end
 
-## Parses changed file paths from `git status --porcelain` output.
+fn unquote_git_path(path: Text) : Text
+  if path.starts_with?("\"") and path.ends_with?("\"") and path.byte_count >= 2
+    path.bytes.slice(1, path.byte_count - 1).decode_utf8 or path
+  else
+    path
+  end
+end
+
+## Parses changed file paths from `git status --porcelain` output (preserving both sides of renames).
 fn parse_git_status_paths(porcelain: Text) : List(Text)
   examples
     parse_git_status_paths(
       " M routes.mo\n?? specs/features/bills.feature.md\nR  old.mo -> new.mo\n"
-    ) == ["routes.mo", "specs/features/bills.feature.md", "new.mo"]
+    ) == ["routes.mo", "specs/features/bills.feature.md", "old.mo", "new.mo"]
   end
 
   var out = []
   for raw in porcelain.lines
     continue if raw.trim.empty? or raw.chars.size < 4
     body = Text.from_chars(raw.chars.drop(3)).trim
-    path = if body.contains?(" -> ")
-      (body.split(" -> ").last or body).trim
+    if body.contains?(" -> ")
+      parts = body.split(" -> ")
+      old_p = unquote_git_path((parts.first or "").trim)
+      new_p = unquote_git_path(parts.drop(1).join(" -> ").trim)
+      if not old_p.empty?
+        out = out.append(old_p)
+      end
+      if not new_p.empty? and new_p != old_p
+        out = out.append(new_p)
+      end
     else
-      body
+      out = out.append(unquote_git_path(body))
     end
-    cleaned = if path.starts_with?("\"") and path.ends_with?("\"") and path.byte_count >= 2
-      path.bytes.slice(1, path.byte_count - 1).decode_utf8 or path
-    else
-      path
-    end
-    out = out.append(cleaned)
   end
   out
 end

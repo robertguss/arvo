@@ -9,6 +9,7 @@ authenticate,
 list_bills,
 pay_bill,
 enqueue_sync,
+rotate_session,
 sync_bill_job
 use Api
 use Arvo.Audit
@@ -44,6 +45,7 @@ api
   get "/bills" list_bills
   post "/bills/:id/pay" pay_bill
   post "/jobs/enqueue" enqueue_sync
+  post "/sessions/rotate" rotate_session
   job "sync.bill" sync_bill_job
   status SimUnauth = 401
   status SimForbidden = 403
@@ -182,4 +184,26 @@ fn sync_bill_job(payload: Json, db: Sqlite.Database) : Result(Unit, Text)
   _ = payload
   _q = try db.query("SELECT id FROM sim_bills LIMIT 1", []).map_error(fn(e) "#{e}" end)
   Ok(Unit)
+end
+
+fn rotate_session(
+  req: Api.Request,
+  member: SimMember,
+  db: Sqlite.Database,
+  rng: SecureRandom,
+  clock: Clock,
+  env: Env
+) : Result(Api.Response, SimErr)
+  return Error(SimForbidden) if not Auth.require_csrf(req, member.session)
+  (next_sess, raw_cookie) = if env.get("BUG_NO_REVOKE") == Some("1")
+    try Session.create(db, rng, clock, secret_key(), member.id, session_cfg()).map_error(
+      fn(e) SimServer(reason: "#{e}") end
+    )
+  else
+    try Session.rotate(db, rng, clock, secret_key(), member.session.id, member.id, session_cfg())
+      .map_error(fn(e) SimServer(reason: "#{e}") end)
+  end
+  body = Json.Object({"csrf_token": Json.String(next_sess.csrf_token)}).to_text
+  res = Api.response(200, [("Content-Type", "application/json")], body.bytes)
+  Ok(Session.attach_cookie(res, raw_cookie, session_cfg()))
 end

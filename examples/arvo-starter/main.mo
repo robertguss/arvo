@@ -11,6 +11,7 @@ use Arvo.Seed
 use Arvo.Session
 use Arvo.Sim
 use Arvo.WebTest
+use Http
 use Json
 use Routes
 
@@ -716,22 +717,22 @@ test "starter passes Arvo.Sim multi-user concurrent bill-payment and session sim
     (w, db, clk, srng, rng, app)
   end
 
+  cfg = Sim.SimConfig(
+    base_seed: 1,
+    seed_count: 15,
+    max_steps: 24,
+    shrink_budget: 100,
+    fault_probability_pct: 15
+  )
+
   next_step = fn(rng, _w)
-    pick = rng.int(0, 10)
+    if Sim.maybe_system_fault(rng, cfg, 2, ["bill.reminder"]) is Some(sys_ev)
+      return Sim.System(event: sys_ev)
+    end
+    pick = rng.int(0, 6)
     if pick == 0
-      Sim.System(event: Sim.AdvanceClock(duration: 5.minutes))
+      Sim.AppAction(actor_idx: rng.int(0, 2), action: CreateBill(amount_cents: 1200 + rng.int(1, 500)))
     else if pick == 1
-      Sim.System(event: Sim.ExpirePruneSessions)
-    else if pick == 2
-      Sim.System(event: Sim.RotateActorSession(actor_idx: rng.int(0, 2)))
-    else if pick == 3
-      Sim.System(event: Sim.ReplayStaleSessionCookie(actor_idx: 0))
-    else if pick == 4
-      Sim.AppAction(
-        actor_idx: rng.int(0, 2),
-        action: CreateBill(amount_cents: 1200 + rng.int(1, 500))
-      )
-    else if pick == 5
       Sim.AppAction(actor_idx: rng.int(0, 2), action: ViewHome)
     else
       Sim.AppAction(actor_idx: rng.int(0, 2), action: PayBill(expected_version: 1))
@@ -795,11 +796,13 @@ test "starter passes Arvo.Sim multi-user concurrent bill-payment and session sim
                 end
                 Ok(w)
             end
+          Sim.InjectNetworkFault(target: t, fault: f):
+            net = Network.fake_scripted([("GET", t, [f])])
+            res = Http.get(t).send(net)
+            try Sim.verify_network_fault(t, f, res, Network.recorded_calls(net))
+            Ok(w)
           Sim.AdvanceClock(duration: _) | Sim.ExpirePruneSessions | Sim.RunNextJob(job_names: _) | Sim
-            .CrashRunningJob | Sim.RequeueStaleJobs(stale_seconds: _) | Sim.InjectNetworkFault(
-              target: _,
-              fault: _
-            ):
+            .CrashRunningJob | Sim.RequeueStaleJobs(stale_seconds: _):
             try Sim.apply_standard_system_event(ev, db, clk, app)
             Ok(w)
         end
@@ -844,13 +847,6 @@ test "starter passes Arvo.Sim multi-user concurrent bill-payment and session sim
     end
   end
 
-  cfg = Sim.SimConfig(
-    base_seed: 1,
-    seed_count: 15,
-    max_steps: 24,
-    shrink_budget: 100,
-    fault_probability_pct: 15
-  )
   sim_res = Sim.run(cfg, init_world, next_step, apply_step, starter_sim_invariants())
   case sim_res
     Ok(summary):
@@ -875,10 +871,13 @@ Household members sign in with an allowlisted email and passphrase to receive an
 ## Sub-features
 
 - `auth-guest-gate`: redirects unauthenticated browsers visiting `/` to `/login` and rejects API endpoints with `401`.
+- `auth-login`: validates allowlist and password, issues session + CSRF cookies, and flashes a sign-in notice.
+- `auth-logout`: revokes the active session so previously captured cookies cannot replay protected routes.
 
 ## How to get to it (user POV)
 
 - Visit `/login` in a browser, enter `Email` and `Password`, and click `Sign in`.
+- Click `Sign out` in the `Home` header to end the session.
 
 ## Scenarios
 
@@ -919,6 +918,7 @@ Feature: Authentication and sessions
 
 ## Gotchas
 
+- `display_name` intentionally contains `<` and `&` characters to prove HTML attribute escaping in `data-page`.
 - Signing out must delete the server session row, not merely clear browser cookies.
 """
 
@@ -930,6 +930,8 @@ Signed-in household members view due paycheck bills, create new bills with field
 ## Sub-features
 
 - `bill-create`: validates name, category, and positive amount before persisting and logging an audit event.
+- `bill-pay-happy`: marks a due bill `in_flight` and increments its version alongside an audit record.
+- `bill-pay-conflict`: rejects a stale concurrent `expected_version` update with `409 Conflict`.
 
 ## How to get to it (user POV)
 
@@ -976,7 +978,8 @@ Feature: Paycheck bills and optimistic concurrency
 
 ## Gotchas
 
-- Concurrent partners must see `409 Conflict` when paying with a stale `expected_version`.
+- Concurrent partners must see `409 Conflict` when paying with a stale `expected_version` rather than silently overwriting the bill.
+- Bill names contain `<` and `&` to verify XSS attribute escaping across initial HTML loads.
 """
 
 csv_feature_spec = """
@@ -987,6 +990,7 @@ Signed-in members upload a bank or utility CSV statement (`name,category,amount_
 ## Sub-features
 
 - `csv-import-happy`: parses CSV rows, applies `default_category` when category is blank, inserts bills, and logs `bills.csv_import`.
+- `csv-import-reject`: rejects malformed rows with `422` without partial failure of validation guards.
 
 ## How to get to it (user POV)
 
@@ -1019,7 +1023,7 @@ Feature: CSV statement import
 
 ## Gotchas
 
-- CSV uploads require valid `X-XSRF-TOKEN` and UTF-8 bytes.
+- CSV uploads require valid `X-XSRF-TOKEN` and UTF-8 bytes; missing columns or non-positive amounts must return `422`.
 """
 
 test "starter Executable Feature Maps pass all auth, bills, and csv scenarios in-memory"

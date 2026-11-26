@@ -222,6 +222,16 @@ fn validate_e2e_report(
       "visual parity exceeded limit in #{report_path}: diff_pixels=#{diff_px} > max=#{cfg.visual_parity_max_diff_pixels}"
     )
   end
+  if doc.path("visual_checks") is Some(Json.Array(vchecks))
+    for vc in vchecks
+      if json_bool_at(vc, "updated")
+        lbl = vc.text_at("label") or "unknown"
+        return Error(
+          "visual parity baseline was updated (#{lbl}) in #{report_path}; re-run without --update-visual to verify parity"
+        )
+      end
+    end
+  end
 
   vps = try text_list_at(doc, "viewports").or_fail("missing viewports list in #{report_path}")
   for req_vp in cfg.viewports
@@ -637,6 +647,18 @@ test "FrontendCheck validates Vitest, Playwright E2E + visual/ARIA/DB evidence, 
     Json.Object(e2e_base.remove("visual_diff_pixels")).to_text,
     Json.Object(e2e_base.set("visual_diff_pixels", Json.int(-1))).to_text,
     Json.Object(e2e_base.set("visual_diff_pixels", Json.int(1))).to_text,
+    Json.Object(
+      e2e_base.set(
+        "visual_checks",
+        Json.Array([
+          Json.Object({
+            "label": Json.String("home-desktop"),
+            "diffPixels": Json.int(0),
+            "updated": Json.Boolean(true)
+          })
+        ])
+      )
+    ).to_text,
     Json.Object(e2e_base.set("viewports", Json.Array([Json.String("mobile")]))).to_text,
     Json.Object(e2e_base.set("screenshots", Json.Array([]))).to_text,
     Json.Object(e2e_base.set("screenshots", Json.Array([Json.String(".arvo/evidence/r1/missing.png")])))

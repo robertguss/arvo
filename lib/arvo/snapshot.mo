@@ -67,9 +67,40 @@ fn canonicalize(value: Json, opts: SnapshotOptions) : Json
   end
 end
 
-## Whether snapshot updates are explicitly authorized via `ARVO_UPDATE_SNAPSHOTS=1`.
+## Whether snapshot updates are explicitly authorized via `ARVO_UPDATE_SNAPSHOTS=1`
+## and `CI` is not active.
+fn ci_active?(env: Env) : Bool
+  case env.get("CI")
+    None: false
+    Some(raw):
+      v = raw.trim.ascii_lowercase
+      not v.empty? and v != "0" and v != "false" and v != "no"
+  end
+end
+
 fn update_enabled?(env: Env) : Bool
-  env.get("ARVO_UPDATE_SNAPSHOTS") == Some("1")
+  not ci_active?(env) and env.get("ARVO_UPDATE_SNAPSHOTS") == Some("1")
+end
+
+fn safe_snapshot_name?(name: Text) : Bool
+  examples
+    safe_snapshot_name?("bills/home")
+    not safe_snapshot_name?("")
+    not safe_snapshot_name?(" bills/home ")
+    not safe_snapshot_name?("/abs/path")
+    not safe_snapshot_name?("a\\b")
+    not safe_snapshot_name?("a//b")
+    not safe_snapshot_name?("a/./b")
+    not safe_snapshot_name?("../escape")
+  end
+
+  trimmed = name.trim
+  return false if trimmed.empty? or trimmed != name
+  return false if trimmed.starts_with?("/") or trimmed.contains?("\\")
+  for seg in trimmed.split("/")
+    return false if seg.empty? or seg == "." or seg == ".."
+  end
+  true
 end
 
 ## Resolves the relative golden snapshot path under `snapshots/`.
@@ -141,12 +172,18 @@ fn check_json(files: Files, env: Env, name: Text, value: T, opts: SnapshotOption
   Text
 )
   where T: Json
+  if not safe_snapshot_name?(name)
+    return Error("invalid snapshot name '#{name}': path traversal or empty segments are forbidden")
+  end
   actual = "#{canonicalize(value.to_json, opts).pretty}\n"
   compare_or_update(files, env, snapshot_path(name, "json"), actual)
 end
 
 ## Checks `value` against `snapshots/<name>.snap.txt`, updating only when `ARVO_UPDATE_SNAPSHOTS=1`.
 fn check_text(files: Files, env: Env, name: Text, value: Text) : Result(Unit, Text)
+  if not safe_snapshot_name?(name)
+    return Error("invalid snapshot name '#{name}': path traversal or empty segments are forbidden")
+  end
   compare_or_update(files, env, snapshot_path(name, "txt"), value)
 end
 
@@ -186,6 +223,9 @@ test "Snapshot fails on missing or mismatched baselines, updates only with ARVO_
   write_env = Env.of({"ARVO_UPDATE_SNAPSHOTS": "1"})
   assert not update_enabled?(read_env)
   assert update_enabled?(write_env)
+  assert not update_enabled?(Env.of({"CI": "true", "ARVO_UPDATE_SNAPSHOTS": "1"}))
+  assert not update_enabled?(Env.of({"CI": "1", "ARVO_UPDATE_SNAPSHOTS": "1"}))
+  assert update_enabled?(Env.of({"CI": "false", "ARVO_UPDATE_SNAPSHOTS": "1"}))
   assert parent_folder("plain.txt") == "."
   assert parent_folder("snapshots/a") == "snapshots"
   assert parent_folder("snapshots/sub/a.snap.json") == "snapshots/sub"
@@ -204,6 +244,11 @@ test "Snapshot fails on missing or mismatched baselines, updates only with ARVO_
     created_at: "2026-12-31T23:59:59Z",
     nested: [{"csrf_token": "tok_b", "title": "Rent"}]
   )
+
+  assert check_json(files, write_env, "../escape", sample1, default_options()) is Error(_)
+  assert check_text(files, write_env, "/abs/path", "hi") is Error(_)
+  assert check_text(files, Env.of({"CI": "true", "ARVO_UPDATE_SNAPSHOTS": "1"}), "bills/ci_guard", "hi") is
+    Error(_)
 
   # Missing baseline fails when ARVO_UPDATE_SNAPSHOTS is unset
   assert check_json(files, read_env, "bills/home", sample1, default_options()) is Error(miss_msg)

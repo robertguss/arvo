@@ -21,7 +21,7 @@ use Tamper
 enum CliCmd
   HelpCmd(topic: Option(Text))
   ContractsCmd(check?: Bool)
-  VerifyCmd(tier: Text, json?: Bool, changed?: Bool)
+  VerifyCmd(tier: Text, json?: Bool, changed?: Bool, base_ref: Option(Text))
   FeatureCmd(validate?: Bool, manifest_out: Option(Text), dir: Option(Text))
   SimCmd(entry: Option(Text), only: Option(Text))
   ControlCmd(sub: Control.ControlCmd)
@@ -53,7 +53,7 @@ fn usage(topic: Option(Text)) : Text
         -h, --help Show this help
       """
     Some("verify"): """
-      usage: arvo verify [--app DIR] [--tier fast|feature|full] [--json] [--changed]
+      usage: arvo verify [--app DIR] [--tier fast|feature|full] [--json] [--changed] [--base REF]
 
       Runs the Arvo verification ladder, detects contract/promise tampering, and emits
       machine-readable events to .arvo/dossier/verify.jsonl.
@@ -63,6 +63,7 @@ fn usage(topic: Option(Text)) : Text
         --tier TIER  Verification tier: fast (default), feature, or full
         --json       Print NDJSON events to stdout instead of the terminal scorecard
         --changed    Focus checks on changed files where supported
+        --base REF   Git base branch/ref for committed+uncommitted tamper comparison
         -h, --help   Show this help
       """
     Some("feature"): """
@@ -219,6 +220,7 @@ fn parse_verify_args(rest: List(Text)) : Result(CliCmd, Text)
   var tier = "fast"
   var json? = false
   var changed? = false
+  var base_ref = None
   var i = 0
   while i < rest.size
     a = rest.get(i) or ""
@@ -228,6 +230,13 @@ fn parse_verify_args(rest: List(Text)) : Result(CliCmd, Text)
       json? = true
     else if a == "--changed"
       changed? = true
+    else if a == "--base"
+      next_base = rest.get(i + 1) or ""
+      if next_base.empty? or next_base.starts_with?("-")
+        return Error("`--base` requires a git ref or commit SHA. Run `arvo verify --help`.")
+      end
+      base_ref = Some(next_base)
+      i += 1
     else if a == "--tier"
       next_val = rest.get(i + 1) or ""
       if next_val.empty? or next_val.starts_with?("-")
@@ -245,7 +254,7 @@ fn parse_verify_args(rest: List(Text)) : Result(CliCmd, Text)
     end
     i += 1
   end
-  Ok(VerifyCmd(tier: tier, json?: json?, changed?: changed?))
+  Ok(VerifyCmd(tier: tier, json?: json?, changed?: changed?, base_ref: base_ref))
 end
 
 fn parse_feature_args(rest: List(Text)) : Result(CliCmd, Text)
@@ -584,7 +593,104 @@ fn collect_feature_files(files: ReadFiles, dir: Text) : Result(List(Text), Text)
   Ok(matched.sort)
 end
 
-fn load_and_parse_features(files: ReadFiles, dir: Text) : Result(List(Feature.FeatureDoc), Text)
+fn strip_leading_spaces(line: Text, count: Int) : Text
+  return line if count <= 0
+  chars = line.chars
+  var drop_n = 0
+  while drop_n < count and drop_n < chars.size
+    break if (chars.get(drop_n) or ' ') != ' '
+    drop_n += 1
+  end
+  Text.from_chars(chars.drop(drop_n))
+end
+
+fn count_leading_spaces(line: Text) : Int
+  var n = 0
+  for ch in line.chars
+    break if ch != ' '
+    n += 1
+  end
+  n
+end
+
+fn extract_inline_feature_specs(src: Text) : List((Text, Text))
+  lines = src.lines
+  var out = []
+  var i = 0
+  while i < lines.size
+    raw = lines.get(i) or ""
+    trimmed = raw.trim
+    if trimmed.contains?("_feature_spec = \"\"\"")
+      var_name = (trimmed.split("=").first or "").trim
+      var body = []
+      var j = i + 1
+      var indent = 0
+      var closed? = false
+      while j < lines.size
+        ln = lines.get(j) or ""
+        if ln.trim == "\"\"\""
+          indent = count_leading_spaces(ln)
+          closed? = true
+          break
+        end
+        body = body.append(ln)
+        j += 1
+      end
+      if closed?
+        dedented = body.map(fn(b)
+          strip_leading_spaces(b, indent).replace("\\\\", "\\")
+        end).join("\n").trim
+        out = out.append((var_name, dedented))
+        i = j
+      end
+    end
+    i += 1
+  end
+  out
+end
+
+fn verify_inline_feature_copies(
+  files: ReadFiles,
+  cfg: Config.ArvoConfig,
+  docs: List(Feature.FeatureDoc)
+) : Result(Unit, Text)
+  return Ok(Unit) if not files.exists?(cfg.entry)
+  entry_src = try files.read_text(cfg.entry).map_error(fn(e) "#{e}" end)
+  inline_specs = extract_inline_feature_specs(entry_src)
+  return Ok(Unit) if inline_specs.empty?
+
+  var disk_contents = {}
+  for doc in docs
+    if files.read_text(doc.path) is Ok(raw)
+      disk_contents = disk_contents.set(doc.path, raw.replace("\r\n", "\n").trim)
+    end
+  end
+
+  for (var_name, raw_inline) in inline_specs
+    inline_doc = try Feature.parse("#{cfg.entry}:#{var_name}", raw_inline).map_error(
+      fn(pe) "#{pe.path}:#{pe.line}: #{pe.message}" end
+    )
+    matched = docs.find(fn(d) d.title == inline_doc.title or d.feature_name == inline_doc.feature_name end)
+    case matched
+      None: return Error(
+        "inline feature spec '#{var_name}' in #{cfg.entry} has no matching file under #{cfg.features_dir}"
+      )
+      Some(disk_doc):
+        disk_text = disk_contents.get(disk_doc.path) or ""
+        if raw_inline.replace("\r\n", "\n").trim != disk_text
+          return Error(
+            "inline feature spec '#{var_name}' in #{cfg.entry} drifted from #{disk_doc.path}"
+          )
+        end
+    end
+  end
+  Ok(Unit)
+end
+
+fn load_and_parse_features(files: ReadFiles, cfg: Config.ArvoConfig, dir: Text) : Result(
+  List(Feature.FeatureDoc),
+  Text
+)
   paths = try collect_feature_files(files, dir)
   var docs = []
   var errs = []
@@ -598,6 +704,7 @@ fn load_and_parse_features(files: ReadFiles, dir: Text) : Result(List(Feature.Fe
   if not errs.empty?
     return Error(errs.join("\n"))
   end
+  try verify_inline_feature_copies(files, cfg, docs)
   Ok(docs)
 end
 
@@ -614,7 +721,7 @@ fn run_feature_cmd(
       return 1
   end
   target_dir = dir_opt or cfg.features_dir
-  docs = case load_and_parse_features(files.read_only, target_dir)
+  docs = case load_and_parse_features(files.read_only, cfg, target_dir)
     Ok(d): d
     Error(e):
       console.error(e)
@@ -678,10 +785,63 @@ fn run_sim_cmd(
   end
 end
 
+fn resolve_tamper_base(
+  explicit_base: Option(Text),
+  cfg_base: Option(Text),
+  cmd: Command,
+  git_dur: Duration
+) : Result(Text, Text)
+  chosen = case explicit_base
+    Some(_): explicit_base
+    None: cfg_base
+  end
+  if chosen is Some(bref)
+    if cmd.run("git", ["merge-base", "HEAD", bref], git_dur) is Ok(mb_out)
+      mb = mb_out.stdout.trim
+      if mb_out.ok? and not mb.empty?
+        return Ok(mb)
+      end
+    end
+    if cmd.run("git", ["rev-parse", "--verify", bref], git_dur) is Ok(rv_out)
+      if rv_out.ok?
+        return Ok(bref)
+      end
+    end
+    return Error("cannot resolve tamper --base ref '#{bref}'")
+  end
+
+  for cand in ["origin/main", "main"]
+    if cmd.run("git", ["rev-parse", "--verify", cand], git_dur) is Ok(rv_out)
+      if rv_out.ok?
+        if cmd.run("git", ["merge-base", "HEAD", cand], git_dur) is Ok(mb_out)
+          mb = mb_out.stdout.trim
+          if mb_out.ok? and not mb.empty?
+            return Ok(mb)
+          end
+        end
+        return Error("failed computing git merge-base HEAD #{cand}")
+      end
+    end
+  end
+  Ok("HEAD")
+end
+
+fn merge_tamper_globs(base: List(Text), extra: List(Text)) : List(Text)
+  var merged = base
+  for g in extra
+    if not g.trim.empty? and not merged.contains?(g)
+      merged = merged.append(g)
+    end
+  end
+  merged
+end
+
 fn run_tamper_phase(
   app_dir: Text,
   tier: Text,
+  base_opt: Option(Text),
   cfg: Config.ArvoConfig,
+  root_files: ReadFiles,
   files: Files,
   cmd: Command,
   clock: Clock
@@ -697,57 +857,105 @@ fn run_tamper_phase(
     end
   end
   effective_prefix = if app_dir == ".": git_prefix else: "#{git_prefix}#{app_dir}/"
-  df_prefix = if app_dir == ".": "" else: "#{app_dir}/"
 
-  var all_changed = []
+  compare_ref = case resolve_tamper_base(base_opt, cfg.base_ref, cmd, git_dur)
+    Ok(r): r
+    Error(berr):
+      ms_err = elapsed_ms(clock, t0)
+      var ev = Dossier.new_event(ts, tier, "tamper_check", "warn", ms_err)
+      ev.detail = Some("tamper base resolution failed: #{berr}")
+      return ev
+  end
+
+  fdir_clean = cfg.features_dir.drop_suffix("/") or cfg.features_dir
+  sdir_clean = cfg.strength_dir.drop_suffix("/") or cfg.strength_dir
+  fedir_clean = cfg.frontend_dir.drop_suffix("/") or cfg.frontend_dir
+  var effective_globs = merge_tamper_globs(Config.default_config().tamper_globs, cfg.tamper_globs)
+  effective_globs = merge_tamper_globs(
+    effective_globs,
+    [
+      "arvo.toml",
+      "#{fdir_clean}/**/*.feature.md",
+      "#{sdir_clean}/**/*",
+      "#{fedir_clean}/stryker.config.*"
+    ]
+  )
+  repo_toml = if effective_prefix.empty?: "arvo.toml" else: "#{effective_prefix}arvo.toml"
+  if cmd.run("git", ["show", "#{compare_ref}:#{repo_toml}"], git_dur) is Ok(base_toml)
+    if base_toml.ok?
+      if Config.parse(base_toml.stdout) is Ok(base_cfg)
+        effective_globs = merge_tamper_globs(effective_globs, base_cfg.tamper_globs)
+      end
+    end
+  end
+
+  var all_repo_changed = []
   var st_ok? = false
   if cmd.run("git", ["status", "--porcelain", "--untracked-files=all"], git_dur) is Ok(st_out)
     if st_out.ok?
       st_ok? = true
       for p in Tamper.parse_git_status_paths(st_out.stdout)
-        if strip_repo_prefix(p, effective_prefix) is Some(rel_p)
-          all_changed = all_changed.append(rel_p)
-        end
+        all_repo_changed = all_repo_changed.append(p)
       end
     end
   end
   var df_ok? = false
-  if cmd.run("git", ["diff", "--relative", "--name-only", "HEAD"], git_dur) is Ok(df_out)
+  if cmd.run("git", ["diff", "--no-renames", "--name-only", compare_ref], git_dur) is Ok(df_out)
     if df_out.ok?
       df_ok? = true
       for ln in df_out.stdout.lines
         trimmed = ln.trim
         continue if trimmed.empty?
-        if strip_repo_prefix(trimmed, df_prefix) is Some(rel_d)
-          all_changed = all_changed.append(rel_d)
-        end
+        all_repo_changed = all_repo_changed.append(trimmed)
       end
     end
   end
 
   if st_ok? and df_ok?
-    unique_changed = all_changed.unique
-    var tampered = Tamper.detect_tampered_paths(unique_changed, cfg.tamper_globs)
+    unique_repo = all_repo_changed.unique
+    var app_changed = []
+    var repo_mo_checked = []
+    var tampered = []
 
-    for p in unique_changed
-      if p.ends_with?(".mo")
-        if cmd.run("git", ["show", "HEAD:./#{join_app_path(app_dir, p)}"], git_dur) is Ok(old_out)
+    for rp in unique_repo
+      if strip_repo_prefix(rp, effective_prefix) is Some(rel_p)
+        app_changed = app_changed.append(rel_p)
+      end
+      # Check every .mo file across the entire repository for modified or removed promise blocks
+      repo_rel = strip_repo_prefix(rp, git_prefix) or rp
+      if repo_rel.ends_with?(".mo") and not repo_mo_checked.contains?(repo_rel)
+        repo_mo_checked = repo_mo_checked.append(repo_rel)
+        old_res = cmd.run("git", ["show", "#{compare_ref}:#{rp}"], git_dur)
+        if old_res is Ok(old_out)
           if old_out.ok?
-            if files.read_text(p) is Ok(cur_src)
-              if Tamper.promise_blocks_changed?(old_out.stdout, cur_src)
-                tampered = tampered.append("#{p} (promise)")
-              end
+            cur_res = case strip_repo_prefix(rp, effective_prefix)
+              Some(in_app): files.read_text(in_app)
+              None: root_files.read_text(repo_rel)
+            end
+            case cur_res
+              Ok(cur_src):
+                if Tamper.promise_blocks_changed?(old_out.stdout, cur_src)
+                  tampered = tampered.append("#{repo_rel} (promise)")
+                end
+              Error(_):
+                if not Tamper.extract_promise_blocks(old_out.stdout).empty?
+                  tampered = tampered.append("#{repo_rel} (promise removed)")
+                end
             end
           end
         end
       end
     end
 
+    for tp in Tamper.detect_tampered_paths(app_changed, effective_globs)
+      tampered = tampered.append(tp)
+    end
+
     final_tampered = tampered.unique.sort
     ms = elapsed_ms(clock, t0)
     if final_tampered.empty?
       var ev = Dossier.new_event(ts, tier, "tamper_check", "pass", ms)
-      ev.detail = Some("0 contract edits")
+      ev.detail = Some("0 contract edits (base=#{Text.from_chars(compare_ref.chars.take(12))})")
       return ev
     else
       var ev = Dossier.new_event(ts, tier, "tamper_check", "warn", ms)
@@ -757,10 +965,13 @@ fn run_tamper_phase(
     end
   end
 
-  current_fp = Tamper.fingerprint_map(
-    collect_tamper_files(files.read_only, ".", cfg.tamper_globs),
-    cfg.tamper_globs
-  )
+  var fp_inputs = collect_tamper_files(files.read_only, ".", effective_globs)
+  for (rk, rv) in collect_tamper_files(root_files, ".", [])
+    if not fp_inputs.has?(rk)
+      fp_inputs = fp_inputs.set(rk, rv)
+    end
+  end
+  current_fp = Tamper.fingerprint_map(fp_inputs, effective_globs)
   baseline_path = ".arvo/dossier/tamper-baseline.json"
   if files.read_text(baseline_path) is Ok(raw)
     if Json.decode_strict[Map(Text, Text)](raw) is Ok(base_fp)
@@ -792,6 +1003,7 @@ fn run_verify_cmd(
   tier: Text,
   json_mode?: Bool,
   _changed?: Bool,
+  base_opt: Option(Text),
   root_files: ReadFiles,
   files: Files,
   cmd: Command,
@@ -861,7 +1073,7 @@ fn run_verify_cmd(
   t_feat = clock.now
   var parsed_docs = []
   feat_ev = if files.exists?(cfg.features_dir)
-    case load_and_parse_features(files.read_only, cfg.features_dir)
+    case load_and_parse_features(files.read_only, cfg, cfg.features_dir)
       Ok(docs):
         parsed_docs = docs
         var e = Dossier.new_event(
@@ -914,7 +1126,7 @@ fn run_verify_cmd(
   events = events.append(ctr_ev)
 
   # 5. Tamper check
-  events = events.append(run_tamper_phase(app_dir, tier, cfg, files, cmd, clock))
+  events = events.append(run_tamper_phase(app_dir, tier, base_opt, cfg, root_files, files, cmd, clock))
 
   # Tier feature/full gates
   if tier == "feature" or tier == "full"
@@ -1104,11 +1316,12 @@ fn run_cli(
           console.error("arvo contracts: #{msg}")
           1
       end
-    VerifyCmd(tier: tier, json?: j, changed?: chg): run_verify_cmd(
+    VerifyCmd(tier: tier, json?: j, changed?: chg, base_ref: bref): run_verify_cmd(
       app_dir,
       tier,
       j,
       chg,
+      bref,
       files.read_only,
       app_files,
       cmd,
@@ -1239,10 +1452,13 @@ test "parse_args handles all commands, help flags, and rejects unknown options c
   assert parse_args(["--help"]) == Ok(HelpCmd(topic: None))
   assert parse_args(["contracts", "--check"]) == Ok(ContractsCmd(check?: true))
   assert parse_args(["contracts", "--help"]) == Ok(HelpCmd(topic: Some("contracts")))
-  assert parse_args(["verify"]) == Ok(VerifyCmd(tier: "fast", json?: false, changed?: false))
+  assert parse_args(["verify"]) ==
+    Ok(VerifyCmd(tier: "fast", json?: false, changed?: false, base_ref: None))
   assert parse_args(["verify", "--help"]) == Ok(HelpCmd(topic: Some("verify")))
-  assert parse_args(["verify", "--tier", "feature", "--json", "--changed"]) ==
-    Ok(VerifyCmd(tier: "feature", json?: true, changed?: true))
+  assert parse_args(["verify", "--tier", "feature", "--json", "--changed", "--base", "origin/main"]) ==
+    Ok(VerifyCmd(tier: "feature", json?: true, changed?: true, base_ref: Some("origin/main")))
+  assert parse_args(["verify", "--base"]) is Error(_)
+  assert parse_args(["verify", "--base", "-x"]) is Error(_)
   assert parse_args(["feature"]) == Ok(FeatureCmd(validate?: false, manifest_out: None, dir: None))
   assert parse_args(["feature", "--help"]) == Ok(HelpCmd(topic: Some("feature")))
   assert parse_args(["feature", "--validate", "--manifest", "out.json", "specs/features"]) ==
@@ -1377,14 +1593,14 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     ),
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
     (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output("")),
-    (Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]), Command.ok_output("")),
+    (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output("")),
     (
       Command.spec(
         "git",
         [
           "diff",
           "--name-only",
-          "623f404124b5bf27f13a595a0dc174a997f49dee..HEAD",
+          "623f404124b5bf27f13a595a0dc174a997f49dee",
           "--",
           "lib/arvo/jobs.mo"
         ]
@@ -1397,7 +1613,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
         [
           "diff",
           "--name-only",
-          "4ea7e818b88a38fe86021a500fd866e0aa392557..HEAD",
+          "4ea7e818b88a38fe86021a500fd866e0aa392557",
           "--",
           "lib/arvo/session.mo"
         ]
@@ -1656,10 +1872,11 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
   assert vp_fail_jsonl.contains?("\"phase\":\"browser_e2e\",\"status\":\"fail\"")
   assert vp_fail_jsonl.contains?("\"phase\":\"stryker\",\"status\":\"fail\"")
 
-  # 6. Subdir tamper detection catches modified .feature.md AND modified promise block in .mo
+  # 6. Tamper detection: committed branch edits, arvo.toml hardening, renames, repo-wide promises, & T5 inline feature drift
   files_tamper = Files.in_memory({
-    "arvo.toml": "[app]\nentry = \"main.mo\"\n",
+    "arvo.toml": "[app]\nentry = \"main.mo\"\n[testing.tamper_protected]\nglobs = []\n",
     "main.mo": "module Main\nfn f(x: Int) : Int\n  promise\n    true\n  end\n  x\nend\n",
+    "lib/other.mo": "module Other\nfn g(x: Int) : Int\n  promise\n    true\n  end\n  x\nend\n",
     "frontend/src/pages/Home.tsx": "export default function Home() { return null; }\n",
     "frontend/src/arvo.gen.ts": gen_ts,
     "specs/features/login.feature.md": valid_feature_doc
@@ -1668,30 +1885,44 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.ok_output(contracts_json)),
     (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
     (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
-    (
-      Command.spec("git", ["rev-parse", "--show-prefix"]),
-      Command.ok_output("examples/arvo-starter/\n")
-    ),
+    (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
+    (Command.spec("git", ["merge-base", "HEAD", "origin/main"]), Command.ok_output("base_111\n")),
     (
       Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
       Command.ok_output(
-        " M examples/arvo-starter/specs/features/login.feature.md\n M lib/other.mo\n?? examples/arvo-starter/main.mo\n"
+        "R  specs/features/login.feature.md -> specs/login_moved.md\n M lib/other.mo\n?? main.mo\n"
       )
     ),
     (
-      Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]),
-      Command.ok_output("specs/features/login.feature.md\nmain.mo\n")
+      Command.spec("git", ["diff", "--no-renames", "--name-only", "base_111"]),
+      Command.ok_output("specs/features/login.feature.md\nmain.mo\nlib/deleted_promise.mo\n")
     ),
     (
-      Command.spec("git", ["show", "HEAD:./main.mo"]),
+      Command.spec("git", ["show", "base_111:arvo.toml"]),
+      Command.ok_output("[testing.tamper_protected]\nglobs = [\"extra_base/**/*\"]\n")
+    ),
+    (
+      Command.spec("git", ["show", "base_111:main.mo"]),
       Command.ok_output(
         "module Main\nfn f(x: Int) : Int\n  promise\n    result == x\n  end\n  x\nend\n"
+      )
+    ),
+    (
+      Command.spec("git", ["show", "base_111:lib/other.mo"]),
+      Command.ok_output(
+        "module Other\nfn g(x: Int) : Int\n  promise\n    result >= 0\n  end\n  x\nend\n"
+      )
+    ),
+    (
+      Command.spec("git", ["show", "base_111:lib/deleted_promise.mo"]),
+      Command.ok_output(
+        "module Deleted\nfn h(x: Int) : Int\n  promise\n    result == x\n  end\n  x\nend\n"
       )
     )
   ])
   c_tamper = Console.fake()
   assert run_cli(
-    Args.of(["verify", "--tier", "fast"]),
+    Args.of(["verify", "--tier", "fast", "--base", "origin/main"]),
     c_tamper,
     files_tamper,
     Command.fake(replies_tamper),
@@ -1704,7 +1935,28 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
   assert files_tamper.read_text(".arvo/dossier/verify.jsonl") is Ok(vt_jsonl)
   assert vt_jsonl.contains?("specs/features/login.feature.md")
   assert vt_jsonl.contains?("main.mo (promise)")
-  assert not vt_jsonl.contains?("lib/other.mo")
+  assert vt_jsonl.contains?("lib/other.mo (promise)")
+  assert vt_jsonl.contains?("lib/deleted_promise.mo (promise removed)")
+
+  # T5: inline *_feature_spec drift in main.mo fails `feature --validate` and `verify`
+  drifted_main = "module Main\nlogin_feature_spec = \"\"\"\n#{valid_feature_doc}\n- drifted gotcha\n\"\"\"\n"
+  files_drift = Files.in_memory({
+    "arvo.toml": "[app]\nentry = \"main.mo\"\n",
+    "main.mo": drifted_main,
+    "specs/features/login.feature.md": valid_feature_doc
+  })
+  c_drift = Console.fake()
+  assert run_cli(
+    Args.of(["feature", "--validate"]),
+    c_drift,
+    files_drift,
+    Command.fake(replies_ok),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    1
+  assert c_drift.printed_errors.any?(fn(e) e.contains?("drifted from specs/features/login.feature.md") end)
 
   # 7. Contract error paths: fallback probe, tsc fail, missing file, drift, missing page, nested out dir & root out file
   assert files_tamper.write_text("frontend/src/arvo.gen.ts", "// stale") == Ok(Unit)
@@ -1950,14 +2202,14 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     ),
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
     (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output("")),
-    (Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]), Command.ok_output("")),
+    (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output("")),
     (
       Command.spec(
         "git",
         [
           "diff",
           "--name-only",
-          "623f404124b5bf27f13a595a0dc174a997f49dee..HEAD",
+          "623f404124b5bf27f13a595a0dc174a997f49dee",
           "--",
           "lib/arvo/jobs.mo"
         ]
@@ -1970,7 +2222,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
         [
           "diff",
           "--name-only",
-          "4ea7e818b88a38fe86021a500fd866e0aa392557..HEAD",
+          "4ea7e818b88a38fe86021a500fd866e0aa392557",
           "--",
           "lib/arvo/session.mo"
         ]
@@ -2109,7 +2361,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
         Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
         Command.ok_output("")
       ),
-      (Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]), Command.ok_output(""))
+      (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output(""))
     ])
     assert run_cli(
       Args.of(["sim"]),
@@ -2139,14 +2391,14 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     (Command.spec("mo", ["test", "--json", "main.mo"]), Command.output(1, test_json, "nonzero")),
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
     (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output("")),
-    (Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]), Command.ok_output("")),
+    (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output("")),
     (
       Command.spec(
         "git",
         [
           "diff",
           "--name-only",
-          "623f404124b5bf27f13a595a0dc174a997f49dee..HEAD",
+          "623f404124b5bf27f13a595a0dc174a997f49dee",
           "--",
           "lib/arvo/jobs.mo"
         ]
@@ -2159,7 +2411,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
         [
           "diff",
           "--name-only",
-          "4ea7e818b88a38fe86021a500fd866e0aa392557..HEAD",
+          "4ea7e818b88a38fe86021a500fd866e0aa392557",
           "--",
           "lib/arvo/session.mo"
         ]
@@ -2198,7 +2450,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
     (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output("")),
-    (Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]), Command.ok_output("\n\n"))
+    (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output("\n\n"))
   ])
   assert run_cli(
     Args.of(["verify", "--tier", "fast"]),
@@ -2250,11 +2502,11 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       Command.ok_output(" M examples/app/main.mo\n M lib/other.mo\n")
     ),
     (
-      Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]),
+      Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]),
       Command.ok_output("examples/app/specs/features/login.feature.md\nlib/other.mo\n\n")
     ),
     (
-      Command.spec("git", ["show", "HEAD:./examples/app/main.mo"]),
+      Command.spec("git", ["show", "HEAD:examples/app/main.mo"]),
       Command.ok_output(
         "module Main\nfn f(x: Int) : Int\n  promise\n    result == x\n  end\n  x\nend\n"
       )
@@ -2265,7 +2517,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
         [
           "diff",
           "--name-only",
-          "623f404124b5bf27f13a595a0dc174a997f49dee..HEAD",
+          "623f404124b5bf27f13a595a0dc174a997f49dee",
           "--",
           "lib/arvo/jobs.mo"
         ]
@@ -2278,7 +2530,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
         [
           "diff",
           "--name-only",
-          "4ea7e818b88a38fe86021a500fd866e0aa392557..HEAD",
+          "4ea7e818b88a38fe86021a500fd866e0aa392557",
           "--",
           "lib/arvo/session.mo"
         ]
@@ -2392,7 +2644,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       Command.output(128, "", "fatal: not a git repo")
     ),
     (
-      Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]),
+      Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]),
       Command.output(128, "", "fatal: not a git repo")
     )
   ])
@@ -2421,7 +2673,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
     (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output("")),
     (
-      Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]),
+      Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]),
       Command.output(128, "", "fatal: bad HEAD")
     )
   ])
@@ -2449,7 +2701,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
       Command.output(128, "", "fatal: status failed")
     ),
-    (Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]), Command.ok_output(""))
+    (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output(""))
   ])
   assert run_cli(
     Args.of(["verify", "--tier", "fast"]),
@@ -2585,7 +2837,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
         Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
         Command.ok_output("")
       ),
-      (Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]), Command.ok_output(""))
+      (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output(""))
     ])
     assert run_cli(
       Args.of(["verify", "--tier", "feature"]),
@@ -2842,7 +3094,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
           Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
           Command.ok_output("")
         ),
-        (Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]), Command.ok_output(""))
+        (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output(""))
       ])
     ),
     Clock.fixed(t0),
@@ -2875,14 +3127,14 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
           Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
           Command.ok_output("")
         ),
-        (Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]), Command.ok_output("")),
+        (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output("")),
         (
           Command.spec(
             "git",
             [
               "diff",
               "--name-only",
-              "623f404124b5bf27f13a595a0dc174a997f49dee..HEAD",
+              "623f404124b5bf27f13a595a0dc174a997f49dee",
               "--",
               "lib/arvo/jobs.mo"
             ]
@@ -2895,7 +3147,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
             [
               "diff",
               "--name-only",
-              "4ea7e818b88a38fe86021a500fd866e0aa392557..HEAD",
+              "4ea7e818b88a38fe86021a500fd866e0aa392557",
               "--",
               "lib/arvo/session.mo"
             ]
@@ -2944,14 +3196,14 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
           Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
           Command.ok_output("")
         ),
-        (Command.spec("git", ["diff", "--relative", "--name-only", "HEAD"]), Command.ok_output("")),
+        (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output("")),
         (
           Command.spec(
             "git",
             [
               "diff",
               "--name-only",
-              "623f404124b5bf27f13a595a0dc174a997f49dee..HEAD",
+              "623f404124b5bf27f13a595a0dc174a997f49dee",
               "--",
               "lib/arvo/jobs.mo"
             ]
@@ -2964,7 +3216,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
             [
               "diff",
               "--name-only",
-              "4ea7e818b88a38fe86021a500fd866e0aa392557..HEAD",
+              "4ea7e818b88a38fe86021a500fd866e0aa392557",
               "--",
               "lib/arvo/session.mo"
             ]

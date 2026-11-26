@@ -56,10 +56,11 @@ struct Counterexample(S, A)
   steps: List((Text, A, S))
 end
 
-## Exploration counts, shortest invariant counterexamples, and Mermaid diagram.
+## Exploration counts, shortest invariant counterexamples, truncation flag, and Mermaid diagram.
 struct ChartReport(S, A)
   states_explored: Int
   transitions_explored: Int
+  truncated?: Bool
   violations: List(Counterexample(S, A))
   mermaid_mmd: Text
 end
@@ -130,6 +131,7 @@ fn explore(spec: ChartSpec(S, A)) : ChartReport(S, A) where S: Equal, S: Hash, A
     return ChartReport(
       states_explored: 0,
       transitions_explored: 0,
+      truncated?: not spec.initial_states.empty?,
       violations: [],
       mermaid_mmd: "stateDiagram-v2\n"
     )
@@ -141,14 +143,18 @@ fn explore(spec: ChartSpec(S, A)) : ChartReport(S, A) where S: Equal, S: Hash, A
   var queue = []
   var q_idx = 0
   var transitions_count = 0
+  var truncated? = false
   var edges = []
   var break_ids = []
   var may_break_ids = []
   var violations = []
 
   for init_s in spec.initial_states
-    break if ordered_states.size >= limit
     if not visited.has?(init_s)
+      if ordered_states.size >= limit
+        truncated? = true
+        continue
+      end
       nid = "S#{ordered_states.size}"
       visited = visited.set(init_s, nid)
       ordered_states = ordered_states.append((nid, init_s))
@@ -183,6 +189,7 @@ fn explore(spec: ChartSpec(S, A)) : ChartReport(S, A) where S: Equal, S: Hash, A
         Some(existing): existing
         None:
           if ordered_states.size >= limit
+            truncated? = true
             continue
           end
           fresh = "S#{ordered_states.size}"
@@ -208,6 +215,7 @@ fn explore(spec: ChartSpec(S, A)) : ChartReport(S, A) where S: Equal, S: Hash, A
   ChartReport(
     states_explored: ordered_states.size,
     transitions_explored: transitions_count,
+    truncated?: truncated?,
     violations: violations,
     mermaid_mmd: mmd
   )
@@ -215,11 +223,18 @@ end
 
 ## Formats a human-readable Markdown statechart verification report with counterexample steps.
 fn format_report(spec: ChartSpec(S, A), report: ChartReport(S, A)) : Text
-  status = if report.violations.empty?: "PASS" else: "FAIL"
+  status = if report.truncated?
+    "FAIL (TRUNCATED)"
+  else if report.violations.empty?
+    "PASS"
+  else
+    "FAIL"
+  end
   var lines = [
     "## Statechart: #{spec.title} (#{status})",
     "- States explored: #{report.states_explored}",
     "- Transitions explored: #{report.transitions_explored}",
+    "- Truncated: #{report.truncated?}",
     "- Sync commit: `#{spec.sync_commit}`",
     "- Covered code: #{spec.covered_files.join(", ")}",
     ""
@@ -929,6 +944,7 @@ test "Arvo.Statechart explores Jobs and Session cleanly, replays real code, and 
   z_rep = explore(zero_spec)
   assert z_rep.states_explored == 0 and
     z_rep.transitions_explored == 0 and
+    z_rep.truncated? and
     z_rep.mermaid_mmd == "stateDiagram-v2\n"
 
   tiny_spec = ChartSpec(
@@ -943,8 +959,25 @@ test "Arvo.Statechart explores Jobs and Session cleanly, replays real code, and 
     invariants: [StateInvariant(name: "Never 1", holds?: fn(n) n != 1 end)]
   )
   t_rep = explore(tiny_spec)
-  assert t_rep.states_explored == 1 and t_rep.transitions_explored == 1
+  assert t_rep.states_explored == 1 and t_rep.transitions_explored == 1 and t_rep.truncated?
   assert t_rep.violations.size == 1
   assert t_rep.mermaid_mmd.contains?("state '1'")
+  assert format_report(tiny_spec, t_rep).contains?("FAIL (TRUNCATED)")
   assert format_report(tiny_spec, t_rep).contains?("Broken in initial state")
+
+  # Truncated clean model reaching max_states before seeing violation (n != 5 at limit 3) must flag truncated?
+  trunc_clean = ChartSpec(
+    title: "Truncated Counter",
+    covered_files: ["x.mo"],
+    sync_commit: "abc",
+    max_states: 3,
+    initial_states: [0],
+    step_fn: fn(n) [Transition(action: "inc", label: "inc", next_state: n + 1)] end,
+    view_state: fn(n) "#{n}" end,
+    view_group: fn(_) None end,
+    invariants: [StateInvariant(name: "Never 5", holds?: fn(n) n != 5 end)]
+  )
+  tc_rep = explore(trunc_clean)
+  assert tc_rep.truncated? and tc_rep.violations.empty?
+  assert format_report(trunc_clean, tc_rep).contains?("FAIL (TRUNCATED)")
 end

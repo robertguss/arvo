@@ -95,7 +95,7 @@ Today Mo's `Command.run` is synchronous and blocks network sockets on Linux via 
 ```mo
 ## Narrows/configures Command to permit loopback-only TCP (127.0.0.1 / ::1) in children
 ## while keeping external internet access blocked by default.
-command.allow_loopback() : Command
+command.allow_loopback(net) : Command
 
 ## Supervised child process handle (killed automatically when dropped if still running).
 command.spawn(program: Text, args: List(Text)) : Result(Command.Process, Command.CommandError)

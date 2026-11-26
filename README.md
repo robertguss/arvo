@@ -126,11 +126,11 @@ arvo verify --app examples/arvo-starter --tier fast|feature|full
 ```
 
 Key CLI subcommands:
-- `arvo verify [--app DIR] [--tier fast|feature|full] [--json]` — run tiered verification checks + tamper checks and append `.arvo/dossier/verify.jsonl`
+- `arvo verify [--app DIR] [--tier fast|feature|full] [--json] [--base REF]` — run tiered verification checks + tamper checks and write `.arvo/dossier/verify.jsonl`
 - `arvo contracts [--app DIR] [--check]` — generate or verify `frontend/src/arvo.gen.ts` from `Json.schema[T]()`
 - `arvo feature [--app DIR] [--validate] [--manifest OUT] [DIR]` — validate `.feature.md` Executable Feature Maps and export `@browser` manifests
 - `arvo sim [--app DIR] [--entry FILE] [--only NAME]` — run `Arvo.Sim` deterministic simulation suites
-- `arvo control <launch|doctor|inspect|reset|drive|cleanup> [--app DIR]` — manage isolated runtime instances for verification and debugging
+- `arvo control <sha|launch|doctor|inspect|reset|drive|screenshot|record|cleanup> [--app DIR]` — manage isolated runtime instances and capture browser evidence for verification and debugging
 - `arvo statechart [check|render] [--app DIR] [--out DIR]` — explore/replay `Arvo.Jobs` and `Arvo.Session` statecharts and check sync commits
 - `arvo replay <capture|gen> [--app DIR]` — capture sanitized failure bundles and generate standalone regression tests
 - `arvo bench --baseline-cmd A --candidate-cmd B` — alternating `A/B/A/B` benchmark harness

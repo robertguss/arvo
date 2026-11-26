@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 function findMoRoot(startDir) {
@@ -25,9 +26,10 @@ if (!kind || (kind !== "vitest" && kind !== "stryker")) {
 const appDirAbs = path.resolve(process.cwd(), "..");
 const rootDir = findMoRoot(appDirAbs);
 const relApp = path.relative(rootDir, appDirAbs) || ".";
+const defaultLocalBin = path.join(os.homedir(), ".local", "bin", "arvo");
 const arvoBin =
   process.env.ARVO_BIN ||
-  (fs.existsSync("/home/exedev/.local/bin/arvo") ? "/home/exedev/.local/bin/arvo" : "arvo");
+  (fs.existsSync(defaultLocalBin) ? defaultLocalBin : "arvo");
 
 const buildSha = execFileSync(arvoBin, ["control", "sha", "--app", relApp], {
   cwd: rootDir,

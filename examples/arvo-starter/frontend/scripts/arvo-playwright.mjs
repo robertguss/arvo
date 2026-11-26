@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import pixelmatch from "pixelmatch";
@@ -51,7 +52,7 @@ function parseCliArgs(argv) {
 
 function resolveArvoBin() {
   if (process.env.ARVO_BIN) return process.env.ARVO_BIN;
-  const localBin = "/home/exedev/.local/bin/arvo";
+  const localBin = path.join(os.homedir(), ".local", "bin", "arvo");
   return fs.existsSync(localBin) ? localBin : "arvo";
 }
 
@@ -398,6 +399,7 @@ async function runDrive(opts, appDirAbs, evidenceAbs) {
   }
 
   const maxDiffPixels = state.visualChecks.reduce((m, c) => Math.max(m, c.diffPixels), 0);
+  const hasUpdatedVisual = state.visualChecks.some((c) => Boolean(c.updated));
   const ok =
     state.consoleErrors.length === 0 &&
     state.pageErrors.length === 0 &&
@@ -405,6 +407,7 @@ async function runDrive(opts, appDirAbs, evidenceAbs) {
     state.brokenAssets.length === 0 &&
     state.axeViolations.length === 0 &&
     state.dbChecksPassed >= vpList.length * 2 &&
+    !hasUpdatedVisual &&
     maxDiffPixels === 0;
 
   const report = {

@@ -398,20 +398,7 @@ fn detect_sqlite_filename(entry_src: Text) : Text
   "starter.sqlite"
 end
 
-## Computes deterministic build identity: git HEAD when accessible, `ARVO_GIT_HEAD`, or source SHA-256.
-fn compute_build_sha(app_files: ReadFiles, cfg: Config.ArvoConfig, cmd: Command, env: Env) : Text
-  t = default_control_timeouts()
-  if cmd.run("git", ["rev-parse", "HEAD"], t.git_secs.seconds) is Ok(out)
-    sha = out.stdout.trim
-    if out.ok? and not sha.empty?
-      return sha
-    end
-  end
-  if env.get("ARVO_GIT_HEAD") is Some(head_sha)
-    if not head_sha.trim.empty?
-      return head_sha.trim
-    end
-  end
+fn collect_sha_source_paths(app_files: ReadFiles, cfg: Config.ArvoConfig) : List(Text)
   var paths = [cfg.entry, "routes.mo", "arvo.toml", cfg.contracts_out]
   fdir = cfg.frontend_dir.drop_suffix("/") or cfg.frontend_dir
   if not fdir.empty?
@@ -424,6 +411,71 @@ fn compute_build_sha(app_files: ReadFiles, cfg: Config.ArvoConfig, cmd: Command,
     pw_path = "#{fdir}/scripts/arvo-playwright.mjs"
     if app_files.exists?(pw_path)
       paths = paths.append(pw_path)
+    end
+  end
+  paths
+end
+
+## Computes deterministic build identity: git HEAD (plus dirty worktree fingerprint if dirty), `ARVO_GIT_HEAD`, or source SHA-256.
+fn compute_build_sha(app_files: ReadFiles, cfg: Config.ArvoConfig, cmd: Command, env: Env) : Text
+  t = default_control_timeouts()
+  paths = collect_sha_source_paths(app_files, cfg)
+  if cmd.run("git", ["rev-parse", "HEAD"], t.git_secs.seconds) is Ok(out)
+    sha = out.stdout.trim
+    if out.ok? and not sha.empty?
+      var dirty_chunks = []
+      var dirty_unknown? = false
+      case cmd.run("git", ["status", "--porcelain", "--untracked-files=all"], t.git_secs.seconds)
+        Ok(st_out):
+          if not st_out.ok?
+            dirty_unknown? = true
+          else if not st_out.stdout.trim.empty?
+            dirty_chunks = dirty_chunks.append("STATUS\n#{st_out.stdout}")
+            for st_line in st_out.stdout.lines
+              trimmed = st_line.trim
+              if trimmed.starts_with?("?? ")
+                raw_u = Text.from_chars(trimmed.chars.drop(3)).trim
+                clean_u = if raw_u.starts_with?("\"") and raw_u.ends_with?("\"") and raw_u.byte_count >= 2
+                  raw_u.bytes.slice(1, raw_u.byte_count - 1).decode_utf8 or raw_u
+                else
+                  raw_u
+                end
+                if app_files.read_text(clean_u) is Ok(utxt)
+                  dirty_chunks = dirty_chunks.append("UNTRACKED:#{clean_u}\n#{utxt}")
+                end
+              end
+            end
+          end
+        Error(_): Unit
+      end
+      case cmd.run("git", ["diff", "HEAD"], t.git_secs.seconds)
+        Ok(df_out):
+          if not df_out.ok?
+            dirty_unknown? = true
+          else if not df_out.stdout.trim.empty?
+            dirty_chunks = dirty_chunks.append("DIFF\n#{df_out.stdout}")
+          end
+        Error(_): Unit
+      end
+      return "#{sha}-dirty-unknown" if dirty_unknown?
+      if not dirty_chunks.empty?
+        # Also mix in app-scoped source files so untracked edits under --app change the dirty hash.
+        for p in paths
+          if app_files.read_text(p) is Ok(txt)
+            dirty_chunks = dirty_chunks.append("APP:#{p}\n#{txt}")
+          end
+        end
+        dirty_hex = Text.from_chars(
+          Crypto.sha256(dirty_chunks.join("\n---\n").bytes).to_hex.chars.take(12)
+        )
+        return "#{sha}-dirty-#{dirty_hex}"
+      end
+      return sha
+    end
+  end
+  if env.get("ARVO_GIT_HEAD") is Some(head_sha)
+    if not head_sha.trim.empty?
+      return head_sha.trim
     end
   end
   var parts = []
@@ -618,6 +670,58 @@ fn hold_until_stopped(
   0
 end
 
+fn finalize_or_kill(
+  app_dir: Text,
+  run_id: Text,
+  proc: Command.Process,
+  ready_rel: Text,
+  data_cmd_path: Text,
+  edir_rel: Text,
+  sqlite_file: Text,
+  build_sha: Text,
+  seed: Text,
+  oneshot?: Bool,
+  stop_rel: Text,
+  app_files: Files,
+  clock: Clock,
+  net: Network,
+  console: Console
+) : Result(Int, Text)
+  ready_raw = case wait_for_ready_file(app_files.read_only, ready_rel, proc, clock)
+    Ok(r): r
+    Error(e):
+      case proc.kill()
+        Ok(_): Unit
+        Error(_): Unit
+      end
+      return Error(e)
+  end
+  _handle = case complete_launch(
+    app_dir,
+    run_id,
+    ready_raw,
+    proc.pid,
+    data_cmd_path,
+    edir_rel,
+    sqlite_file,
+    build_sha,
+    seed,
+    app_files,
+    clock,
+    net,
+    console
+  )
+    Ok(h): h
+    Error(e):
+      case proc.kill()
+        Ok(_): Unit
+        Error(_): Unit
+      end
+      return Error(e)
+  end
+  Ok(hold_until_stopped(proc, stop_rel, oneshot?, app_files, clock))
+end
+
 fn fail_with(console: Console, msg: Text) : Int
   console.error(msg)
   1
@@ -680,29 +784,29 @@ fn run_launch_inner(
   build_sha = compute_build_sha(app_files.read_only, cfg, cmd, env)
 
   # Always start `mo serve` and wait for ready.json BEFORE any loopback client spawns
-  loop_cmd = cmd.allow_loopback()
+  loop_cmd = cmd.allow_loopback(net)
   proc = try loop_cmd.spawn(
     "mo",
     ["serve", entry_cmd_path, "--port", "0", "--data", data_cmd_path, "--ready-file", ready_cmd_path]
   ).map_error(fn(err) "failed spawning mo serve: #{err}" end)
 
-  ready_raw = try wait_for_ready_file(app_files.read_only, ready_rel, proc, clock)
-  _handle = try complete_launch(
+  finalize_or_kill(
     app_dir,
     run_id,
-    ready_raw,
-    proc.pid,
+    proc,
+    ready_rel,
     data_cmd_path,
     edir_rel,
     sqlite_file,
     build_sha,
     seed,
+    oneshot?,
+    stop_rel,
     app_files,
     clock,
     net,
     console
   )
-  Ok(hold_until_stopped(proc, stop_rel, oneshot?, app_files, clock))
 end
 
 fn run_launch(
@@ -769,7 +873,7 @@ fn run_doctor(
   db_path = join_path(app_dir, "#{run_dir_rel(run_id)}/data/#{handle.sqlite_file}")
   mig_check = case cmd.run(
     "sqlite3",
-    ["-readonly", "-json", db_path, "SELECT COUNT(*) AS cnt FROM _arvo_migrations"],
+    ["-safe", "-readonly", "-json", db_path, "SELECT COUNT(*) AS cnt FROM _arvo_migrations"],
     t.quick_secs.seconds
   )
     Ok(out):
@@ -813,9 +917,8 @@ fn run_sqlite_readonly_json(
   query: Text,
   within_secs: Int
 ) : Result(Text, Text)
-  out = try cmd.run("sqlite3", ["-readonly", "-json", db_path, query], within_secs.seconds).map_error(
-    fn(e) "#{e}" end
-  )
+  out = try cmd.run("sqlite3", ["-safe", "-readonly", "-json", db_path, query], within_secs.seconds)
+    .map_error(fn(e) "#{e}" end)
   if not out.ok?
     return Error(out.stderr.trim)
   end
@@ -961,14 +1064,18 @@ fn run_browser_script(
   end
 
   fdir = cfg.frontend_dir.drop_suffix("/") or cfg.frontend_dir
-  script_rel = "#{fdir}/scripts/arvo-playwright.mjs"
+  script_rel = if fdir == "." or fdir.empty?
+    "scripts/arvo-playwright.mjs"
+  else
+    "#{fdir}/scripts/arvo-playwright.mjs"
+  end
   if not app_files.exists?(script_rel)
     return fail_with(console, "arvo control #{mode}: missing Playwright runner #{script_rel}")
   end
 
   var node_args = [
     "--openssl-config=/dev/null",
-    "./scripts/arvo-playwright.mjs",
+    "./#{script_rel}",
     "--mode",
     mode,
     "--base-url",
@@ -976,7 +1083,7 @@ fn run_browser_script(
     "--run-id",
     run_id,
     "--app-dir",
-    app_dir,
+    ".",
     "--evidence-dir",
     evidence_dir_rel(run_id),
     "--build-sha",
@@ -993,8 +1100,12 @@ fn run_browser_script(
     end
   end
 
-  fdir_cmd = join_path(app_dir, fdir)
-  case cmd.within(fdir_cmd).allow_loopback().allow_programs(["node"]).run(
+  app_cmd = if app_dir == "." or app_dir.empty?
+    cmd
+  else
+    cmd.within(app_dir)
+  end
+  case app_cmd.allow_loopback(net).allow_programs(["node"]).run(
     "node",
     node_args,
     t.browser_secs.seconds
@@ -1306,19 +1417,19 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
     (Command.spec("test", ["-e", "/proc/1/stat"]), Command.ok_output("")),
     (Command.spec("test", ["-e", "/proc/4242/stat"]), Command.ok_output("")),
     (
-      Command.spec("sqlite3", ["-readonly", "-json", "examples/app/.arvo/runs/r1/data/starter.sqlite", "SELECT COUNT(*) AS cnt FROM _arvo_migrations"]),
+      Command.spec("sqlite3", ["-safe", "-readonly", "-json", "examples/app/.arvo/runs/r1/data/starter.sqlite", "SELECT COUNT(*) AS cnt FROM _arvo_migrations"]),
       Command.ok_output("[{\"cnt\":1}]\n")
     ),
     (
-      Command.spec("sqlite3", ["-readonly", "-json", "examples/app/.arvo/runs/r1/data/starter.sqlite", "SELECT id FROM bills"]),
+      Command.spec("sqlite3", ["-safe", "-readonly", "-json", "examples/app/.arvo/runs/r1/data/starter.sqlite", "SELECT id FROM bills"]),
       Command.ok_output("[{\"id\":1}]\n")
     ),
     (
-      Command.spec("sqlite3", ["-readonly", "-json", "examples/app/.arvo/runs/r1/data/starter.sqlite", "DELETE FROM bills"]),
+      Command.spec("sqlite3", ["-safe", "-readonly", "-json", "examples/app/.arvo/runs/r1/data/starter.sqlite", "DELETE FROM bills"]),
       Command.output(1, "", "Error: attempt to write a readonly database")
     ),
     (
-      Command.spec("sqlite3", ["-readonly", "-json", "examples/app/.arvo/runs/r1/data/starter.sqlite", "SELECT id, actor, action, entity_table, entity_id, reason, created_at FROM arvo_events ORDER BY created_at DESC, id DESC LIMIT 50"]),
+      Command.spec("sqlite3", ["-safe", "-readonly", "-json", "examples/app/.arvo/runs/r1/data/starter.sqlite", "SELECT id, actor, action, entity_table, entity_id, reason, created_at FROM arvo_events ORDER BY created_at DESC, id DESC LIMIT 50"]),
       Command.ok_output("[{\"action\":\"auth.login\"}]\n")
     ),
     (
@@ -1326,18 +1437,22 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
       Command.ok_output("{\"reset\":\"empty\"}\n")
     ),
     (
-      Command.spec("node", ["--openssl-config=/dev/null", "./scripts/arvo-playwright.mjs", "--mode", "drive", "--base-url", "http://127.0.0.1:41999", "--run-id", "r1", "--app-dir", "examples/app", "--evidence-dir", ".arvo/evidence/r1", "--build-sha", "abc1234", "--viewport", "all"])
-        .in_folder("examples/app/frontend"),
+      Command.spec("node", ["--openssl-config=/dev/null", "./frontend/scripts/arvo-playwright.mjs", "--mode", "drive", "--base-url", "http://127.0.0.1:41999", "--run-id", "r1", "--app-dir", ".", "--evidence-dir", ".arvo/evidence/r1", "--build-sha", "abc1234", "--viewport", "all"])
+        .in_folder("examples/app"),
       Command.ok_output("   \n")
     ),
     (
-      Command.spec("node", ["--openssl-config=/dev/null", "./scripts/arvo-playwright.mjs", "--mode", "screenshot", "--base-url", "http://127.0.0.1:41999", "--run-id", "r1", "--app-dir", "examples/app", "--evidence-dir", ".arvo/evidence/r1", "--build-sha", "abc1234", "--path", "/", "--viewport", "desktop", "--out", "s.png", "--cdp-url", "http://127.0.0.1:9222"])
-        .in_folder("examples/app/frontend"),
+      Command.spec("node", ["--openssl-config=/dev/null", "./frontend/scripts/arvo-playwright.mjs", "--mode", "drive", "--base-url", "http://127.0.0.1:41999", "--run-id", "r1", "--app-dir", ".", "--evidence-dir", ".arvo/evidence/r1", "--build-sha", "abc1234", "--viewport", "all"]),
+      Command.ok_output("ok\n")
+    ),
+    (
+      Command.spec("node", ["--openssl-config=/dev/null", "./frontend/scripts/arvo-playwright.mjs", "--mode", "screenshot", "--base-url", "http://127.0.0.1:41999", "--run-id", "r1", "--app-dir", ".", "--evidence-dir", ".arvo/evidence/r1", "--build-sha", "abc1234", "--path", "/", "--viewport", "desktop", "--out", "s.png", "--cdp-url", "http://127.0.0.1:9222"])
+        .in_folder("examples/app"),
       Command.ok_output("{\"shot\":\"s.png\"}\n")
     ),
     (
-      Command.spec("node", ["--openssl-config=/dev/null", "./scripts/arvo-playwright.mjs", "--mode", "record", "--base-url", "http://127.0.0.1:41999", "--run-id", "r1", "--app-dir", "examples/app", "--evidence-dir", ".arvo/evidence/r1", "--build-sha", "abc1234", "--viewport", "mobile", "--out", "v.webm"])
-        .in_folder("examples/app/frontend"),
+      Command.spec("node", ["--openssl-config=/dev/null", "./frontend/scripts/arvo-playwright.mjs", "--mode", "record", "--base-url", "http://127.0.0.1:41999", "--run-id", "r1", "--app-dir", ".", "--evidence-dir", ".arvo/evidence/r1", "--build-sha", "abc1234", "--viewport", "mobile", "--out", "v.webm"])
+        .in_folder("examples/app"),
       Command.output(1, "", "   \n")
     ),
     (Command.spec("rm", ["-rf", "examples/app/.arvo/runs/r1"]), Command.ok_output(""))
@@ -1488,6 +1603,56 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
   assert Command.fake(replies).spawn(
     "mo",
     ["serve", "examples/app/main.mo", "--port", "0", "--data", "examples/app/.arvo/runs/r1/data", "--ready-file", "examples/app/.arvo/runs/r1/ready.json"]
+  ) is Ok(fake_proc_wait_fail)
+  assert fake_proc_wait_fail.alive?
+  assert finalize_or_kill(
+    "examples/app",
+    "r1",
+    fake_proc_wait_fail,
+    ".arvo/runs/r1/missing.json",
+    "examples/app/.arvo/runs/r1/data",
+    ".arvo/evidence/r1",
+    "starter.sqlite",
+    "abc1234",
+    "baseline",
+    true,
+    ".arvo/runs/r1/stop",
+    files,
+    Clock.fixed(t0),
+    net,
+    Console.fake()
+  ) is
+    Error(_)
+  assert not fake_proc_wait_fail.alive?
+
+  assert Command.fake(replies).spawn(
+    "mo",
+    ["serve", "examples/app/main.mo", "--port", "0", "--data", "examples/app/.arvo/runs/r1/data", "--ready-file", "examples/app/.arvo/runs/r1/ready.json"]
+  ) is Ok(fake_proc_complete_fail)
+  assert fake_proc_complete_fail.alive?
+  assert finalize_or_kill(
+    "examples/app",
+    "r1",
+    fake_proc_complete_fail,
+    ".arvo/runs/r1/ready-present.json",
+    "examples/app/.arvo/runs/r1/data",
+    ".arvo/evidence/r1",
+    "starter.sqlite",
+    "abc1234",
+    "baseline",
+    true,
+    ".arvo/runs/r1/stop",
+    files,
+    Clock.fixed(t0),
+    Network.fake({}),
+    Console.fake()
+  ) is
+    Error(_)
+  assert not fake_proc_complete_fail.alive?
+
+  assert Command.fake(replies).spawn(
+    "mo",
+    ["serve", "examples/app/main.mo", "--port", "0", "--data", "examples/app/.arvo/runs/r1/data", "--ready-file", "examples/app/.arvo/runs/r1/ready.json"]
   ) is Ok(fake_proc)
   clk_present = Clock.fixed(t0)
   assert wait_for_ready_file(
@@ -1614,6 +1779,50 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
   assert run_control_cmd("examples/app", ShaCmd, cfg, files_fe, Command.fake(rep_emptygit), Clock.fixed(t0), Env.of({}), net, c_sha) == 0
   assert c_sha.printed == [sha_fe3]
 
+  rep_dirty_a = Command.replies([
+    (Command.spec("git", ["rev-parse", "HEAD"]), Command.ok_output("abc1234\n")),
+    (
+      Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
+      Command.ok_output(" M main.mo\n?? frontend/src/pages/Home.tsx\n")
+    ),
+    (Command.spec("git", ["diff", "HEAD"]), Command.ok_output("diff --git a/main.mo b/main.mo\n+1\n"))
+  ])
+  sha_dirty_a = compute_build_sha(
+    files_fe.read_only,
+    cfg,
+    Command.fake(rep_dirty_a),
+    Env.of({})
+  )
+  assert sha_dirty_a.starts_with?("abc1234-dirty-")
+  assert files_fe.write_text("main.mo", "module Main\n# edited\n") == Ok(Unit)
+  sha_dirty_b = compute_build_sha(
+    files_fe.read_only,
+    cfg,
+    Command.fake(rep_dirty_a),
+    Env.of({})
+  )
+  assert sha_dirty_b.starts_with?("abc1234-dirty-")
+  assert sha_dirty_a != sha_dirty_b
+
+  rep_clean = Command.replies([
+    (Command.spec("git", ["rev-parse", "HEAD"]), Command.ok_output("abc1234\n")),
+    (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output("")),
+    (Command.spec("git", ["diff", "HEAD"]), Command.ok_output(""))
+  ])
+  assert compute_build_sha(files_fe.read_only, cfg, Command.fake(rep_clean), Env.of({})) == "abc1234"
+  assert run_control_cmd(
+    ".",
+    DriveCmd(run_id: "r1", cdp_url: None, viewport: "all", update_visual?: false),
+    cfg,
+    files,
+    Command.fake(replies),
+    Clock.fixed(t0),
+    Env.of({}),
+    net,
+    Console.fake()
+  ) ==
+    0
+
   # 2. Doctor (healthy + all unhealthy migration branches)
   c_d = Console.fake()
   assert run_control_cmd(
@@ -1652,7 +1861,7 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
       (Command.spec("git", ["rev-parse", "HEAD"]), Command.ok_output("different_sha\n")),
       (Command.spec("test", ["-e", "/proc/4242/stat"]), Command.output(1, "", "")),
       (
-        Command.spec("sqlite3", ["-readonly", "-json", "examples/app/.arvo/runs/r1/data/starter.sqlite", "SELECT COUNT(*) AS cnt FROM _arvo_migrations"]),
+        Command.spec("sqlite3", ["-safe", "-readonly", "-json", "examples/app/.arvo/runs/r1/data/starter.sqlite", "SELECT COUNT(*) AS cnt FROM _arvo_migrations"]),
         bad_mig_reply
       )
     ])

@@ -110,7 +110,7 @@ However, inspecting Mo `0.3.0` exposed **five specific constraints** that block 
 3. **No test-mode SQLite query counter** → cannot enforce N+1 / query-count budgets inside `WebTest`.
    - **Fix:** Spec-only `db.stats()` / `db.reset_stats()` returning `query_count`, `exec_count`, and SQL text on in-memory/fake `Sqlite.Database`.
 4. **`Command.run` is synchronous and blocks network sockets on Linux (Landlock/seccomp)** → blocks a pure-Mo `arvo` CLI from launching a background `mo serve` process and letting Playwright connect to `127.0.0.1`.
-   - **Fix:** `Command.allow_loopback()` + supervised `Command.spawn(...) : Result(Process, CommandError)` (`alive?`, `kill`, `wait`), plus `mo serve --port 0 --ready-file PATH`.
+   - **Fix:** `Command.allow_loopback(net)` + supervised `Command.spawn(...) : Result(Process, CommandError)` (`alive?`, `kill`, `wait`), plus `mo serve --port 0 --ready-file PATH`.
 5. **Mutant/strength reporting & parallelism** → `mo test --mutants` / `--strength` need structured `--json` events and multi-core `--jobs N` execution so `arvo verify` can run fast and feed scorecards into the Verification Dossier.
 
 > [!NOTE]
@@ -162,7 +162,7 @@ Shipped directly inside Arvo so every AI coding agent gets the workflow structur
   1. `ApiTest.start` → `ApiTest.App` first-class handle (`send`, `run_job`, `routes`).
   2. `Network.fake_scripted` fault-injecting ordered reply/error queue + call log.
   3. Spec-only `Sqlite.Database.stats()` / `reset_stats()` query counter.
-  4. `Command.allow_loopback()`, supervised `Command.spawn`, and `mo serve --port 0 --ready-file PATH`.
+  4. `Command.allow_loopback(net)`, supervised `Command.spawn`, and `mo serve --port 0 --ready-file PATH`.
   5. Parallel `--jobs N` and NDJSON `--json` reporting for `mo test --mutants` and `--strength`.
 - **Exit Gate:** Mo `ci/check.sh` green; each primitive verified with its own tests, fakes, and error-path checks.
 
@@ -195,7 +195,7 @@ Shipped directly inside Arvo so every AI coding agent gets the workflow structur
   1. `Arvo.Statechart` (pure-Mo bounded BFS explorer + optional TLA+/TLC runner → plain-English Mermaid `stateDiagram-v2` + shortest failing path + real-code replay + sync-commit checker), applied first to `Arvo.Jobs` and `Arvo.Session`.
   2. Mandatory `--strength` wrong-version suites for all critical Arvo modules (`Session`, `Csrf`, `Auth`, `Inertia`, `Migrations`, `Jobs`, `Audit`, `Changeset`) + automated Web-Semantic Mutants.
   3. `arvo bench` enforcing the 7-question `/benchmark-checklist` (alternating runs, median/range, error counts, work verification, limiter).
-  4. `Arvo.Replay` / `arvo replay-capture` converting sanitized production SQLite + request/job/audit failure bundles into deterministic `WebTest` / `Arvo.Sim` tests.
+  4. `Arvo.Replay` / `arvo replay capture|gen` converting sanitized production SQLite + request/job/audit failure bundles into deterministic `WebTest` / `Arvo.Sim` tests.
 - **Exit Gate:** `Arvo.Statechart` renders verified Mermaid statecharts for `Jobs` and `Session` and catches an injected stale-lock/double-claim bug with a replayed counterexample; all `--strength` wrong versions are 100% killed.
 
 ### Phase 5: Human Verification Dossier & Bundled Agent Skills — Complete

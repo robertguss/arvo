@@ -107,7 +107,7 @@ fn bootstrap_db(db: Sqlite.Database, clock: Clock) : Result(Unit, SecErr)
     ).map_error(fn(e) SecServer(reason: "#{e}") end)
     _ii = try db.execute(
       "INSERT INTO sec_items (owner_id, title, version) VALUES (?, ?, 1)",
-      [Sqlite.String("mem_ada"), Sqlite.String("Rent & Utilities <Main>")]
+      [Sqlite.String("mem_ada"), Sqlite.String("Rent and Utilities")]
     ).map_error(fn(e) SecServer(reason: "#{e}") end)
   end
   Ok(Unit)
@@ -186,6 +186,9 @@ fn home(req: Api.Request, viewer: Option(SecMember), db: Sqlite.Database, env: E
       fn(e) SecServer(reason: "#{e}") end
     )
   end
+  if env_flag?(env, "BUG_HOME_500")
+    return Error(SecServer(reason: "injected home failure"))
+  end
   if env_flag?(env, "BUG_XSS")
     raw_json = "{\"component\":\"Home\",\"props\":{\"title\":\"<script>alert(1)</script>\"},\"url\":\"/\",\"version\":\"sec_v1\"}"
     return Ok(
@@ -195,7 +198,25 @@ fn home(req: Api.Request, viewer: Option(SecMember), db: Sqlite.Database, env: E
       )
     )
   end
-  Ok(Inertia.render(req, inertia_cfg(), "Home", {"title": Json.String("Household <Budget>")}, {}))
+  if env_flag?(env, "BUG_XSS_REFLECT")
+    q_xss = req.query_param("_arvo_xss") or ""
+    return Ok(
+      Api.html_response(
+        200,
+        "<!doctype html><html><body><div id=\"app\" data-page=\"{&quot;component&quot;:&quot;Home&quot;,&quot;props&quot;:{},&quot;url&quot;:&quot;/&quot;,&quot;version&quot;:&quot;sec_v1&quot;}\"></div><div>#{q_xss}</div></body></html>"
+      )
+    )
+  end
+  if env_flag?(env, "BUG_XSS_PLAIN")
+    plain_json = "{\"component\":\"Home\",\"props\":{\"title\":\"Household Budget\"},\"url\":\"/\",\"version\":\"sec_v1\"}"
+    return Ok(
+      Api.html_response(
+        200,
+        "<!doctype html><html><body><div id=\"app\" data-page=\"#{plain_json}\"></div></body></html>"
+      )
+    )
+  end
+  Ok(Inertia.render(req, inertia_cfg(), "Home", {"title": Json.String("Household Budget")}, {}))
 end
 
 fn create_item(req: Api.Request, member: SecMember, rng: SecureRandom, env: Env) : Result(
@@ -219,6 +240,9 @@ fn pay_item(req: Api.Request, member: SecMember, id: Int, body: SecPayInput, env
 )
   if not env_flag?(env, "BUG_NO_CSRF")
     return Error(SecForbidden) if not Auth.require_csrf(req, member.session)
+  end
+  if env_flag?(env, "BUG_NO_STRICT_JSON")
+    return Ok({"id": id, "version": body.expected_version + 1})
   end
   Ok({"id": id, "version": body.expected_version + 1})
 end
