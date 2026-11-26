@@ -44,6 +44,8 @@ In Mo, `use Arvo.<...>.<Name>` binds the final segment `<Name>`.
 | `Arvo.Form` | `Form` | Bounded `application/x-www-form-urlencoded` and `multipart/form-data` parsers (for CSV/file uploads). |
 | `Arvo.Changeset` | `Changeset` | Composable pure validation pipelines producing Inertia-ready field error maps. |
 | `Arvo.Inertia` | `Inertia` | Full Inertia v2 server protocol: HTML shell + `data-page` escaping, XHR JSON, Vite manifest & dev HMR, `409` version check, partial reloads (`X-Inertia-Partial-Data`), typed `render_page` / `PageContract` manifest helpers, `303` redirects. |
+| `Arvo.Oidc` | `Oidc` | OpenID Connect / OAuth 2.0 Authorization Code + PKCE (`S256`) client, discovery, AEAD state cookies, and domain allowlists. |
+| `Arvo.S3` | `S3` | Pure-Mo AWS Signature Version 4 presigned URLs (`PUT`/`GET`/`DELETE`) and signed requests for S3, R2, and MinIO. |
 | `Arvo.WebTest` | `WebTest` | DB-agnostic in-memory browser & fluent `ApiTest.App` test harness with automatic cookie jar, `X-XSRF-TOKEN` injection, `data-page` / Inertia JSON parser, and Vitest fixture export (`record_inertia_fixture`). |
 | `Arvo.Snapshot` | `Snapshot` | Tamper-guarded golden snapshot testing (`Snapshot.expect_json` / `expect_text`) with `ARVO_UPDATE_SNAPSHOTS` gate and automatic secret redaction. |
 | `Arvo.Props` | `Props` | Property-based testing helpers (`forall`, shrinking generators) integrating directly with `mo test`. |
