@@ -2,9 +2,11 @@
 module Dossier
 expose VerifyEvent(..),
 MoTestSummary(..),
+MoStrengthSummary(..),
 new_event,
 event_to_json,
 parse_mo_test_json,
+parse_mo_strength_json,
 render_scorecard
 use Json
 
@@ -38,6 +40,19 @@ struct MoTestSummary
   mutants_survived: Int
   kill_rate: Float
   surviving_locations: List(Text)
+end
+
+## Aggregated intent-strength metrics parsed from `mo test --json --strength`.
+struct MoStrengthSummary
+  original_passed?: Bool
+  partial?: Bool
+  scored: Int
+  killed: Int
+  survived: Int
+  invalid: Int
+  kill_rate: Float
+  surviving_versions: List(Text)
+  invalid_versions: List(Text)
 end
 
 ## Constructs a baseline `VerifyEvent` with optional metrics set to `None`.
@@ -161,6 +176,65 @@ fn parse_mo_test_json(ndjson: Text) : MoTestSummary
   )
 end
 
+## Parses NDJSON output from `mo test --json --strength DIR TARGET`.
+fn parse_mo_strength_json(ndjson: Text) : MoStrengthSummary
+  var orig_ok? = false
+  var partial? = false
+  var scored = 0
+  var killed = 0
+  var survived = 0
+  var invalid = 0
+  var rate = 0.0
+  var surv_names = []
+  var inv_names = []
+
+  for raw in ndjson.lines
+    trimmed = raw.trim
+    continue if not trimmed.starts_with?("{")
+    case Json.parse(trimmed)
+      Error(_): continue
+      Ok(doc):
+        rec = doc.text_at("record") or ""
+        if rec == "strength"
+          orig_ok? = doc.text_at("original") == Some("passed")
+          c_inv = doc.int_at("counts.invalid") or 0
+          c_chg = doc.int_at("counts.changes_intent") or 0
+          c_def = doc.int_at("counts.defect") or 0
+          invalid = c_inv + c_chg + c_def
+        else if rec == "strength_case"
+          nm = doc.text_at("name") or ""
+          out = doc.text_at("outcome") or ""
+          if out == "survived"
+            surv_names = surv_names.append(nm)
+          else if out == "invalid" or out == "defect" or out == "changes_intent" or out == "unfinished"
+            inv_names = inv_names.append(nm)
+          end
+        else if rec == "strength_summary"
+          orig_ok? = doc.text_at("original") == Some("passed")
+          partial? = doc.bool_at("partial") or false
+          scored = doc.int_at("scored") or 0
+          killed = doc.int_at("killed") or 0
+          survived = doc.int_at("survived") or 0
+          if doc.path("kill_rate") is Some(Json.Number(jn))
+            rate = jn.to_float or 0.0
+          end
+        end
+    end
+  end
+
+  MoStrengthSummary(
+    original_passed?: orig_ok?,
+    partial?: partial?,
+    scored: scored,
+    killed: killed,
+    survived: survived,
+    invalid: if invalid >= inv_names.size: invalid else: inv_names.size,
+    kill_rate: rate,
+    surviving_versions: surv_names,
+    invalid_versions: inv_names
+  )
+end
+
 fn status_badge(status: Text) : Text
   if status == "pass"
     "PASS"
@@ -263,4 +337,58 @@ test "Dossier formats Spec 6.1 NDJSON events, parses mo test --json --mutants, a
   sc_fail = render_scorecard("full", [ev1, ev2, ev4], 680)
   assert sc_fail.contains?("=> FAIL (680 ms)")
   assert sc_fail.contains?("[SKIP] browser_e2e")
+
+  str_pass_ndjson = """
+    {"record":"version","format":"1.0","mo":"0.3.0","command":"test"}
+    {"record":"strength","version":2,"set":"strength/arvo_csrf","original":"passed","counts":{"invalid":0,"changes_intent":0,"defect":0}}
+    {"record":"strength_case","event":"strength_case","name":"01.mo","outcome":"killed_by_example","killed":true,"scored":true}
+    {"record":"strength_summary","event":"strength_summary","set":"strength/arvo_csrf","original":"passed","scored":2,"killed":2,"survived":0,"kill_rate":1.0}
+    """
+  sp = parse_mo_strength_json(str_pass_ndjson)
+  assert sp.original_passed? and sp.scored == 2 and sp.killed == 2 and sp.survived == 0 and
+    sp.invalid == 0
+  assert sp.kill_rate == 1.0 and sp.surviving_versions.empty? and sp.invalid_versions.empty?
+
+  str_fail_ndjson = """
+    not-json
+    {"record":"strength","version":2,"original":"passed","counts":{"invalid":1,"changes_intent":1,"defect":1}}
+    {"record":"strength_case","event":"strength_case","name":"bad_surv.mo","outcome":"survived"}
+    {"record":"strength_case","event":"strength_case","name":"bad_inv.mo","outcome":"invalid"}
+    {"record":"strength_case","event":"strength_case","name":"bad_def.mo","outcome":"defect"}
+    {"record":"strength_case","event":"strength_case","name":"bad_int.mo","outcome":"changes_intent"}
+    {"record":"strength_summary","event":"strength_summary","original":"failed","scored":1,"killed":0,"survived":1,"kill_rate":null}
+    """
+  sf = parse_mo_strength_json(str_fail_ndjson)
+  assert not sf.original_passed? and sf.invalid == 3 and sf.scored == 1 and sf.survived == 1 and
+    sf.kill_rate == 0.0
+  assert sf.surviving_versions == ["bad_surv.mo"]
+  assert sf.invalid_versions == ["bad_inv.mo", "bad_def.mo", "bad_int.mo"]
+
+  current_ndjson = """
+    {"record":"strength_case","name":"broken.mo","outcome":"defect","scored":false}
+    {"record":"strength_case","name":"timeout.mo","outcome":"unfinished","scored":false}
+    {"record":"strength_summary","original":"passed","scored":1,"killed":1,"survived":0,"kill_rate":1.0,"partial":true}
+    """
+  current = parse_mo_strength_json(current_ndjson)
+  assert current.original_passed? and current.partial? and current.invalid == 2
+  assert current.invalid_versions == ["broken.mo", "timeout.mo"]
+
+  empty_s = parse_mo_strength_json("")
+  assert not empty_s.original_passed? and
+    empty_s.scored == 0 and
+    empty_s.killed == 0 and
+    empty_s.survived == 0 and
+    empty_s.invalid == 0 and
+    empty_s.kill_rate == 0.0
+
+  only_hdr = parse_mo_strength_json(
+    "{\"record\":\"strength\",\"original\":\"passed\"}\n{\"record\":\"totals\",\"original\":\"failed\",\"scored\":9,\"killed\":9,\"survived\":9}\n"
+  )
+  assert only_hdr.original_passed? and only_hdr.invalid == 0 and only_hdr.scored == 0
+
+  zero_sum = parse_mo_strength_json("{\"record\":\"strength_summary\"}\n")
+  assert not zero_sum.original_passed? and
+    zero_sum.scored == 0 and
+    zero_sum.killed == 0 and
+    zero_sum.survived == 0
 end
