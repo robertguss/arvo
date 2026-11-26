@@ -39,6 +39,8 @@ record_inertia_fixture
 use Api
 use Arvo.Csrf
 use Arvo.Fixtures.WebTestApp
+use Arvo.Form
+use Crypto
 use Http
 use Json
 
@@ -327,6 +329,10 @@ fn post_json(session: Session, app: ApiTest.App, path: Text, body: T) : (Session
   send(session, app, Api.post(path).with_json(body))
 end
 
+fn multipart_parameter(value: Text) : Text
+  value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", "%0D").replace("\n", "%0A")
+end
+
 ## Sends a `multipart/form-data` `POST` request with `fields` and `files` to `path`.
 fn post_multipart(
   session: Session,
@@ -335,18 +341,31 @@ fn post_multipart(
   fields: List((Text, Text)),
   files: List(TestFile)
 ) : (Session, Api.Response)
-  boundary = "arvoWebTestBoundary"
-  var chunks = []
+  var parts = []
   for (fname, fval) in fields
-    chunks = chunks.append(
-      "--#{boundary}\r\nContent-Disposition: form-data; name=\"#{fname}\"\r\n\r\n#{fval}\r\n".bytes
+    parts = parts.append(
+      "Content-Disposition: form-data; name=\"#{multipart_parameter(fname)}\"\r\n\r\n#{fval}\r\n"
+        .bytes
     )
   end
   for f in files
-    head = "--#{boundary}\r\nContent-Disposition: form-data; name=\"#{f.field_name}\"; filename=\"#{f
-      .filename}\"\r\nContent-Type: #{f.content_type}\r\n\r\n"
+    content_type = if f.content_type.contains?("\r") or f.content_type.contains?("\n")
+      "application/octet-stream"
+    else
+      f.content_type
+    end
+    head = "Content-Disposition: form-data; name=\"#{multipart_parameter(f.field_name)}\"; filename=\"#{multipart_parameter(
+      f.filename
+    )}\"\r\nContent-Type: #{content_type}\r\n\r\n"
       .bytes
-    chunks = chunks.append(head).append(f.data).append("\r\n".bytes)
+    parts = parts.append(Bytes.join([head, f.data, "\r\n".bytes]))
+  end
+  part_hashes = parts.map(fn(part) Crypto.sha256(part) end)
+  boundary = "arvo-#{Crypto.sha256(Bytes.join(part_hashes)).to_hex}"
+  delimiter = "--#{boundary}\r\n".bytes
+  var chunks = []
+  for part in parts
+    chunks = chunks.append(delimiter).append(part)
   end
   chunks = chunks.append("--#{boundary}--\r\n".bytes)
   send(
@@ -522,9 +541,24 @@ fn expect_validation_error(res: Api.Response, field: Text, contains: Text) : Uni
   end
 end
 
+fn safe_fixture_segment?(segment: Text) : Bool
+  not segment.trim.empty? and
+    segment != "." and
+    segment != ".." and
+    not segment.contains?("/") and
+    not segment.contains?("\\") and
+    not segment.contains?("\u{0}")
+end
+
 ## Exports a verified `InertiaPage` payload as pretty JSON under `.arvo/fixtures/<component>/<name>.json`.
 fn record_inertia_fixture(files: Files, name: Text, res: Api.Response) : Result(Unit, Text)
+  if not safe_fixture_segment?(name)
+    return Error("fixture name must be a single nonempty path segment")
+  end
   page = try inertia_page(res)
+  if not page.component.split("/").all?(safe_fixture_segment?)
+    return Error("fixture component must contain only nonempty relative path segments")
+  end
   folder = ".arvo/fixtures/#{page.component}"
   try files.make_folder(folder).map_error(fn(e) "#{e}" end)
   path = "#{folder}/#{name}.json"
@@ -679,6 +713,8 @@ test "WebTest v2 Session drives ApiTest.App with redirects, assertions, and fixt
   assert files.exists?(".arvo/fixtures/Mini/Show/default.json")
   assert files.read_text(".arvo/fixtures/Mini/Show/default.json") is Ok(fix_txt)
   assert fix_txt.contains?("\"component\": \"Mini/Show\"")
+  assert record_inertia_fixture(files, "nested/name", p_res) is Error(_)
+  assert record_inertia_fixture(files, "", p_res) is Error(_)
 
   # post_without_csrf rejected with 403; post_form with CSRF succeeds and follows redirect
   (_s_no_csrf, no_csrf_res) = post_without_csrf(
@@ -729,6 +765,31 @@ test "WebTest v2 Session drives ApiTest.App with redirects, assertions, and fixt
     [TestFile(field_name: "file", filename: "a.csv", content_type: "text/csv", data: "x,y".bytes)]
   )
   assert expect_status(mp_res, 200).text.contains?("len")
+
+  upload_data = Bytes.join([
+    "\r\n--arvoWebTestBoundary\r\n".bytes,
+    Bytes.from_hex("ff00") or stop "test data"
+  ])
+  (s_upload, _) = post_multipart(
+    s7,
+    app,
+    "/upload",
+    [("kind\"quoted", "csv")],
+    [
+      TestFile(
+        field_name: "file",
+        filename: "a\"b.csv",
+        content_type: "text/csv",
+        data: upload_data
+      )
+    ]
+  )
+  assert s_upload.history.last is Some((upload_req, _))
+  assert Form.parse_multipart(upload_req, 4096) is Ok(upload)
+  assert Form.field(upload.fields, "kind\"quoted") == Some("csv")
+  assert Form.file(upload, "file") is Some(attachment)
+  assert attachment.filename == "a\"b.csv"
+  assert attachment.data == upload_data
 
   (_s8, del_res) = delete(s7, app, "/items/1")
   _ = expect_status(del_res, 204)
@@ -781,4 +842,9 @@ test "WebTest v2 Session drives ApiTest.App with redirects, assertions, and fixt
     })
   ).with_header("X-Inertia", "true")
   assert check_validation_error(no_err_obj_res, "email", "invalid") is Error(_)
+  bad_component_res = Api.encoded_json_response(
+    200,
+    InertiaPage(component: "Mini//Show", props: {}, url: "/", version: "v1").to_json
+  )
+  assert record_inertia_fixture(files, "default", bad_component_res) is Error(_)
 end
