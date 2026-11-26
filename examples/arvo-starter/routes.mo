@@ -501,6 +501,57 @@ fn post_logout(req: Api.Request, member: Member, db: Sqlite.Database, env: Env) 
   Ok(Auth.logout_response(Inertia.redirect("/login"), session_cfg(env)))
 end
 
+## Sums `amount_cents` only for bills whose status is `"due"`.
+fn calc_total_due_cents(bills: List(Bill)) : Int
+  examples
+    calc_total_due_cents([
+      Bill(id: 1, name: "A", category: "utilities", amount_cents: 100, status: "due", version: 1),
+      Bill(
+        id: 2,
+        name: "B",
+        category: "utilities",
+        amount_cents: 500,
+        status: "in_flight",
+        version: 2
+      ),
+      Bill(id: 3, name: "C", category: "housing", amount_cents: 250, status: "paid", version: 2)
+    ]) ==
+      100
+    calc_total_due_cents([]) == 0
+  end
+
+  bills.filter(fn(b) b.status == "due" end).map(fn(b) b.amount_cents end).sum
+end
+
+## Validates new-bill input using the starter household category allowlist and positive amount rule.
+fn validate_new_bill(name: Text, category: Text, amount_cents: Int) : Result(
+  NewBillDraft,
+  Map(Text, List(Text))
+)
+  examples
+    validate_new_bill("Water", "utilities", 1200) is Ok(_)
+    validate_new_bill("  Wa", "utilities", 1200) is Ok(_)
+    validate_new_bill(" X ", "utilities", 1200) is Error(_)
+    validate_new_bill("Water", "utilities", 0) is Error(_)
+    validate_new_bill("Water", "unknown", 1200) is Error(_)
+    validate_new_bill("X", "utilities", 1200) is Error(_)
+  end
+
+  draft = NewBillDraft(name: name.trim, category: category.trim, amount_cents: amount_cents)
+  cs = Changeset.new(draft).require_non_empty("name", draft.name).require_length(
+    "name",
+    draft.name,
+    2,
+    80
+  ).require_one_of("category", draft.category, ["utilities", "housing", "groceries", "card"])
+    .require_positive_int("amount_cents", draft.amount_cents)
+  if cs.valid?
+    Ok(cs.data)
+  else
+    Error(cs.errors)
+  end
+end
+
 ## Renders the household `Home` Inertia dashboard (or redirects unauthenticated browsers to `/login`).
 fn home(
   req: Api.Request,
@@ -537,7 +588,7 @@ fn home(
 
   key = try app_secret_key(env)
   (flash, had_flash?) = Flash.take(req, key)
-  total_due_cents = bills.filter(fn(b) b.status == "due" end).map(fn(b) b.amount_cents end).sum
+  total_due_cents = calc_total_due_cents(bills)
 
   res = Inertia.render_page(
     req,
@@ -565,21 +616,12 @@ fn create_bill(
   raw_amount = (Form.field(fields, "amount_cents") or "").trim
   amount_cents = raw_amount.to_int or 0
 
-  draft = NewBillDraft(name: name, category: category, amount_cents: amount_cents)
-  cs = Changeset.new(draft).require_non_empty("name", draft.name).require_length(
-    "name",
-    draft.name,
-    2,
-    80
-  ).require_one_of("category", draft.category, ["utilities", "housing", "groceries", "card"])
-    .require_positive_int("amount_cents", draft.amount_cents)
-
   key = try app_secret_key(env)
   sec? = secure_cookies?(env)
-  if not cs.valid?
-    return Ok(Inertia.validation_error(req, rng, key, "/", cs.errors, sec?))
+  validated = case validate_new_bill(name, category, amount_cents)
+    Ok(v): v
+    Error(errs): return Ok(Inertia.validation_error(req, rng, key, "/", errs, sec?))
   end
-  validated = cs.data
 
   ins = try db.execute(
     "INSERT INTO bills (name, category, amount_cents, status, version, created_at) VALUES (?, ?, ?, 'due', 1, ?)",
