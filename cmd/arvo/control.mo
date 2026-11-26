@@ -365,7 +365,6 @@ struct ControlTimeouts
   ready_poll_ms: Int
   hold_poll_ms: Int
   stop_polls: Int
-  kill_polls: Int
 end
 
 fn default_control_timeouts() : ControlTimeouts
@@ -379,9 +378,12 @@ fn default_control_timeouts() : ControlTimeouts
     ready_polls: 100,
     ready_poll_ms: 100,
     hold_poll_ms: 150,
-    stop_polls: 20,
-    kill_polls: 15
+    stop_polls: 20
   )
+end
+
+fn valid_sqlite_filename?(name: Text) : Bool
+  not name.empty? and name != "." and name != ".." and not name.contains?("/") and not name.contains?("\\")
 end
 
 ## Extracts the first `sqlite <name> from "<file>"` path from `entry` source (defaults to `"starter.sqlite"`).
@@ -391,7 +393,7 @@ fn detect_sqlite_filename(entry_src: Text) : Text
     if trimmed.starts_with?("sqlite ") and trimmed.contains?(" from \"")
       after_from = (trimmed.split(" from \"").get(1) or "")
       fname = (after_from.split("\"").first or "").trim
-      if not fname.empty? and not fname.contains?("..")
+      if valid_sqlite_filename?(fname)
         return fname
       end
     end
@@ -566,9 +568,19 @@ fn append_control_log(app_files: Files, run_id: Text, clock: Clock, msg: Text) :
 end
 
 fn load_run_handle(app_files: ReadFiles, run_id: Text) : Result(RunHandle, Text)
+  return Error("invalid run ID '#{run_id}'") if not valid_run_id?(run_id)
   path = run_handle_rel(run_id)
   raw = try app_files.read_text(path).map_error(fn(_) "run '#{run_id}' not found (#{path})" end)
-  Json.decode_strict[RunHandle](raw).map_error(fn(e) "corrupt #{path}: #{e.to_text}" end)
+  handle = try Json.decode_strict[RunHandle](raw).map_error(fn(e) "corrupt #{path}: #{e.to_text}" end)
+  if handle.run_id != run_id or not valid_sqlite_filename?(handle.sqlite_file) or
+    not valid_run_endpoint?(handle.url, handle.port) or handle.pid <= 0
+    return Error("invalid run metadata in #{path}")
+  end
+  Ok(handle)
+end
+
+fn valid_run_endpoint?(url: Text, port: Int) : Bool
+  port > 0 and port <= 65535 and url == "http://127.0.0.1:#{port}"
 end
 
 fn probe_http_ok?(url: Text, net: Network) : Bool
@@ -591,28 +603,26 @@ fn count_files_under(files: ReadFiles, dir_rel: Text) : List(Text)
   end
 end
 
-fn remove_tree_in_run_dir(app_dir: Text, app_files: Files, rel_dir: Text, cmd: Command) : Result(
+fn remove_tree_in_run_dir(app_dir: Text, app_files: Files, run_id: Text, cmd: Command) : Result(
   Bool,
   Text
 )
   t = default_control_timeouts()
-  return Error("refusing to delete path outside .arvo/runs/: #{rel_dir}") if not rel_dir.starts_with?(
-    ".arvo/runs/"
-  )
+  return Error("refusing to delete invalid run ID '#{run_id}'") if not valid_run_id?(run_id)
+  rel_dir = run_dir_rel(run_id)
+  case cmd.within(join_path(app_dir, ".arvo/runs")).run("rm", ["-rf", "--", run_id], t.quick_secs.seconds)
+    Error(err): return Error("failed removing #{rel_dir}: #{err}")
+    Ok(out):
+      if not out.ok?
+        return Error("failed removing #{rel_dir}: #{out.stderr.trim}")
+      end
+  end
   if app_files.walk(rel_dir) is Ok(ents)
     for ent in ents
       if ent.kind is File
         _rm = app_files.remove("#{rel_dir}/#{ent.name}")
       end
     end
-  end
-  # Also remove real on-disk directories inside .arvo/runs/ when running outside in-memory fakes
-  case cmd.run("rm", ["-rf", join_path(app_dir, rel_dir)], t.quick_secs.seconds)
-    Error(err): return Error("failed removing #{rel_dir}: #{err}")
-    Ok(out):
-      if not out.ok?
-        return Error("failed removing #{rel_dir}: #{out.stderr.trim}")
-      end
   end
   Ok(count_files_under(app_files.read_only, rel_dir).empty?)
 end
@@ -655,8 +665,8 @@ fn complete_launch(
   port = ready_doc.int_at("port") or 0
   srv_pid = ready_doc.int_at("pid") or fallback_pid
   started_at = ready_doc.text_at("started_at") or clock.now.to_text
-  if url.empty? or port <= 0
-    return Error("ready.json missing url/port: #{ready_raw}")
+  if not valid_run_endpoint?(url, port) or srv_pid != fallback_pid or srv_pid <= 0
+    return Error("ready.json does not match the spawned loopback server")
   end
   if not probe_http_ok?(url, net)
     return Error("server at #{url} failed /login readiness probe")
@@ -689,16 +699,19 @@ fn hold_until_stopped(
   oneshot?: Bool,
   app_files: Files,
   clock: Clock
-) : Int
+) : Result(Int, Text)
   t = default_control_timeouts()
   if not oneshot?
     while proc.alive? and not app_files.exists?(stop_rel)
       clock.sleep(t.hold_poll_ms.milliseconds)
     end
   end
-  _k = proc.kill()
+  if proc.alive?
+    try proc.kill().map_error(fn(e) "failed stopping supervised server: #{e}" end)
+  end
   _rm = app_files.remove(stop_rel)
-  0
+  try app_files.write_text("#{stop_rel}.done", "stopped\n").map_error(fn(e) "failed recording server shutdown: #{e}" end)
+  Ok(0)
 end
 
 fn finalize_or_kill(
@@ -750,7 +763,7 @@ fn finalize_or_kill(
       end
       return Error(e)
   end
-  Ok(hold_until_stopped(proc, stop_rel, oneshot?, app_files, clock))
+  hold_until_stopped(proc, stop_rel, oneshot?, app_files, clock)
 end
 
 fn fail_with(console: Console, msg: Text) : Int
@@ -777,17 +790,52 @@ fn run_launch_inner(
     return Error("invalid --run-id '#{run_id}'")
   end
 
+  _mk_parent = try app_files.make_folder(".arvo/runs").map_error(fn(e) "failed creating .arvo/runs: #{e}" end)
+  reservation = try cmd.within(join_path(app_dir, ".arvo/runs")).run(
+    "mkdir",
+    ["--", run_id],
+    t.quick_secs.seconds
+  ).map_error(fn(e) "failed reserving run '#{run_id}': #{e}" end)
+  if not reservation.ok?
+    return Error("failed reserving run '#{run_id}': #{reservation.stderr.trim}")
+  end
+
+  case launch_reserved_run(app_dir, run_id, seed, oneshot?, cfg, app_files, cmd, clock, env, net, console)
+    Ok(code): Ok(code)
+    Error(err):
+      if app_files.exists?(run_handle_rel(run_id))
+        return Error(err)
+      end
+      case remove_tree_in_run_dir(app_dir, app_files, run_id, cmd)
+        Ok(true): Error(err)
+        Ok(false): Error("#{err}; failed removing incomplete run '#{run_id}'")
+        Error(cleanup_err): Error("#{err}; #{cleanup_err}")
+      end
+  end
+end
+
+fn launch_reserved_run(
+  app_dir: Text,
+  run_id: Text,
+  seed: Text,
+  oneshot?: Bool,
+  cfg: Config.ArvoConfig,
+  app_files: Files,
+  cmd: Command,
+  clock: Clock,
+  env: Env,
+  net: Network,
+  console: Console
+) : Result(Int, Text)
+  t = default_control_timeouts()
   rdir_rel = run_dir_rel(run_id)
   data_rel = "#{rdir_rel}/data"
   edir_rel = evidence_dir_rel(run_id)
   ready_rel = "#{rdir_rel}/ready.json"
   stop_rel = "#{rdir_rel}/stop"
-
   for dir_p in [rdir_rel, data_rel, edir_rel]
     _mk = try app_files.make_folder(dir_p).map_error(fn(e) "failed creating #{dir_p}: #{e}" end)
   end
-  _rm_stop = app_files.remove(stop_rel)
-  _rm_rdy = app_files.remove(ready_rel)
 
   try copy_public_assets(app_files, data_rel).map_error(
     fn(ce) "failed copying static assets: #{ce}" end
@@ -901,27 +949,24 @@ fn run_doctor(
   cur_sha = compute_build_sha_in_app(app_dir, app_files, cfg, cmd, env)
   sha_ok? = cur_sha == handle.build_sha
 
-  db_path = join_path(app_dir, "#{run_dir_rel(run_id)}/data/#{handle.sqlite_file}")
-  mig_check = case cmd.run(
-    "sqlite3",
-    ["-safe", "-readonly", "-json", db_path, "SELECT COUNT(*) AS cnt FROM _arvo_migrations"],
-    t.quick_secs.seconds
+  data_cmd = cmd.within(join_path(app_dir, "#{run_dir_rel(run_id)}/data"))
+  mig_check = case run_sqlite_readonly_json(
+    data_cmd,
+    handle.sqlite_file,
+    "SELECT COUNT(*) AS cnt FROM _arvo_migrations",
+    t.quick_secs
   )
-    Ok(out):
-      if out.ok?
-        case Json.parse(out.stdout.trim)
-          Ok(Json.Array(rows)):
-            cnt = case rows.first
-              Some(row): row.int_at("cnt") or 0
-              None: 0
-            end
-            DoctorCheck(name: "migrations", ok?: cnt > 0, detail: "applied=#{cnt}")
-          Ok(_) | Error(_): DoctorCheck(name: "migrations", ok?: false, detail: "unexpected sqlite3 output")
-        end
-      else
-        DoctorCheck(name: "migrations", ok?: false, detail: out.stderr.trim)
+    Ok(body):
+      case Json.parse(body)
+        Ok(Json.Array(rows)):
+          cnt = case rows.first
+            Some(row): row.int_at("cnt") or 0
+            None: 0
+          end
+          DoctorCheck(name: "migrations", ok?: cnt > 0, detail: "applied=#{cnt}")
+        Ok(_) | Error(_): DoctorCheck(name: "migrations", ok?: false, detail: "unexpected sqlite3 output")
       end
-    Error(err): DoctorCheck(name: "migrations", ok?: false, detail: "#{err}")
+    Error(err): DoctorCheck(name: "migrations", ok?: false, detail: err)
   end
 
   ev_ok? = app_files.exists?(evidence_dir_rel(run_id))
@@ -944,11 +989,15 @@ end
 
 fn run_sqlite_readonly_json(
   cmd: Command,
-  db_path: Text,
+  sqlite_file: Text,
   query: Text,
   within_secs: Int
 ) : Result(Text, Text)
-  out = try cmd.run("sqlite3", ["-safe", "-readonly", "-json", db_path, query], within_secs.seconds)
+  out = try cmd.run(
+    "sqlite3",
+    ["-init", "/dev/null", "-safe", "-readonly", "-json", "./#{sqlite_file}", query],
+    within_secs.seconds
+  )
     .map_error(fn(e) "#{e}" end)
   if not out.ok?
     return Error(out.stderr.trim)
@@ -971,10 +1020,10 @@ fn run_inspect(
     Ok(h): h
     Error(e): return fail_with(console, "arvo control inspect: #{e}")
   end
-  db_path = join_path(app_dir, "#{run_dir_rel(run_id)}/data/#{handle.sqlite_file}")
+  data_cmd = cmd.within(join_path(app_dir, "#{run_dir_rel(run_id)}/data"))
 
   if mode == "sql"
-    case run_sqlite_readonly_json(cmd, db_path, sql_query or "", t.sqlite_secs)
+    case run_sqlite_readonly_json(data_cmd, handle.sqlite_file, sql_query or "", t.sqlite_secs)
       Ok(body):
         console.print(body)
         0
@@ -982,7 +1031,7 @@ fn run_inspect(
     end
   else if mode == "audit"
     audit_q = "SELECT id, actor, action, entity_table, entity_id, reason, created_at FROM arvo_events ORDER BY created_at DESC, id DESC LIMIT 50"
-    case run_sqlite_readonly_json(cmd, db_path, audit_q, t.sqlite_secs)
+    case run_sqlite_readonly_json(data_cmd, handle.sqlite_file, audit_q, t.sqlite_secs)
       Ok(body):
         console.print(body)
         0
@@ -1065,7 +1114,9 @@ fn run_reset(
     seed_profile: seed,
     started_at: handle.started_at
   )
-  _w = app_files.write_text(run_handle_rel(run_id), "#{Json.encode(updated)}\n")
+  if app_files.write_text(run_handle_rel(run_id), "#{Json.encode(updated)}\n") is Error(err)
+    return fail_with(console, "arvo control reset: database reset but failed updating run.json: #{err}")
+  end
   append_control_log(app_files, run_id, clock, "reset seed=#{seed}")
   console.print(Json.Object({"run_id": Json.String(run_id), "reset": Json.String(seed)}).to_text)
   0
@@ -1176,29 +1227,22 @@ fn run_cleanup(
   edir_rel = evidence_dir_rel(run_id)
   before_evidence = count_files_under(app_files.read_only, edir_rel)
 
-  # Signal supervisor via stop sentinel first, then stop ONLY recorded handle.pid if still alive
-  _w_stop = app_files.write_text("#{run_dir_rel(run_id)}/stop", "stop\n")
-  var tries = 0
-  while tries < t.stop_polls and pid_alive?(cmd, handle.pid)
-    clock.sleep(t.ready_poll_ms.milliseconds)
-    tries += 1
-  end
-
-  if pid_alive?(cmd, handle.pid)
-    _term = cmd.run("kill", ["-TERM", "#{handle.pid}"], t.quick_secs.seconds)
-    var k_tries = 0
-    while k_tries < t.kill_polls and pid_alive?(cmd, handle.pid)
-      clock.sleep(t.ready_poll_ms.milliseconds)
-      k_tries += 1
+  stop_rel = "#{run_dir_rel(run_id)}/stop"
+  stopped_rel = "#{stop_rel}.done"
+  if not app_files.exists?(stopped_rel)
+    if app_files.write_text(stop_rel, "stop\n") is Error(err)
+      return fail_with(console, "arvo control cleanup: failed requesting shutdown: #{err}")
     end
-    if pid_alive?(cmd, handle.pid)
-      _kill9 = cmd.run("kill", ["-KILL", "#{handle.pid}"], t.quick_secs.seconds)
+    var tries = 0
+    while tries < t.stop_polls and not app_files.exists?(stopped_rel)
       clock.sleep(t.ready_poll_ms.milliseconds)
+      tries += 1
     end
   end
-
-  stopped? = not pid_alive?(cmd, handle.pid)
-  data_removed? = case remove_tree_in_run_dir(app_dir, app_files, run_dir_rel(run_id), cmd)
+  if not app_files.exists?(stopped_rel)
+    return fail_with(console, "arvo control cleanup: supervisor did not confirm shutdown; run data kept")
+  end
+  data_removed? = case remove_tree_in_run_dir(app_dir, app_files, run_id, cmd)
     Ok(removed): removed
     Error(e): return fail_with(console, "arvo control cleanup: #{e}")
   end
@@ -1210,14 +1254,14 @@ fn run_cleanup(
   report = CleanupReport(
     run_id: run_id,
     pid: handle.pid,
-    stopped?: stopped?,
+    stopped?: true,
     data_removed?: data_removed?,
     evidence_dir: handle.evidence_dir,
     evidence_files_preserved: after_evidence.size,
     preserved?: preserved?
   )
   console.print(Json.encode(report))
-  if stopped? and data_removed? and preserved?: 0 else: 1
+  if data_removed? and preserved?: 0 else: 1
 end
 
 ## Executes an `arvo control` subcommand with explicit capabilities.
@@ -1327,8 +1371,7 @@ test "parse_control_args, detect_sqlite_filename, timeouts, and valid_run_id? co
     ct.ready_polls == 100 and
     ct.ready_poll_ms == 100 and
     ct.hold_poll_ms == 150 and
-    ct.stop_polls == 20 and
-    ct.kill_polls == 15
+    ct.stop_polls == 20
   assert valid_run_id?("run_01-a")
   assert valid_run_id?("a".repeat(64))
   assert not valid_run_id?("a".repeat(65))
@@ -1339,6 +1382,10 @@ test "parse_control_args, detect_sqlite_filename, timeouts, and valid_run_id? co
   assert detect_sqlite_filename("api\n  sqlite db\n  # from \"bad.sqlite\"\nend\n") == "starter.sqlite"
   assert detect_sqlite_filename("api\nend\n") == "starter.sqlite"
   assert detect_sqlite_filename("sqlite x from \"../bad.sqlite\"\n") == "starter.sqlite"
+  assert not valid_sqlite_filename?("../other.sqlite")
+  assert not valid_sqlite_filename?("/other.sqlite")
+  assert not valid_run_endpoint?("http://127.0.0.1:80", 81)
+  assert not valid_run_endpoint?("http://127.0.0.1:65536", 65536)
 
   assert parse_control_args([]) == Ok(ControlHelpCmd)
   assert parse_control_args(["--help"]) == Ok(ControlHelpCmd)
@@ -1430,11 +1477,11 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
     "public/assets/sub/app.js": "console.log(1);",
     "frontend/scripts/arvo-playwright.mjs": "// playwright driver",
     ".arvo/evidence/r1/shot.png": "PNG",
-    ".arvo/evidence/r1/home.aria.txt": "- heading \"Ada\"",
-    ".arvo/runs/r1/ready-present.json": ready_payload
+    ".arvo/evidence/r1/home.aria.txt": "- heading \"Ada\""
   })
 
   replies = Command.replies([
+    (Command.spec("mkdir", ["--", "r1"]).in_folder("examples/app/.arvo/runs"), Command.ok_output("")),
     (
       Command.spec("mo", ["run", "--state-dir", "examples/app/.arvo/runs/r1/data", "examples/app/main.mo", "--arvo-seed", "baseline", "--db", "starter.sqlite"]),
       Command.ok_output("{\"seeded\":\"baseline\"}\n")
@@ -1448,19 +1495,19 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
     (Command.spec("test", ["-e", "/proc/1/stat"]), Command.ok_output("")),
     (Command.spec("test", ["-e", "/proc/4242/stat"]), Command.ok_output("")),
     (
-      Command.spec("sqlite3", ["-safe", "-readonly", "-json", "examples/app/.arvo/runs/r1/data/starter.sqlite", "SELECT COUNT(*) AS cnt FROM _arvo_migrations"]),
+      Command.spec("sqlite3", ["-init", "/dev/null", "-safe", "-readonly", "-json", "./starter.sqlite", "SELECT COUNT(*) AS cnt FROM _arvo_migrations"]).in_folder("examples/app/.arvo/runs/r1/data"),
       Command.ok_output("[{\"cnt\":1}]\n")
     ),
     (
-      Command.spec("sqlite3", ["-safe", "-readonly", "-json", "examples/app/.arvo/runs/r1/data/starter.sqlite", "SELECT id FROM bills"]),
+      Command.spec("sqlite3", ["-init", "/dev/null", "-safe", "-readonly", "-json", "./starter.sqlite", "SELECT id FROM bills"]).in_folder("examples/app/.arvo/runs/r1/data"),
       Command.ok_output("[{\"id\":1}]\n")
     ),
     (
-      Command.spec("sqlite3", ["-safe", "-readonly", "-json", "examples/app/.arvo/runs/r1/data/starter.sqlite", "DELETE FROM bills"]),
+      Command.spec("sqlite3", ["-init", "/dev/null", "-safe", "-readonly", "-json", "./starter.sqlite", "DELETE FROM bills"]).in_folder("examples/app/.arvo/runs/r1/data"),
       Command.output(1, "", "Error: attempt to write a readonly database")
     ),
     (
-      Command.spec("sqlite3", ["-safe", "-readonly", "-json", "examples/app/.arvo/runs/r1/data/starter.sqlite", "SELECT id, actor, action, entity_table, entity_id, reason, created_at FROM arvo_events ORDER BY created_at DESC, id DESC LIMIT 50"]),
+      Command.spec("sqlite3", ["-init", "/dev/null", "-safe", "-readonly", "-json", "./starter.sqlite", "SELECT id, actor, action, entity_table, entity_id, reason, created_at FROM arvo_events ORDER BY created_at DESC, id DESC LIMIT 50"]).in_folder("examples/app/.arvo/runs/r1/data"),
       Command.ok_output("[{\"action\":\"auth.login\"}]\n")
     ),
     (
@@ -1486,7 +1533,7 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
         .in_folder("examples/app"),
       Command.output(1, "", "   \n")
     ),
-    (Command.spec("rm", ["-rf", "examples/app/.arvo/runs/r1"]), Command.ok_output(""))
+    (Command.spec("rm", ["-rf", "--", "r1"]).in_folder("examples/app/.arvo/runs"), Command.ok_output(""))
   ])
 
   net = Network.fake(
@@ -1541,6 +1588,8 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
   ) ==
     1
   rep_seed_bad = Command.replies([
+    (Command.spec("mkdir", ["--", "r1"]).in_folder("examples/app/.arvo/runs"), Command.ok_output("")),
+    (Command.spec("rm", ["-rf", "--", "r1"]).in_folder("examples/app/.arvo/runs"), Command.ok_output("")),
     (
       Command.spec("mo", ["run", "--state-dir", "examples/app/.arvo/runs/r1/data", "examples/app/main.mo", "--arvo-seed", "baseline", "--db", "starter.sqlite"]),
       Command.output(1, "", "bad seed")
@@ -1560,7 +1609,25 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
   ) ==
     1
   assert c_seed_bad.printed_errors.any?(fn(e) e.contains?("seed 'baseline' failed") end)
+  c_duplicate = Console.fake()
+  rep_duplicate = Command.replies([
+    (Command.spec("mkdir", ["--", "r1"]).in_folder("examples/app/.arvo/runs"), Command.output(1, "", "already exists"))
+  ])
+  assert run_control_cmd(
+    "examples/app",
+    LaunchCmd(seed: "baseline", run_id: Some("r1"), oneshot?: true),
+    cfg,
+    files,
+    Command.fake(rep_duplicate),
+    Clock.fixed(t0),
+    Env.of({}),
+    net,
+    c_duplicate
+  ) == 1
+  assert c_duplicate.printed_errors.any?(fn(e) e.contains?("failed reserving run 'r1'") end)
   rep_no_spawn = Command.replies([
+    (Command.spec("mkdir", ["--", "r1"]).in_folder("examples/app/.arvo/runs"), Command.ok_output("")),
+    (Command.spec("rm", ["-rf", "--", "r1"]).in_folder("examples/app/.arvo/runs"), Command.ok_output("")),
     (
       Command.spec("mo", ["run", "--state-dir", "examples/app/.arvo/runs/r1/data", "examples/app/main.mo", "--arvo-seed", "baseline", "--db", "starter.sqlite"]),
       Command.ok_output("{\"seeded\":\"baseline\"}\n")
@@ -1624,6 +1691,9 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
   ) ==
     1
   assert c_wait_bad.printed_errors.any?(fn(e) e.contains?("ready.json") end)
+  assert not files.exists?(".arvo/runs/r1/data/public/manifest.json")
+  assert files.write_text(".arvo/runs/r1/ready-present.json", ready_payload) == Ok(Unit)
+  assert copy_public_assets(files, ".arvo/runs/r1/data") == Ok(Unit)
   assert files.exists?(".arvo/runs/r1/data/public/manifest.json")
   assert files.exists?(".arvo/runs/r1/data/public/assets/root.js")
   assert files.exists?(".arvo/runs/r1/data/public/assets/sub/app.js")
@@ -1709,7 +1779,7 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
     "examples/app",
     "r1",
     ready_payload,
-    99,
+    4242,
     "examples/app/.arvo/runs/r1/data",
     ".arvo/evidence/r1",
     "starter.sqlite",
@@ -1723,17 +1793,18 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
     Ok(_)
   assert (c_l.printed.first or "").contains?("\"port\":41999")
   assert files.exists?(".arvo/runs/r1/run.json")
-  assert hold_until_stopped(fake_proc, ".arvo/runs/r1/stop", true, files, Clock.fixed(t0)) == 0
+  assert hold_until_stopped(fake_proc, ".arvo/runs/r1/stop", true, files, Clock.fixed(t0)) == Ok(0)
   assert not fake_proc.alive?
-  assert hold_until_stopped(fake_proc, ".arvo/runs/r1/stop", false, files, Clock.fixed(t0)) == 0
+  assert hold_until_stopped(fake_proc, ".arvo/runs/r1/stop", false, files, Clock.fixed(t0)) == Ok(0)
   assert Command.fake(replies).spawn(
     "mo",
     ["serve", "examples/app/main.mo", "--port", "0", "--data", "examples/app/.arvo/runs/r1/data", "--ready-file", "examples/app/.arvo/runs/r1/ready.json"]
   ) is Ok(fake_proc2)
   assert files.write_text(".arvo/runs/r1/stop", "stop\n") == Ok(Unit)
-  assert hold_until_stopped(fake_proc2, ".arvo/runs/r1/stop", false, files, Clock.fixed(t0)) == 0
+  assert hold_until_stopped(fake_proc2, ".arvo/runs/r1/stop", false, files, Clock.fixed(t0)) == Ok(0)
   assert not fake_proc2.alive?
   assert not files.exists?(".arvo/runs/r1/stop")
+  assert files.exists?(".arvo/runs/r1/stop.done")
 
   # Error & boundary branches in complete_launch & compute_build_sha fallbacks
   for bad_ready in [
@@ -1742,6 +1813,7 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
     "{\"url\":\"http://127.0.0.1:41999\"}",
     "{\"url\":\"http://127.0.0.1:41999\",\"port\":0}",
     "{\"url\":\"http://127.0.0.1:41999\",\"port\":-1}",
+    ready_payload,
     "{\"url\":\"http://127.0.0.1:49999\",\"port\":49999}"
   ]
     assert complete_launch(
@@ -1770,7 +1842,7 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
   assert complete_launch(
     "examples/app",
     "r_p1",
-    "{\"url\":\"http://127.0.0.1:41999\",\"port\":1}",
+    "{\"url\":\"http://127.0.0.1:41999\",\"port\":41999}",
     99,
     "examples/app/.arvo/runs/r_p1/data",
     ".arvo/evidence/r_p1",
@@ -1783,7 +1855,7 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
     Console.fake()
   ) is
     Ok(h_p1)
-  assert h_p1.pid == 99 and h_p1.port == 1
+  assert h_p1.pid == 99 and h_p1.port == 41999
 
   rep_nogit = Command.replies([(Command.spec("git", ["rev-parse", "HEAD"]), Command.output(1, "", "err"))])
   rep_emptygit = Command.replies([(Command.spec("git", ["rev-parse", "HEAD"]), Command.ok_output("\n"))])
@@ -1926,7 +1998,7 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
       (Command.spec("git", ["rev-parse", "HEAD"]), Command.ok_output("different_sha\n")),
       (Command.spec("test", ["-e", "/proc/4242/stat"]), Command.output(1, "", "")),
       (
-        Command.spec("sqlite3", ["-safe", "-readonly", "-json", "examples/app/.arvo/runs/r1/data/starter.sqlite", "SELECT COUNT(*) AS cnt FROM _arvo_migrations"]),
+        Command.spec("sqlite3", ["-init", "/dev/null", "-safe", "-readonly", "-json", "./starter.sqlite", "SELECT COUNT(*) AS cnt FROM _arvo_migrations"]).in_folder("examples/app/.arvo/runs/r1/data"),
         bad_mig_reply
       )
     ])
@@ -2199,6 +2271,12 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
     1
   assert c_rec.printed_errors.empty?
   assert files.read_text(".arvo/runs/r1/run.json") is Ok(r1_run_json)
+  invalid_handles = Files.in_memory({
+    ".arvo/runs/wrong-id/run.json": r1_run_json,
+    ".arvo/runs/r1/run.json": r1_run_json.replace("starter.sqlite", "../outside.sqlite")
+  })
+  assert load_run_handle(invalid_handles.read_only, "wrong-id") is Error(_)
+  assert load_run_handle(invalid_handles.read_only, "r1") is Error(_)
   files_no_pw = Files.in_memory({
     ".arvo/runs/r1/run.json": r1_run_json
   })
@@ -2215,13 +2293,13 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
   ) ==
     1
 
-  # 5. Cleanup (preserving evidence files + missing run + missing evidence dir + kill escalation)
+  # 5. Cleanup preserves evidence and requires confirmation from the supervisor.
   assert remove_tree_in_run_dir("examples/app", files, "bad/path", Command.fake(replies)) is Error(_)
-  assert remove_tree_in_run_dir("examples/app", files, ".arvo/runs/r_p1", Command.fake(replies).allow_programs([])) is
+  assert remove_tree_in_run_dir("examples/app", files, "r_p1", Command.fake(replies).allow_programs([])) is
     Error(_)
   replies_dead = Command.replies([
     (Command.spec("test", ["-e", "/proc/4242/stat"]), Command.output(1, "", "")),
-    (Command.spec("rm", ["-rf", "examples/app/.arvo/runs/r1"]), Command.ok_output(""))
+    (Command.spec("rm", ["-rf", "--", "r1"]).in_folder("examples/app/.arvo/runs"), Command.ok_output(""))
   ])
   c_clean = Console.fake()
   assert run_control_cmd(
@@ -2256,10 +2334,10 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
 
   # Missing evidence_dir fails preserved? check (`exists?(edir_rel) and true` -> false)
   r3_json = "{\"run_id\":\"r3\",\"pid\":4242,\"url\":\"http://127.0.0.1:41999\",\"port\":41999,\"data_dir\":\"d\",\"evidence_dir\":\"e\",\"sqlite_file\":\"starter.sqlite\",\"build_sha\":\"abc1234\",\"seed_profile\":\"baseline\",\"started_at\":\"2026-11-25T21:00:00Z\"}"
-  files_no_ev = Files.in_memory({".arvo/runs/r3/run.json": r3_json})
+  files_no_ev = Files.in_memory({".arvo/runs/r3/run.json": r3_json, ".arvo/runs/r3/stop.done": "stopped\n"})
   rep_r3 = Command.replies([
     (Command.spec("test", ["-e", "/proc/4242/stat"]), Command.output(1, "", "")),
-    (Command.spec("rm", ["-rf", "examples/app/.arvo/runs/r3"]), Command.ok_output(""))
+    (Command.spec("rm", ["-rf", "--", "r3"]).in_folder("examples/app/.arvo/runs"), Command.ok_output(""))
   ])
   assert run_control_cmd(
     "examples/app",
@@ -2274,14 +2352,14 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
   ) ==
     1
 
-  # Kill escalation when PID refuses to stop (exact poll durations asserted)
+  # An unacknowledged cleanup must leave the run intact.
   assert files.make_folder(".arvo/runs/r2") == Ok(Unit)
   assert files.make_folder(".arvo/evidence/r2") == Ok(Unit)
   assert complete_launch(
     "examples/app",
     "r2",
     ready_payload,
-    99,
+    4242,
     "examples/app/.arvo/runs/r2/data",
     ".arvo/evidence/r2",
     "starter.sqlite",
@@ -2293,12 +2371,7 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
     Console.fake()
   ) is
     Ok(_)
-  replies_term = Command.replies([
-    (Command.spec("test", ["-e", "/proc/4242/stat"]), Command.ok_output("")),
-    (Command.spec("kill", ["-TERM", "4242"]), Command.ok_output("")),
-    (Command.spec("kill", ["-KILL", "4242"]), Command.ok_output("")),
-    (Command.spec("rm", ["-rf", "examples/app/.arvo/runs/r2"]), Command.ok_output(""))
-  ])
+  replies_term = Command.replies([(Command.spec("rm", ["-rf", "--", "r2"]).in_folder("examples/app/.arvo/runs"), Command.ok_output(""))])
   clk_esc = Clock.fixed(t0)
   assert run_control_cmd(
     "examples/app",
@@ -2312,5 +2385,7 @@ test "run_control_cmd executes launch, doctor, inspect, reset, drive, and cleanu
     Console.fake()
   ) ==
     1
-  assert (clk_esc.now - t0).in_milliseconds == 3600
+  assert (clk_esc.now - t0).in_milliseconds == 2000
+  assert files.exists?(".arvo/runs/r2/run.json")
+  assert files.exists?(".arvo/runs/r2/stop")
 end

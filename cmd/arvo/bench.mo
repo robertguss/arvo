@@ -99,6 +99,8 @@ end
 fn parse_bench_args(rest: List(Text)) : Result(BenchArgs, Text)
   var base_lbl = "baseline"
   var cand_lbl = "candidate"
+  var base_ref_given? = false
+  var cand_ref_given? = false
   var base_cmd = ""
   var cand_cmd = ""
   var shared_cmd = ""
@@ -133,9 +135,11 @@ fn parse_bench_args(rest: List(Text)) : Result(BenchArgs, Text)
       i += 1
     else if a == "--baseline"
       base_lbl = try need_val(rest, i, "--baseline")
+      base_ref_given? = true
       i += 1
     else if a == "--candidate"
       cand_lbl = try need_val(rest, i, "--candidate")
+      cand_ref_given? = true
       i += 1
     else if a == "--cmd"
       shared_cmd = try need_val(rest, i, "--cmd")
@@ -163,8 +167,7 @@ fn parse_bench_args(rest: List(Text)) : Result(BenchArgs, Text)
   end
 
   ref_mode? = base_cmd.empty? and cand_cmd.empty? and not shared_cmd.empty? and
-    base_lbl != "baseline" and
-    cand_lbl != "candidate"
+    base_ref_given? and cand_ref_given?
   eff_base = if base_cmd.empty?: shared_cmd else: base_cmd
   eff_cand = if cand_cmd.empty?: shared_cmd else: cand_cmd
   if eff_base.empty? or eff_cand.empty?
@@ -295,7 +298,7 @@ fn run_one_sample(
         (ms, false, false)
       else
         work_ok? = case expect_contains
-          Some(needle): out.stdout.contains?(needle) or out.stderr.contains?(needle)
+          Some(needle): out.stdout.contains?(needle)
           None: not out.stdout.trim.empty? or not out.stderr.trim.empty?
         end
         (ms, true, work_ok?)
@@ -303,37 +306,59 @@ fn run_one_sample(
   end
 end
 
-fn prepare_ref_worktrees(base_ref: Text, cand_ref: Text, cmd: Command) : Result((Text, Text), Text)
+fn remove_worktree(path: Text, cmd: Command) : Bool
   t = default_timeouts()
-  wt_a = ".arvo/tmp/bench_a"
-  wt_b = ".arvo/tmp/bench_b"
-  _r1 = cmd.run("git", ["worktree", "remove", "--force", wt_a], t.cleanup_secs.seconds)
-  _r2 = cmd.run("git", ["worktree", "remove", "--force", wt_b], t.cleanup_secs.seconds)
-  a_out = try cmd.run("git", ["worktree", "add", "--detach", wt_a, base_ref], t.git_secs.seconds)
-    .map_error(fn(e) "git worktree add #{base_ref} failed: #{e}" end)
-  if not a_out.ok?
-    return Error("git worktree add #{base_ref} failed: #{a_out.stderr.trim}")
+  case cmd.run("git", ["worktree", "remove", "--force", path], t.cleanup_secs.seconds)
+    Ok(o): o.ok?
+    Error(_): false
   end
-  b_out = try cmd.run("git", ["worktree", "add", "--detach", wt_b, cand_ref], t.git_secs.seconds)
-    .map_error(fn(e) "git worktree add #{cand_ref} failed: #{e}" end)
-  if not b_out.ok?
-    _rm = cmd.run("git", ["worktree", "remove", "--force", wt_a], t.cleanup_secs.seconds)
-    return Error("git worktree add #{cand_ref} failed: #{b_out.stderr.trim}")
-  end
-  Ok((wt_a, wt_b))
 end
 
-fn cleanup_ref_worktrees(cmd: Command) : Bool
+fn remove_bench_dir(dir: Text, cmd: Command) : Bool
+  case cmd.run("rmdir", [dir], default_timeouts().cleanup_secs.seconds)
+    Ok(o): o.ok?
+    Error(_): false
+  end
+end
+
+fn add_worktree(path: Text, ref: Text, cmd: Command) : Result(Unit, Text)
+  case cmd.run("git", ["worktree", "add", "--detach", path, ref], default_timeouts().git_secs.seconds)
+    Error(e): Error("git worktree add #{ref} failed: #{e}")
+    Ok(out):
+      if out.ok?: Ok(Unit) else: Error("git worktree add #{ref} failed: #{out.stderr.trim}")
+  end
+end
+
+fn prepare_ref_worktrees(base_ref: Text, cand_ref: Text, cmd: Command) : Result(Text, Text)
   t = default_timeouts()
-  ok1 = case cmd.run("git", ["worktree", "remove", "--force", ".arvo/tmp/bench_a"], t.cleanup_secs.seconds)
-    Ok(o): o.ok?
-    Error(_): false
+  made = try cmd.run("mktemp", ["-d", ".arvo-bench.XXXXXXXX"], t.git_secs.seconds)
+    .map_error(fn(e) "creating temporary benchmark directory: #{e}" end)
+  if not made.ok?
+    return Error("creating temporary benchmark directory: #{made.stderr.trim}")
   end
-  ok2 = case cmd.run("git", ["worktree", "remove", "--force", ".arvo/tmp/bench_b"], t.cleanup_secs.seconds)
-    Ok(o): o.ok?
-    Error(_): false
+  dir = made.stdout.trim
+  suffix = dir.chars.drop(".arvo-bench.".byte_count)
+  if not dir.starts_with?(".arvo-bench.") or suffix.size != 8 or
+    not suffix.all?(fn(c) c.ascii_letter? or c.ascii_digit? end)
+    return Error("unexpected temporary benchmark directory")
   end
-  ok1 and ok2
+  if add_worktree("#{dir}/a", base_ref, cmd) is Error(e)
+    _rm = remove_bench_dir(dir, cmd)
+    return Error(e)
+  end
+  if add_worktree("#{dir}/b", cand_ref, cmd) is Error(e)
+    _rm = remove_worktree("#{dir}/a", cmd)
+    _dir = remove_bench_dir(dir, cmd)
+    return Error(e)
+  end
+  Ok(dir)
+end
+
+fn cleanup_ref_worktrees(dir: Text, cmd: Command) : Bool
+  ok1? = remove_worktree("#{dir}/a", cmd)
+  ok2? = remove_worktree("#{dir}/b", cmd)
+  ok_dir? = remove_bench_dir(dir, cmd)
+  ok1? and ok2? and ok_dir?
 end
 
 ## Executes alternating A/B/A/B benchmark runs and outputs checklist results.
@@ -343,18 +368,19 @@ fn run_bench_cmd(bargs: BenchArgs, cmd: Command, clock: Clock, console: Console)
     return 0
   end
 
-  (run_base_cmd, run_cand_cmd) = if bargs.ref_mode?
+  (run_base_cmd, run_cand_cmd, worktree_dir) = if bargs.ref_mode?
     case prepare_ref_worktrees(bargs.baseline_label, bargs.candidate_label, cmd)
-      Ok((wa, wb)): (
-        "cd \"#{wa}\" && #{bargs.baseline_cmd}",
-        "cd \"#{wb}\" && #{bargs.candidate_cmd}"
+      Ok(dir): (
+        "cd \"#{dir}/a\" && #{bargs.baseline_cmd}",
+        "cd \"#{dir}/b\" && #{bargs.candidate_cmd}",
+        Some(dir)
       )
       Error(e):
         console.error("arvo bench: #{e}")
         return 1
     end
   else
-    (bargs.baseline_cmd, bargs.candidate_cmd)
+    (bargs.baseline_cmd, bargs.candidate_cmd, None)
   end
 
   var a_samples = []
@@ -430,9 +456,9 @@ fn run_bench_cmd(bargs: BenchArgs, cmd: Command, clock: Clock, console: Console)
     console.print(lines.join("\n"))
   end
 
-  if bargs.ref_mode?
-    if not cleanup_ref_worktrees(cmd)
-      console.error("arvo bench: failed removing temporary benchmark worktrees")
+  if worktree_dir is Some(dir)
+    if not cleanup_ref_worktrees(dir, cmd)
+      console.error("arvo bench: failed removing temporary benchmark worktrees at #{dir}")
     end
   end
   if verdict == "inconclusive": 1 else: 0
@@ -580,6 +606,7 @@ test "Bench parses args, enforces 7-question checklist honesty, and computes alt
   assert Json.parse(c_w.printed.first or "") is Ok(w_doc)
   assert w_doc.int_at("baseline.work_verified_runs") == Some(3)
   assert w_doc.int_at("candidate.work_verified_runs") == Some(0)
+  assert run_one_sample("echo erronly", Some("warn"), Command.fake(rep), Clock.fixed(t0)) == (0, true, false)
 
   # Baseline failure & blocked command count exact errors & work=0 on failing side
   args_txt = BenchArgs(
@@ -673,24 +700,26 @@ test "Bench parses args, enforces 7-question checklist honesty, and computes alt
 
   # Ref-based worktree mode prepares two worktrees and cleans up, or errors cleanly
   rep_wt = Command.replies([
+    (Command.spec("mktemp", ["-d", ".arvo-bench.XXXXXXXX"]), Command.ok_output(".arvo-bench.AbCd1234\n")),
+    (Command.spec("rmdir", [".arvo-bench.AbCd1234"]), Command.ok_output("")),
     (
-      Command.spec("git", ["worktree", "add", "--detach", ".arvo/tmp/bench_a", "HEAD~1"]),
+      Command.spec("git", ["worktree", "add", "--detach", ".arvo-bench.AbCd1234/a", "HEAD~1"]),
       Command.ok_output("")
     ),
     (
-      Command.spec("git", ["worktree", "add", "--detach", ".arvo/tmp/bench_b", "HEAD"]),
+      Command.spec("git", ["worktree", "add", "--detach", ".arvo-bench.AbCd1234/b", "HEAD"]),
       Command.ok_output("")
     ),
     (
-      Command.spec("git", ["worktree", "remove", "--force", ".arvo/tmp/bench_a"]),
+      Command.spec("git", ["worktree", "remove", "--force", ".arvo-bench.AbCd1234/a"]),
       Command.ok_output("")
     ),
     (
-      Command.spec("git", ["worktree", "remove", "--force", ".arvo/tmp/bench_b"]),
+      Command.spec("git", ["worktree", "remove", "--force", ".arvo-bench.AbCd1234/b"]),
       Command.ok_output("")
     ),
-    (Command.spec("sh", ["-c", "cd \".arvo/tmp/bench_a\" && echo hi"]), Command.ok_output("hi\n")),
-    (Command.spec("sh", ["-c", "cd \".arvo/tmp/bench_b\" && echo hi"]), Command.ok_output("hi\n"))
+    (Command.spec("sh", ["-c", "cd \".arvo-bench.AbCd1234/a\" && echo hi"]), Command.ok_output("hi\n")),
+    (Command.spec("sh", ["-c", "cd \".arvo-bench.AbCd1234/b\" && echo hi"]), Command.ok_output("hi\n"))
   ])
   assert parse_bench_args([
     "--baseline",
@@ -705,6 +734,8 @@ test "Bench parses args, enforces 7-question checklist honesty, and computes alt
   ]) is
     Ok(args_ref)
   assert args_ref.ref_mode?
+  assert parse_bench_args(["--baseline", "baseline", "--candidate", "candidate", "--cmd", "echo hi"]) is Ok(literal_refs)
+  assert literal_refs.ref_mode?
   c_ref = Console.fake()
   assert run_bench_cmd(args_ref, Command.fake(rep_wt), Clock.fixed(t0), c_ref) == 0
   assert c_ref.printed_errors.empty?
@@ -718,16 +749,18 @@ test "Bench parses args, enforces 7-question checklist honesty, and computes alt
 
   # Second ref failure cleans up first worktree and fails cleanly
   rep_wt_fail2 = Command.replies([
+    (Command.spec("mktemp", ["-d", ".arvo-bench.XXXXXXXX"]), Command.ok_output(".arvo-bench.AbCd1234\n")),
+    (Command.spec("rmdir", [".arvo-bench.AbCd1234"]), Command.ok_output("")),
     (
-      Command.spec("git", ["worktree", "add", "--detach", ".arvo/tmp/bench_a", "HEAD~1"]),
+      Command.spec("git", ["worktree", "add", "--detach", ".arvo-bench.AbCd1234/a", "HEAD~1"]),
       Command.ok_output("")
     ),
     (
-      Command.spec("git", ["worktree", "add", "--detach", ".arvo/tmp/bench_b", "HEAD"]),
+      Command.spec("git", ["worktree", "add", "--detach", ".arvo-bench.AbCd1234/b", "HEAD"]),
       Command.output(1, "", "bad ref")
     ),
     (
-      Command.spec("git", ["worktree", "remove", "--force", ".arvo/tmp/bench_a"]),
+      Command.spec("git", ["worktree", "remove", "--force", ".arvo-bench.AbCd1234/a"]),
       Command.ok_output("")
     )
   ])
@@ -735,58 +768,63 @@ test "Bench parses args, enforces 7-question checklist honesty, and computes alt
 
   # Cleanup failure emits error log (covers ok1/ok2 branches and ref cleanup call)
   rep_wt_bad_rm = Command.replies([
+    (Command.spec("mktemp", ["-d", ".arvo-bench.XXXXXXXX"]), Command.ok_output(".arvo-bench.AbCd1234\n")),
+    (Command.spec("rmdir", [".arvo-bench.AbCd1234"]), Command.ok_output("")),
     (
-      Command.spec("git", ["worktree", "add", "--detach", ".arvo/tmp/bench_a", "HEAD~1"]),
+      Command.spec("git", ["worktree", "add", "--detach", ".arvo-bench.AbCd1234/a", "HEAD~1"]),
       Command.ok_output("")
     ),
     (
-      Command.spec("git", ["worktree", "add", "--detach", ".arvo/tmp/bench_b", "HEAD"]),
+      Command.spec("git", ["worktree", "add", "--detach", ".arvo-bench.AbCd1234/b", "HEAD"]),
       Command.ok_output("")
     ),
     (
-      Command.spec("git", ["worktree", "remove", "--force", ".arvo/tmp/bench_a"]),
+      Command.spec("git", ["worktree", "remove", "--force", ".arvo-bench.AbCd1234/a"]),
       Command.ok_output("")
     ),
     (
-      Command.spec("git", ["worktree", "remove", "--force", ".arvo/tmp/bench_b"]),
+      Command.spec("git", ["worktree", "remove", "--force", ".arvo-bench.AbCd1234/b"]),
       Command.output(1, "", "locked")
     ),
-    (Command.spec("sh", ["-c", "cd \".arvo/tmp/bench_a\" && echo hi"]), Command.ok_output("hi\n")),
-    (Command.spec("sh", ["-c", "cd \".arvo/tmp/bench_b\" && echo hi"]), Command.ok_output("hi\n"))
+    (Command.spec("sh", ["-c", "cd \".arvo-bench.AbCd1234/a\" && echo hi"]), Command.ok_output("hi\n")),
+    (Command.spec("sh", ["-c", "cd \".arvo-bench.AbCd1234/b\" && echo hi"]), Command.ok_output("hi\n"))
   ])
   c_bad_rm = Console.fake()
   assert run_bench_cmd(args_ref, Command.fake(rep_wt_bad_rm), Clock.fixed(t0), c_bad_rm) == 0
   assert c_bad_rm.printed_errors.any?(fn(e) e.contains?("failed removing temporary") end)
 
   assert not cleanup_ref_worktrees(
+    ".arvo-bench.AbCd1234",
     Command.fake(
       Command.replies([
         (
-          Command.spec("git", ["worktree", "remove", "--force", ".arvo/tmp/bench_a"]),
+          Command.spec("git", ["worktree", "remove", "--force", ".arvo-bench.AbCd1234/a"]),
           Command.output(1, "", "no")
         ),
         (
-          Command.spec("git", ["worktree", "remove", "--force", ".arvo/tmp/bench_b"]),
+          Command.spec("git", ["worktree", "remove", "--force", ".arvo-bench.AbCd1234/b"]),
           Command.ok_output("")
         )
       ])
     )
   )
   assert not cleanup_ref_worktrees(
+    ".arvo-bench.AbCd1234",
     Command.fake(
       Command.replies([
         (
-          Command.spec("git", ["worktree", "remove", "--force", ".arvo/tmp/bench_b"]),
+          Command.spec("git", ["worktree", "remove", "--force", ".arvo-bench.AbCd1234/b"]),
           Command.ok_output("")
         )
       ])
     )
   )
   assert not cleanup_ref_worktrees(
+    ".arvo-bench.AbCd1234",
     Command.fake(
       Command.replies([
         (
-          Command.spec("git", ["worktree", "remove", "--force", ".arvo/tmp/bench_a"]),
+          Command.spec("git", ["worktree", "remove", "--force", ".arvo-bench.AbCd1234/a"]),
           Command.ok_output("")
         )
       ])
