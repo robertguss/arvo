@@ -146,7 +146,7 @@ fn run_claim_tx(tx_db: Sqlite.Database, ctx: (Text, List(Text))) : Result(
   placeholders = names.map(fn(_) "?" end).join(", ")
   params = [Sqlite.String(now_iso)].concat(names.map(fn(n) Sqlite.String(n) end))
   rows = try tx_db.query(
-    "SELECT #{select_cols} FROM arvo_jobs WHERE state = 'pending' AND run_at <= ? AND job_name IN (#{placeholders}) ORDER BY run_at ASC, id ASC LIMIT 1",
+    "SELECT #{select_cols} FROM arvo_jobs WHERE state = 'pending' AND attempts < max_attempts AND run_at <= ? AND job_name IN (#{placeholders}) ORDER BY run_at ASC, id ASC LIMIT 1",
     params
   ).map_error(fn(e) Sql(e) end)
   maybe_job = try Sqlite.decode_optional[JobRecord](rows).map_error(fn(e) Decode(e) end)
@@ -224,7 +224,8 @@ fn fail_or_retry(
   Ok(Unit)
 end
 
-## Requeues orphaned `'running'` jobs whose `locked_at` is missing or at least `stale_seconds` old.
+## Requeues orphaned `'running'` jobs whose `locked_at` is missing or at least `stale_seconds` old,
+## failing jobs whose `attempts >= max_attempts` cleanly rather than allowing unbounded retries.
 fn requeue_stale_running(db: Sqlite.Database, clock: Clock, stale_seconds: Int) : Result(
   Int,
   SqliteError
@@ -233,11 +234,15 @@ fn requeue_stale_running(db: Sqlite.Database, clock: Clock, stale_seconds: Int) 
   now = clock.now
   now_iso = format_utc_iso(now)
   cutoff_iso = format_utc_iso(now - clamped.seconds)
-  exec = try db.execute(
-    "UPDATE arvo_jobs SET state = 'pending', locked_at = NULL, updated_at = ? WHERE state = 'running' AND (locked_at IS NULL OR locked_at <= ?)",
+  exec_failed = try db.execute(
+    "UPDATE arvo_jobs SET state = 'failed', locked_at = NULL, last_error = COALESCE(last_error, 'stale lock exhausted max_attempts'), updated_at = ? WHERE state = 'running' AND attempts >= max_attempts AND (locked_at IS NULL OR locked_at <= ?)",
     [Sqlite.String(now_iso), Sqlite.String(cutoff_iso)]
   )
-  Ok(exec.changes)
+  exec_requeued = try db.execute(
+    "UPDATE arvo_jobs SET state = 'pending', locked_at = NULL, updated_at = ? WHERE state = 'running' AND attempts < max_attempts AND (locked_at IS NULL OR locked_at <= ?)",
+    [Sqlite.String(now_iso), Sqlite.String(cutoff_iso)]
+  )
+  Ok(exec_requeued.changes + exec_failed.changes)
 end
 
 ## Lists the most recently created jobs up to `limit`.
@@ -339,4 +344,23 @@ test "enqueue, transactional rollback, FIFO claim_next, backoff retry, terminal 
   assert failed_rec.attempts == 2
   assert failed_rec.last_error == Some("502 again")
   assert failed_rec.to_json.text_at("state") == Some("failed")
+
+  # Stale-lock exhaustion guard: a stalled running job already at attempts == max_attempts marks terminal 'failed'
+  assert enqueue_at(db, rng, c_due2, "default", "exhaust.job", Json.Null, c_due2.now, 1) is Ok(id_ex)
+  assert claim_next(db, c_due2, ["exhaust.job"]) is Ok(Some(j_ex))
+  assert j_ex.attempts == 1 and j_ex.max_attempts == 1
+  c_ex_stale = Clock.fixed(c_due2.now + 6.minutes)
+  assert requeue_stale_running(db, c_ex_stale, 300) == Ok(1)
+  assert claim_next(db, c_ex_stale, ["exhaust.job"]) == Ok(None)
+  assert list_recent(db, 1) is Ok(ex_recent)
+  ex_row = ex_recent.find(fn(r) r.id == id_ex end) or stop "id_ex present"
+  assert ex_row.state == "failed" and ex_row.attempts == 1
+  assert ex_row.last_error == Some("stale lock exhausted max_attempts")
+
+  # Manual pending row already at attempts >= max_attempts cannot be claimed
+  assert db.execute(
+    "UPDATE arvo_jobs SET state = 'pending', attempts = 1 WHERE id = ?",
+    [Sqlite.String(id_ex)]
+  ) is Ok(_)
+  assert claim_next(db, c_ex_stale, ["exhaust.job"]) == Ok(None)
 end

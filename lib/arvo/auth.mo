@@ -77,6 +77,30 @@ end
 
 ## Returns `true` when `req` uses a safe read method (`GET`/`HEAD`/`OPTIONS`) or carries a valid `X-XSRF-TOKEN`.
 fn require_csrf(req: Api.Request, session: Session.Session) : Bool
+  examples
+    case Time.parse("2026-12-01T00:00:00Z")
+      Some(exp): require_csrf(
+        Api.get("/budget"),
+        Session.Session(id: "s", member_id: "m", csrf_token: "csrf_tok", expires_at: exp)
+      )
+      None: false
+    end
+    case Time.parse("2026-12-01T00:00:00Z")
+      Some(exp): not require_csrf(
+        Api.post("/budget"),
+        Session.Session(id: "s", member_id: "m", csrf_token: "csrf_tok", expires_at: exp)
+      )
+      None: false
+    end
+    case Time.parse("2026-12-01T00:00:00Z")
+      Some(exp): require_csrf(
+        Api.post("/budget").with_header("X-XSRF-TOKEN", "csrf_tok"),
+        Session.Session(id: "s", member_id: "m", csrf_token: "csrf_tok", expires_at: exp)
+      )
+      None: false
+    end
+  end
+
   Csrf.safe_method?(req) or Csrf.verify(req, session)
 end
 

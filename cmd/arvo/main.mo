@@ -10,6 +10,7 @@ use Control
 use Dossier
 use FrontendCheck
 use Json
+use StatechartCmd
 use Tamper
 
 ## Parsed CLI command and flags.
@@ -20,6 +21,7 @@ enum CliCmd
   FeatureCmd(validate?: Bool, manifest_out: Option(Text), dir: Option(Text))
   SimCmd(entry: Option(Text), only: Option(Text))
   ControlCmd(sub: Control.ControlCmd)
+  RunStatechartCmd(args: StatechartCmd.StatechartArgs)
 end
 
 ## Parsed CLI invocation combining `--app DIR` target (default `"."`) and `CliCmd`.
@@ -79,6 +81,7 @@ fn usage(topic: Option(Text)) : Text
         -h, --help    Show this help
       """
     Some("control"): Control.control_usage()
+    Some("statechart"): StatechartCmd.statechart_usage()
     Some(_) | None: """
       Arvo Verification & Testing CLI (pure Mo)
 
@@ -90,6 +93,7 @@ fn usage(topic: Option(Text)) : Text
         feature [--app DIR] [--validate] [--manifest OUT] [DIR] Parse .feature.md specs and export @browser manifest
         sim [--app DIR] [--entry FILE] [--only NAME]            Run Arvo.Sim simulation tests
         control <subcmd> [--app DIR] [flags]                    Manage isolated runtime instances (launch, doctor, inspect, reset, drive, cleanup)
+        statechart [check|render] [--app DIR] [--out DIR]       Explore Jobs/Session statecharts, replay code, & check sync commits
 
       Run `arvo <command> --help` for command-specific flags.
       """
@@ -236,6 +240,16 @@ fn parse_args(args: List(Text)) : Result(CliCmd, Text)
     case Control.parse_control_args(rest)
       Ok(Control.ControlHelpCmd): Ok(HelpCmd(topic: Some("control")))
       Ok(c): Ok(ControlCmd(sub: c))
+      Error(e): Error(e)
+    end
+  else if sub == "statechart"
+    case StatechartCmd.parse_statechart_args(rest)
+      Ok(sa):
+        if sa.help?
+          Ok(HelpCmd(topic: Some("statechart")))
+        else
+          Ok(RunStatechartCmd(args: sa))
+        end
       Error(e): Error(e)
     end
   else
@@ -1144,9 +1158,7 @@ fn run_verify_cmd(
       FrontendCheck.run_stryker_phase(app_dir, tier, cfg, files.read_only, cmd, clock, env)
     )
 
-    var sc_ev = Dossier.new_event(clock.now.to_text, tier, "statechart", "skipped", 0)
-    sc_ev.detail = Some("skipped: pending Phase 4+ Arvo.Statechart")
-    events = events.append(sc_ev)
+    events = events.append(StatechartCmd.run_statechart_phase(tier, files, cmd, clock, env))
   end
 
   ndjson_lines = events.map(Dossier.event_to_json)
@@ -1235,6 +1247,7 @@ fn run_cli(
           return 1
       end
       Control.run_control_cmd(app_dir, sub_cmd, cfg, app_files, cmd, clock, env, net, console)
+    RunStatechartCmd(args: sa): StatechartCmd.run_statechart_cmd(sa, app_files, cmd, env, console)
   end
 end
 
@@ -1313,6 +1326,21 @@ test "parse_args handles all commands, help flags, and rejects unknown options c
     Ok(ControlCmd(sub: Control.DoctorCmd(run_id: "r1")))
   assert parse_args(["control", "bogus"]) is Error(_)
   assert usage(Some("control")).contains?("cleanup")
+  assert parse_args(["statechart", "--help"]) == Ok(HelpCmd(topic: Some("statechart")))
+  assert parse_args(["statechart", "render", "--out", "sc_out"]) ==
+    Ok(
+      RunStatechartCmd(
+        args: StatechartCmd.StatechartArgs(
+          subcmd: "render",
+          out_dir: Some("sc_out"),
+          tla_file: None,
+          help?: false
+        )
+      )
+    )
+  assert parse_args(["statechart", "--bad"]) is Error(_)
+  assert usage(Some("statechart")).contains?("Arvo.Jobs")
+  assert usage(None).contains?("statechart")
 
   assert parse_args(["bogus"]) is Error(_)
   assert parse_args(["verify", "--tier", "bogus"]) is Error(_)
@@ -1422,7 +1450,38 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     ),
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
     (Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]), Command.ok_output("")),
-    (Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]), Command.ok_output(""))
+    (Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]), Command.ok_output("")),
+    (
+      Command.spec(
+        "git",
+        [
+          "diff",
+          "--name-only",
+          "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+          "--",
+          "lib/arvo/sqlite/jobs.mo"
+        ]
+      ),
+      Command.ok_output("")
+    ),
+    (
+      Command.spec(
+        "git",
+        [
+          "diff",
+          "--name-only",
+          "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+          "--",
+          "lib/arvo/sqlite/sessions.mo",
+          "lib/arvo/session.mo"
+        ]
+      ),
+      Command.ok_output("")
+    ),
+    (
+      Command.spec("mo", ["test", "--json", "lib/arvo/testing/statechart.mo"]),
+      Command.ok_output("{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n")
+    )
   ])
 
   # 0. Help and invalid arg exit codes
@@ -1556,15 +1615,44 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     0
   assert c_vfull.printed.any?(fn(l) l.contains?("[PASS] browser_e2e") end)
   assert c_vfull.printed.any?(fn(l) l.contains?("[PASS] mo_mutants") end)
+  assert c_vfull.printed.any?(fn(l) l.contains?("[PASS] statechart") end)
   assert files.read_text(".arvo/dossier/verify.jsonl") is Ok(vfull_jsonl)
   assert vfull_jsonl.contains?("\"phase\":\"vitest_fixtures\",\"status\":\"pass\"")
   assert vfull_jsonl.contains?(
     "\"phase\":\"mo_strength\",\"status\":\"skipped\",\"detail\":\"skipped: pending Phase 4+ strength suites\",\"ms\":0"
   )
   assert vfull_jsonl.contains?("\"phase\":\"stryker\",\"status\":\"pass\"")
-  assert vfull_jsonl.contains?(
-    "\"phase\":\"statechart\",\"status\":\"skipped\",\"detail\":\"skipped: pending Phase 4+ Arvo.Statechart\",\"ms\":0"
-  )
+  assert vfull_jsonl.contains?("\"phase\":\"statechart\",\"status\":\"pass\"")
+  assert files.read_text(".arvo/dossier/statecharts/jobs.mmd") is Ok(j_mmd)
+  assert j_mmd.contains?("stateDiagram-v2")
+  assert files.read_text(".arvo/dossier/statecharts/session.mmd") is Ok(s_mmd)
+  assert s_mmd.contains?("stateDiagram-v2")
+
+  c_sc = Console.fake()
+  assert run_cli(
+    Args.of(["statechart", "check", "--out", "sc_check"]),
+    c_sc,
+    files,
+    Command.fake(replies_ok),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert c_sc.printed.any?(fn(l) l.contains?("\"ok\":true") end)
+
+  c_sc_render = Console.fake()
+  assert run_cli(
+    Args.of(["statechart", "render", "--out", "sc_render"]),
+    c_sc_render,
+    files,
+    Command.fake(replies_ok),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert c_sc_render.printed.any?(fn(l) l.contains?("stateDiagram-v2") end)
 
   # App with frontend/package.json fails fail-closed if Vitest/E2E/Stryker evidence is missing
   files_with_pkg = Files.in_memory({
@@ -2044,7 +2132,38 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     ),
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
     (Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]), Command.ok_output("")),
-    (Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]), Command.ok_output(""))
+    (Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]), Command.ok_output("")),
+    (
+      Command.spec(
+        "git",
+        [
+          "diff",
+          "--name-only",
+          "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+          "--",
+          "lib/arvo/sqlite/jobs.mo"
+        ]
+      ),
+      Command.ok_output("")
+    ),
+    (
+      Command.spec(
+        "git",
+        [
+          "diff",
+          "--name-only",
+          "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+          "--",
+          "lib/arvo/sqlite/sessions.mo",
+          "lib/arvo/session.mo"
+        ]
+      ),
+      Command.ok_output("")
+    ),
+    (
+      Command.spec("mo", ["test", "--json", "lib/arvo/testing/statechart.mo"]),
+      Command.ok_output("{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n")
+    )
   ])
   assert run_cli(
     Args.of(["sim"]),
@@ -2199,7 +2318,38 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     (Command.spec("mo", ["test", "--json", "main.mo"]), Command.output(1, test_json, "nonzero")),
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
     (Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]), Command.ok_output("")),
-    (Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]), Command.ok_output(""))
+    (Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]), Command.ok_output("")),
+    (
+      Command.spec(
+        "git",
+        [
+          "diff",
+          "--name-only",
+          "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+          "--",
+          "lib/arvo/sqlite/jobs.mo"
+        ]
+      ),
+      Command.ok_output("")
+    ),
+    (
+      Command.spec(
+        "git",
+        [
+          "diff",
+          "--name-only",
+          "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+          "--",
+          "lib/arvo/sqlite/sessions.mo",
+          "lib/arvo/session.mo"
+        ]
+      ),
+      Command.ok_output("")
+    ),
+    (
+      Command.spec("mo", ["test", "--json", "lib/arvo/testing/statechart.mo"]),
+      Command.ok_output("{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n")
+    )
   ])
   assert run_cli(
     Args.of(["verify", "--tier", "fast"]),
@@ -2284,6 +2434,37 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       Command.ok_output(
         "module Main\nfn f(x: Int) : Int\n  promise\n    result == x\n  end\n  x\nend\n"
       )
+    ),
+    (
+      Command.spec(
+        "git",
+        [
+          "diff",
+          "--name-only",
+          "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+          "--",
+          "lib/arvo/sqlite/jobs.mo"
+        ]
+      ),
+      Command.ok_output("")
+    ),
+    (
+      Command.spec(
+        "git",
+        [
+          "diff",
+          "--name-only",
+          "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+          "--",
+          "lib/arvo/sqlite/sessions.mo",
+          "lib/arvo/session.mo"
+        ]
+      ),
+      Command.ok_output("")
+    ),
+    (
+      Command.spec("mo", ["test", "--json", "lib/arvo/testing/statechart.mo"]),
+      Command.ok_output("{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n")
     )
   ])
   assert run_cli(
