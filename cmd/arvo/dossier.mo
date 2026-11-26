@@ -3,11 +3,17 @@ module Dossier
 expose VerifyEvent(..),
 MoTestSummary(..),
 MoStrengthSummary(..),
+DecisionRow(..),
 new_event,
 event_to_json,
 parse_mo_test_json,
 parse_mo_strength_json,
-render_scorecard
+render_scorecard,
+sanitize_tsv_cell,
+decisions_header,
+format_decision_row,
+append_decision,
+parse_decisions_tsv
 use Json
 
 ## Machine-readable event emitted to `.arvo/dossier/verify.jsonl` and `--json` stdout.
@@ -271,6 +277,79 @@ fn render_scorecard(tier: Text, events: List(VerifyEvent), total_ms: Int) : Text
   lines.join("\n")
 end
 
+## One append-only decision checkpoint stored in `.arvo/dossier/decisions.tsv`.
+struct DecisionRow
+  ts: Text
+  phase: Text
+  decision: Text
+  why: Text
+  evidence: Text
+  result: Text
+end
+
+## Strips tabs/newlines and neutralizes leading spreadsheet formula prefixes (`=`, `+`, `-`, `@`).
+fn sanitize_tsv_cell(s: Text) : Text
+  cleaned = s.replace("\t", " ").replace("\r", " ").replace("\n", " ").trim
+  if cleaned.starts_with?("=") or
+    cleaned.starts_with?("+") or
+    cleaned.starts_with?("-") or
+    cleaned.starts_with?("@")
+    "'#{cleaned}"
+  else
+    cleaned
+  end
+end
+
+## Returns the header line for `.arvo/dossier/decisions.tsv`.
+fn decisions_header() : Text
+  "ts\tphase\tdecision\twhy\tevidence\tresult\n"
+end
+
+## Formats one sanitized `DecisionRow` as a single TSV line ending with `\n`.
+fn format_decision_row(row: DecisionRow) : Text
+  fields = [
+    sanitize_tsv_cell(row.ts),
+    sanitize_tsv_cell(row.phase),
+    sanitize_tsv_cell(row.decision),
+    sanitize_tsv_cell(row.why),
+    sanitize_tsv_cell(row.evidence),
+    sanitize_tsv_cell(row.result)
+  ]
+  "#{fields.join("\t")}\n"
+end
+
+## Appends one sanitized decision row to `.arvo/dossier/decisions.tsv`, writing the header if new.
+fn append_decision(app_files: Files, row: DecisionRow) : Result(Unit, Text)
+  _mk = try app_files.make_folder(".arvo/dossier").map_error(fn(e) "#{e}" end)
+  tsv_path = ".arvo/dossier/decisions.tsv"
+  line = format_decision_row(row)
+  if app_files.exists?(tsv_path)
+    app_files.append_text(tsv_path, line).map_error(fn(e) "#{e}" end)
+  else
+    app_files.write_text(tsv_path, "#{decisions_header()}#{line}").map_error(fn(e) "#{e}" end)
+  end
+end
+
+## Parses `.arvo/dossier/decisions.tsv`, skipping blank lines and the header row.
+fn parse_decisions_tsv(raw: Text) : List(DecisionRow)
+  var out = []
+  for line in raw.lines
+    continue if line.trim.empty? or line.starts_with?("ts\t")
+    parts = line.split("\t")
+    out = out.append(
+      DecisionRow(
+        ts: parts.get(0) or "",
+        phase: parts.get(1) or "",
+        decision: parts.get(2) or "",
+        why: parts.get(3) or "",
+        evidence: parts.get(4) or "",
+        result: parts.get(5) or ""
+      )
+    )
+  end
+  out
+end
+
 test "Dossier formats Spec 6.1 NDJSON events, parses mo test --json --mutants, and renders scorecards"
   var ev1 = new_event("2026-11-25T15:02:01Z", "fast", "contracts", "pass", 180)
   ev1.pages_checked = Some(2)
@@ -345,7 +424,10 @@ test "Dossier formats Spec 6.1 NDJSON events, parses mo test --json --mutants, a
     {"record":"strength_summary","event":"strength_summary","set":"strength/arvo_csrf","original":"passed","scored":2,"killed":2,"survived":0,"kill_rate":1.0}
     """
   sp = parse_mo_strength_json(str_pass_ndjson)
-  assert sp.original_passed? and sp.scored == 2 and sp.killed == 2 and sp.survived == 0 and
+  assert sp.original_passed? and
+    sp.scored == 2 and
+    sp.killed == 2 and
+    sp.survived == 0 and
     sp.invalid == 0
   assert sp.kill_rate == 1.0 and sp.surviving_versions.empty? and sp.invalid_versions.empty?
 
@@ -359,7 +441,10 @@ test "Dossier formats Spec 6.1 NDJSON events, parses mo test --json --mutants, a
     {"record":"strength_summary","event":"strength_summary","original":"failed","scored":1,"killed":0,"survived":1,"kill_rate":null}
     """
   sf = parse_mo_strength_json(str_fail_ndjson)
-  assert not sf.original_passed? and sf.invalid == 3 and sf.scored == 1 and sf.survived == 1 and
+  assert not sf.original_passed? and
+    sf.invalid == 3 and
+    sf.scored == 1 and
+    sf.survived == 1 and
     sf.kill_rate == 0.0
   assert sf.surviving_versions == ["bad_surv.mo"]
   assert sf.invalid_versions == ["bad_inv.mo", "bad_def.mo", "bad_int.mo"]
@@ -391,4 +476,61 @@ test "Dossier formats Spec 6.1 NDJSON events, parses mo test --json --mutants, a
     zero_sum.scored == 0 and
     zero_sum.killed == 0 and
     zero_sum.survived == 0
+
+  assert sanitize_tsv_cell("  a\tb\rc\nd  ") == "a b c d"
+  assert sanitize_tsv_cell("=CMD()") == "'=CMD()"
+  assert sanitize_tsv_cell("+1+2") == "'+1+2"
+  assert sanitize_tsv_cell("-rf") == "'-rf"
+  assert sanitize_tsv_cell("@SUM(A1)") == "'@SUM(A1)"
+  assert decisions_header() == "ts\tphase\tdecision\twhy\tevidence\tresult\n"
+
+  f_dec = Files.in_memory({})
+  r1 = DecisionRow(
+    ts: "2026-11-25T23:45:00Z",
+    phase: "verify",
+    decision: "Run\tfull",
+    why: "=calc",
+    evidence: "verify.jsonl",
+    result: "pass"
+  )
+  r2 = DecisionRow(
+    ts: "2026-11-25T23:46:00Z",
+    phase: "release",
+    decision: "Approve",
+    why: "+all green",
+    evidence: "index.html",
+    result: "pass"
+  )
+  assert append_decision(f_dec, r1) == Ok(Unit)
+  assert append_decision(f_dec, r2) == Ok(Unit)
+  assert f_dec.read_text(".arvo/dossier/decisions.tsv") is Ok(tsv_txt)
+  assert tsv_txt ==
+    "ts\tphase\tdecision\twhy\tevidence\tresult\n2026-11-25T23:45:00Z\tverify\tRun full\t'=calc\tverify.jsonl\tpass\n2026-11-25T23:46:00Z\trelease\tApprove\t'+all green\tindex.html\tpass\n"
+
+  parsed_rows = parse_decisions_tsv("\n  \n#{tsv_txt}t3\tp3\n")
+  assert parsed_rows == [
+    DecisionRow(
+      ts: "2026-11-25T23:45:00Z",
+      phase: "verify",
+      decision: "Run full",
+      why: "'=calc",
+      evidence: "verify.jsonl",
+      result: "pass"
+    ),
+    DecisionRow(
+      ts: "2026-11-25T23:46:00Z",
+      phase: "release",
+      decision: "Approve",
+      why: "'+all green",
+      evidence: "index.html",
+      result: "pass"
+    ),
+    DecisionRow(ts: "t3", phase: "p3", decision: "", why: "", evidence: "", result: "")
+  ]
+  assert parse_decisions_tsv("") == []
+
+  f_blk_dec = Files.in_memory({".arvo": "blocker"})
+  assert append_decision(f_blk_dec, r1) is Error(_)
+  f_dir_dec = Files.in_memory({".arvo/dossier/decisions.tsv/sub": "dir"})
+  assert append_decision(f_dir_dec, r1) is Error(_)
 end

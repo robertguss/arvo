@@ -43,8 +43,10 @@ In Mo, `use Arvo.<...>.<Name>` binds the final segment `<Name>`.
 | `Arvo.Flash` | `Flash` | Single-hop AES-256-GCM encrypted flash cookie carrying `notice`, `alert`, and validation error bags. |
 | `Arvo.Form` | `Form` | Bounded `application/x-www-form-urlencoded` and `multipart/form-data` parsers (for CSV/file uploads). |
 | `Arvo.Changeset` | `Changeset` | Composable pure validation pipelines producing Inertia-ready field error maps. |
-| `Arvo.Inertia` | `Inertia` | Full Inertia v2 server protocol: HTML shell + `data-page` escaping, XHR JSON, Vite manifest & dev HMR, `409` version check, partial reloads (`X-Inertia-Partial-Data`), `303` redirects. |
-| `Arvo.WebTest` | `WebTest` | In-memory browser test harness with automatic cookie jar, `X-XSRF-TOKEN` injection, and `data-page` / Inertia JSON parser. |
+| `Arvo.Inertia` | `Inertia` | Full Inertia v2 server protocol: HTML shell + `data-page` escaping, XHR JSON, Vite manifest & dev HMR, `409` version check, partial reloads (`X-Inertia-Partial-Data`), typed `render_page` / `PageContract` manifest helpers, `303` redirects. |
+| `Arvo.WebTest` | `WebTest` | DB-agnostic in-memory browser & fluent `ApiTest.App` test harness with automatic cookie jar, `X-XSRF-TOKEN` injection, `data-page` / Inertia JSON parser, and Vitest fixture export (`record_inertia_fixture`). |
+| `Arvo.Snapshot` | `Snapshot` | Tamper-guarded golden snapshot testing (`Snapshot.expect_json` / `expect_text`) with `ARVO_UPDATE_SNAPSHOTS` gate and automatic secret redaction. |
+| `Arvo.Props` | `Props` | Property-based testing helpers (`forall`, shrinking generators) integrating directly with `mo test`. |
 
 ### SQLite Backend (`lib/arvo/sqlite/*.mo`, zero external deps)
 
@@ -54,6 +56,18 @@ In Mo, `use Arvo.<...>.<Name>` binds the final segment `<Name>`.
 | `Arvo.Sqlite.Migrations` | `Migrations` | Forward-only transactional SQLite schema migrations (`_arvo_migrations`) with SHA-256 checksum drift detection. |
 | `Arvo.Sqlite.Audit` | `Audit` | Append-only `arvo_events` audit trail (`actor`, `action`, `before_json`, `after_json`, `undo_json`) and optimistic concurrency helper (`ensure_updated`). |
 | `Arvo.Sqlite.Jobs` | `Jobs` | Durable SQLite `arvo_jobs` queue: transaction-composable `enqueue` / `enqueue_at`, atomic `BEGIN IMMEDIATE` `claim_next`, exponential backoff retries, stale-lock recovery (polled automatically by `mo serve`). |
+
+### Testing & Verification Modules (`lib/arvo/testing/*.mo`, SQLite-backed)
+
+| Module | Local Alias | Purpose |
+| --- | --- | --- |
+| `Arvo.Testing.SqliteTest` | `SqliteTest` | Per-route SQLite query-count budget assertions (`check_max_queries`, `expect_max_queries`). |
+| `Arvo.Testing.Seed` | `Seed` | Deterministic seed profile registry shared across `Sqlite.in_memory()` tests, `Arvo.Testing.Sim`, `arvo control`, and local dev. |
+| `Arvo.Testing.SecurityMatrix` | `SecurityMatrix` | Zero-config fail-closed route auditor checking auth, CSRF, XSS, open redirects, Inertia versions, strict JSON, SQLite `PRAGMA foreign_keys`, migration tamper, and N+1 budgets. |
+| `Arvo.Testing.Feature` | `Feature` | Unified Executable Feature Map (`.feature.md`) parser, in-memory `WebTest` runner, and `@browser` JSON manifest exporter for Playwright execution. |
+| `Arvo.Testing.Sim` | `Sim` | Deterministic Web Simulation Testing (DST) engine driving real `ApiTest.App` routes, fake `Clock`, `Arvo.Sqlite.Jobs` retries/crashes, session rotation/replay, invariants, and delta-shrinking. |
+| `Arvo.Testing.Statechart` | `Statechart` | Pure-Mo bounded BFS statechart explorer with Mermaid `stateDiagram-v2` output and built-in formal models + real-code replay for `Arvo.Sqlite.Jobs`, `Arvo.Sqlite.Sessions`, and `Arvo.Session`. |
+| `Arvo.Testing.Replay` | `Replay` | Offline sanitized failure capture (stripping cookies, `Authorization`, CSRF tokens, and secret env vars) and standalone regression test generator. |
 
 ### MoDB Companion Package (`packages/arvo-modb/`, requires sibling `modb`)
 
@@ -171,17 +185,44 @@ mo serve main.mo --bind 127.0.0.1 --port 8080
 
 ---
 
+## Verification & Testing (`arvo` CLI & `.arvo/skills/`)
+
+Arvo ships a pure-Mo verification CLI ([`cmd/arvo/main.mo`](cmd/arvo/main.mo)) and bundled workflow skills under [`.arvo/skills/`](.arvo/skills/):
+
+```bash
+mo run cmd/arvo/main.mo
+# Or install the executable and invoke it from the repo root
+mo install --name arvo cmd/arvo/main.mo
+arvo verify --app examples/arvo-starter --tier fast
+```
+
+Key CLI subcommands:
+- `arvo verify [--app DIR] [--tier fast|feature|full] [--json] [--base REF]` — run tiered verification checks + tamper checks and write `.arvo/dossier/verify.jsonl`
+- `arvo contracts [--app DIR] [--check]` — generate or verify `frontend/src/arvo.gen.ts` from `Json.schema[T]()`
+- `arvo feature [--app DIR] [--validate] [--manifest OUT] [DIR]` — validate `.feature.md` Executable Feature Maps and export `@browser` manifests
+- `arvo sim [--app DIR] [--entry FILE] [--only NAME]` — run `Arvo.Testing.Sim` deterministic simulation tests
+- `arvo control <sha|launch|doctor|inspect|reset|drive|screenshot|record|cleanup> [--app DIR]` — manage isolated runtime instances and capture browser evidence for verification and debugging
+- `arvo statechart [check|render] [--app DIR] [--out DIR]` — explore/replay `Arvo.Sqlite.Jobs` and `Arvo.Sqlite.Sessions` / `Arvo.Session` statecharts and check sync commits
+- `arvo replay <capture|gen> [--app DIR]` — capture sanitized failure bundles and generate standalone regression tests
+- `arvo bench --baseline-cmd A --candidate-cmd B` — alternating `A/B/A/B` benchmark harness
+- `arvo dossier [--app DIR] [--open]` — render the static HTML Verification Dossier and `<150`-word `pr-summary.md`
+- `arvo log [--app DIR] --phase P --decision D ...` — append a sanitized decision row to `.arvo/dossier/decisions.tsv`
+
+Bundled agent workflows in [`.arvo/skills/`](.arvo/skills/): `arvo-verify`, `arvo-maintain-specs`, `arvo-statechart`, `arvo-bug-repro`, and `arvo-correct`.
+
+---
+
 ## Running the Test Suite
 
 ```bash
-# Core + SQLite + examples/arvo-starter (automatically runs MoDB suite if ../modb exists)
+# Core + SQLite + Testing + examples/arvo-starter (automatically runs MoDB suite if ../modb exists)
 ./scripts/test.sh
 
 # Explicitly select a MoDB checkout, overriding any sibling checkout
 MODB_PATH=/path/to/modb ./scripts/test.sh
 ```
 
-This checks and tests all core `lib/arvo/*.mo` modules, all `lib/arvo/sqlite/*.mo` modules, `examples/arvo-starter/main.mo`, and (when `modb` is available) `packages/arvo-modb/lib/arvo/modb/*.mo` plus `examples/arvo-modb-starter/main.mo`.
+This enforces that core `lib/arvo/*.mo` modules remain SQLite-free, checks and tests all core `lib/arvo/*.mo`, SQLite backend `lib/arvo/sqlite/*.mo`, SQLite testing `lib/arvo/testing/*.mo`, fixture `lib/arvo/fixtures/*.mo`, `cmd/arvo/main.mo`, and `examples/arvo-starter/main.mo` targets, validates starter Executable Feature Maps (`arvo feature --validate`), contract sync (`arvo contracts --check`), statechart models (`arvo statechart check`), and `arvo replay capture/gen` codegen, executes all 9 `--strength` intent suites (requiring `kill_rate == 1` and `0` survived mutants), and (when `modb` is available) runs `packages/arvo-modb/lib/arvo/modb/*.mo` and `examples/arvo-modb-starter/main.mo`.
 
 ---
 
