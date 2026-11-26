@@ -74,7 +74,7 @@ describe("Home component with real Mo Inertia fixtures", () => {
 
     // Mark paid button posts JSON with expected_version and X-XSRF-TOKEN then reloads
     const payBtn = screen.getByRole("button", {
-      name: "Mark paid Electric & Gas <Utility>",
+      name: "Mark in flight Electric & Gas <Utility>",
     });
     await user.click(payBtn);
     expect(fetchSpy).toHaveBeenCalledWith(
@@ -102,25 +102,25 @@ describe("Home component with real Mo Inertia fixtures", () => {
 
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("{}", { status: 409 }));
     render(<Home {...props} />);
-    await user.click(screen.getByRole("button", { name: "Mark paid Electric & Gas <Utility>" }));
+    await user.click(screen.getByRole("button", { name: "Mark in flight Electric & Gas <Utility>" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("updated by someone else");
     expect(routerReloadMock).not.toHaveBeenCalled();
 
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("{}", { status: 500 }));
-    await user.click(screen.getByRole("button", { name: "Mark paid Electric & Gas <Utility>" }));
+    await user.click(screen.getByRole("button", { name: "Mark in flight Electric & Gas <Utility>" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("HTTP 500");
 
     vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new TypeError("Failed to fetch"));
-    await user.click(screen.getByRole("button", { name: "Mark paid Electric & Gas <Utility>" }));
+    await user.click(screen.getByRole("button", { name: "Mark in flight Electric & Gas <Utility>" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("network error");
-    expect(screen.getByRole("button", { name: "Mark paid Electric & Gas <Utility>" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Mark in flight Electric & Gas <Utility>" })).toBeEnabled();
     expect(routerReloadMock).not.toHaveBeenCalled();
   });
 
   it("hides Mark paid on in_flight fixture and renders real validation errors", () => {
     const afterPayProps = homeAfterPayFixture.props as unknown as HomePageProps;
     const { unmount } = render(<Home {...afterPayProps} />);
-    expect(screen.queryByRole("button", { name: /Mark paid/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Mark in flight/ })).not.toBeInTheDocument();
     expect(screen.getByText("(in_flight)")).toBeInTheDocument();
     unmount();
 

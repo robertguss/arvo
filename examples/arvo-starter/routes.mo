@@ -623,10 +623,33 @@ fn pay_bill(
   db: Sqlite.Database,
   rng: SecureRandom,
   clock: Clock,
+  env: Env,
+  id: Int,
+  input: PayInput
+) : Result(Api.Response, AppError)
+  return Error(Forbidden) if not Auth.require_csrf(req, member.session)
+  if not Inertia.request?(req)
+    bill = try mark_bill_in_flight(db, rng, clock, member, id, input)
+    return Ok(Api.json_response(200, bill))
+  end
+
+  key = try app_secret_key(env)
+  flash = case mark_bill_in_flight(db, rng, clock, member, id, input)
+    Ok(_): Flash.with_notice("Bill marked in flight")
+    Error(VersionConflict(id: _)): Flash.with_alert("This bill changed; review its current status.")
+    Error(e): return Error(e)
+  end
+  Ok(Flash.attach(Inertia.redirect("/"), rng, key, flash, secure_cookies?(env)))
+end
+
+fn mark_bill_in_flight(
+  db: Sqlite.Database,
+  rng: SecureRandom,
+  clock: Clock,
+  member: Member,
   id: Int,
   input: PayInput
 ) : Result(Bill, AppError)
-  return Error(Forbidden) if not Auth.require_csrf(req, member.session)
   rows = try db.query(
     "SELECT id, name, category, amount_cents, status, version FROM bills WHERE id = ?",
     [Sqlite.Integer(id)]

@@ -1,7 +1,8 @@
 # Arvo Verification & Testing Technical Specification
 
-Companion implementation spec to [arvo-testing-plan.md](arvo-testing-plan.md).  
-Every Mo signature below follows Mo `0.3.0`'s actual language rules (`mo guide --reference`): explicit capability parameters, no macros, no user-defined abilities, anonymous functions cannot capture capabilities, and fakes are constructed only inside `test`, `examples`, or `promise` blocks (passed onward as capability handles).
+Companion design specification to [arvo-testing-plan.md](arvo-testing-plan.md).
+
+This is not a reference for an installed Arvo release. The Mo signatures and verification output below illustrate the design; use the implementation and its `--help` output for exact APIs and commands. Mo Phase 0 landed in [Mo #439](https://github.com/robertguss/mo/pull/439); Arvo Phases 1–5 are split across [Arvo #4](https://github.com/robertguss/arvo/pull/4) through [#13](https://github.com/robertguss/arvo/pull/13).
 
 ---
 
@@ -11,7 +12,7 @@ Five focused additions to `mo` unlock clean pure-Mo testing libraries and a pure
 
 ### 1.1 First-Class `ApiTest.App` Handle
 
-Today `ApiTest.send(Main, req, sql, clock, files, env, rng)` requires a static module selector and can only be invoked directly inside `test`/`examples`/`promise` blocks. Mirroring `Simulation.start(Module, at) : Simulation`, `ApiTest.start` creates an opaque test-only capability handle that helper functions can receive and drive:
+Before Phase 0, `ApiTest.send(Main, req, sql, clock, files, env, rng)` required a static module selector and direct invocation inside `test`/`examples`/`promise` blocks. Mirroring `Simulation.start(Module, at) : Simulation`, `ApiTest.start` creates an opaque test-only capability handle that helper functions can receive and drive:
 
 ```mo
 ## Spec-only constructor (valid only in test / examples / promise blocks).
@@ -90,7 +91,7 @@ db.reset_stats() : Unit
 
 ### 1.4 `Command` Loopback, Supervised Processes & `mo serve` Test Flags
 
-Today Mo's `Command.run` is synchronous and blocks network sockets on Linux via Landlock/seccomp. To let a pure-Mo `arvo` CLI spawn isolated `mo serve` servers and invoke Playwright against `127.0.0.1`:
+Before Phase 0, Mo's synchronous `Command.run` blocked network sockets on Linux via Landlock/seccomp. The new APIs let a pure-Mo `arvo` CLI spawn isolated `mo serve` servers and invoke Playwright against `127.0.0.1`:
 
 ```mo
 ## Narrows/configures Command to permit loopback-only TCP (127.0.0.1 / ::1) in children
@@ -133,9 +134,9 @@ proc.wait(within: Duration) : Result(Command.Output, Command.CommandError)
 
 ---
 
-## Part 2: Pure-Mo Arvo Testing Modules (`lib/arvo/*.mo`)
+## Part 2: Pure-Mo Arvo Core and Testing Modules
 
-All framework testing primitives live in pure Mo under `lib/arvo/` and expose clean, composable types.
+`Arvo.Inertia`, `Arvo.WebTest`, `Arvo.Snapshot`, and `Arvo.Props` live under `lib/arvo/` and do not depend on SQLite. Additional harnesses use the `Arvo.Testing.*` namespace under `lib/arvo/testing/`. In-memory SQLite seeds, query budgets, SQL read-back, and the worked starter verification flows below target the SQLite starter. They are not verification coverage for the separate MoDB starter.
 
 ### 2.1 Typed `Arvo.Inertia` Pages & Contract Manifest
 
@@ -170,7 +171,7 @@ Because Mo derives `Json.schema[P]()` directly from the compiler's type metadata
 
 ### 2.2 `Arvo.WebTest` v2 (Fluent Stateful Browser Harness)
 
-Replaces 350 lines of manual `ApiTest.send` / `WebTest.prepare` / `WebTest.absorb` plumbing with a concise, typed, query-budget-aware harness:
+Replaces manual `ApiTest.send` / `WebTest.prepare` / `WebTest.absorb` plumbing with a typed, storage-agnostic browser harness:
 
 ```mo
 module Arvo.WebTest
@@ -181,8 +182,7 @@ struct Session
   history: List((Api.Request, Api.Response))
 end
 
-## Core fluent flow (uses ApiTest.App once Phase 0 lands; also exposes pure
-## `prepare`/`absorb` shims compatible with raw `ApiTest.send` on Mo 0.3.0).
+## Core fluent flow uses ApiTest.App and retains the pure prepare/absorb helpers.
 fn start() : Session
 fn with_inertia(s: Session, version: Text) : Session
 fn without_inertia(s: Session) : Session
@@ -201,20 +201,21 @@ fn expect_redirect(res: Api.Response, location: Text) : Api.Response
 fn expect_inertia[P](res: Api.Response, component: Text) : P where P: Json
 fn expect_flash_notice(res: Api.Response, expected: Text) : Unit
 fn expect_validation_error(res: Api.Response, field: Text, contains: Text) : Unit
-fn expect_max_queries(db: Sqlite.Database, max_queries: Int, label: Text) : Unit
 
 ## Exports a verified Inertia response payload as a JSON fixture for Vitest + RTL.
 fn record_inertia_fixture(files: Files, name: Text, res: Api.Response) : Result(Unit, Text)
 ```
 
+SQLite-backed tests can call `Arvo.Testing.SqliteTest.expect_max_queries(db, max_queries, label)` using the test query stats from §1.3.
+
 ---
 
-### 2.3 `Arvo.Seed` (Shared Deterministic Seed Profiles)
+### 2.3 `Arvo.Testing.Seed` (Shared Deterministic Seed Profiles)
 
-One single typed Mo seed registry drives `Sqlite.in_memory()` tests, `Arvo.Sim`, `arvo control launch --seed <name>`, and local development:
+A typed Mo seed registry drives the SQLite starter's `Sqlite.in_memory()` tests, `Arvo.Testing.Sim`, `arvo control launch --seed <name>`, and local development:
 
 ```mo
-module Arvo.Seed
+module Arvo.Testing.Seed
 
 struct SeedContext
   now: Time
@@ -240,12 +241,12 @@ fn run_profile(
 
 ---
 
-### 2.4 `Arvo.SecurityMatrix` (Zero-Config Adversarial Route Auditor)
+### 2.4 `Arvo.Testing.SecurityMatrix` (Route Security Auditor)
 
-Reads `app.routes()` (or `/openapi.json`) and audits **every single route fail-closed**. Newly added routes are automatically audited—forgetting to list a route in `public_routes` causes the audit to enforce authentication and CSRF by default:
+Discovers routes from app metadata and validates OpenAPI. It applies applicable checks using route samples and explicit exemptions: authentication by default for non-public routes and CSRF checks on applicable unsafe methods. SQLite checks cover foreign keys, migration idempotency, and query budgets. Optimistic-lock conflicts and other domain guarantees need separate feature tests.
 
 ```mo
-module Arvo.SecurityMatrix
+module Arvo.Testing.SecurityMatrix
 
 struct AuditConfig
   public_routes: List((Text, Text))       # Explicit allowlist: [("GET", "/login"), ("POST", "/login")]
@@ -257,6 +258,9 @@ struct AuditConfig
 end
 
 enum AuditCheckKind
+  RoutesDiscovered
+  OpenApiValid
+  RouteHealthy
   UnauthAccessRejected       # Guest gets 401 or 303 -> /login on every non-public route
   CsrfMissingRejected        # Authenticated unsafe method without X-XSRF-TOKEN gets 403
   CsrfForgedRejected         # Authenticated unsafe method with wrong X-XSRF-TOKEN gets 403
@@ -304,12 +308,12 @@ If the test suite stays green under any semantic mutant, Tier 2 fails with `E_SE
 
 ---
 
-### 2.5 `Arvo.Sim` (Deterministic Web Simulation Testing — DST)
+### 2.5 `Arvo.Testing.Sim` (Deterministic Web Simulation Testing — DST)
 
 Drives real `api` routes, multiple concurrent user sessions, advancing `Clock`, `Arvo.Jobs` workers, and `Network.fake_scripted` fault injection, checking global domain + ledger + audit invariants after **every step**, and shrinking any failing sequence to a minimal deterministic reproducer:
 
 ```mo
-module Arvo.Sim
+module Arvo.Testing.Sim
 
 ## Built-in simulation faults mixed alongside app-defined actions.
 enum SystemEvent
@@ -363,7 +367,7 @@ fn run[W, A](
 ) : Result(SimSummary, SimFailure(A)) where A: Json
 ```
 
-**Built-in Arvo Framework Invariants (`Arvo.Sim.default_invariants`):**
+**Target Arvo Framework Invariants:**
 - Every `arvo_sessions` row has non-empty `token_hash` (never raw token) and monotonic `last_seen_at >= created_at`.
 - Revoked/rotated sessions never authenticate on subsequent steps.
 - No `arvo_jobs` row exceeds `max_attempts` while remaining `pending`, and no completed job is claimed twice.
@@ -372,12 +376,12 @@ fn run[W, A](
 
 ---
 
-### 2.6 `Arvo.Statechart` (Exhaustive State-Space Explorer & Formal Bridge)
+### 2.6 `Arvo.Testing.Statechart` (Bounded State-Space Explorer & Formal Bridge)
 
-Adapts `pstack`'s `/statechart` and `/create-formal-verification-skill` directly into Arvo so critical state machines (`Arvo.Jobs`, `Arvo.Session`, bill/order/payment lifecycles) are exhaustively checked and visualized in plain user words:
+Adapts `pstack`'s `/statechart` and `/create-formal-verification-skill` to check modeled states and visualize transitions in plain user words. The first targets are the SQLite jobs and session state machines. A run that hits the state limit has not established that the rest of the model is safe:
 
 ```mo
-module Arvo.Statechart
+module Arvo.Testing.Statechart
 
 struct Transition(S, A)
   action: A
@@ -418,7 +422,7 @@ fn explore[S, A](spec: ChartSpec(S, A)) : ChartReport(S, A) where S: Equal, S: H
 ```
 
 **Mandatory Code-Replay & Anti-Drift Rules:**
-1. **TLA+ / TLC Bridge:** For concurrent multi-process protocols better expressed in TLA+ (with `SYMMETRY` / `VIEW` / fairness / liveness), `arvo statechart run specs/formal/<name>.tla --view <view>.json` invokes TLC, produces the exact same `ChartReport` (`chart.mmd` + shortest counterexamples + `report.md`), and embeds it in the Verification Dossier.
+1. **TLA+ / TLC Check:** `arvo statechart check --tla specs/formal/<name>.tla` optionally runs TLC for a TLA+ specification and reports its result alongside the Mo statechart output. The Mo exploration writes Mermaid charts and Markdown/JSON reports.
 2. **Real-Code Replay:** Every counterexample path (and a sample of reachable paths) MUST be replayed step-by-step against the real Mo code (`Arvo.Jobs` / `WebTest`). A model counterexample that does not reproduce in real code is flagged as `MODEL_DRIFT` rather than reported as a product bug.
 3. **Sync-Commit Check:** `arvo verify` checks `git diff <sync_commit>..HEAD -- <covered_files>`. If covered code changed without updating and re-proving the statechart (including proving it still fails on a scratch broken variant), Tier 2 flags `STALE_FORMAL_CHECK`.
 
@@ -474,10 +478,10 @@ strength/
 
 ---
 
-### 2.9 `Arvo.Replay` (Production Failure Bundle → Regression Test)
+### 2.9 `Arvo.Testing.Replay` (Production Failure Bundle → Regression Test)
 
 ```mo
-module Arvo.Replay
+module Arvo.Testing.Replay
 
 ## Sanitized offline failure artifact (secrets, cookies, auth headers redacted at capture).
 struct FailureBundle
@@ -507,7 +511,7 @@ Unifies BDD Given/When/Then scenarios with `pstack`'s Feature Map contract. Ever
 2. Exactly four required H2 headings:
    - `## Sub-features`
    - `## How to get to it (user POV)`
-   - `## Scenarios` (executable Gherkin fenced blocks parsed by `Arvo.Feature` and run by **both** `WebTest` and Playwright!)
+   - `## Scenarios` (executable Gherkin fenced blocks parsed by `Arvo.Testing.Feature`; the in-memory driver runs feature steps, and the browser manifest selects `@browser` scenarios for Playwright)
    - `## Gotchas`
 3. Proof tags control required verification artifacts: `@browser` (must run in real Playwright), `@mobile` (must capture `390×844` phone viewport), `@aria` (ARIA tree snapshot), `@screenshot` (before/after PNG), `@video` (screen recording), `@db-check` (read-only SQLite / `arvo_events` cross-check—proving persistence beyond a UI toast), `@smoke` (included in Tier 1).
 
@@ -522,12 +526,10 @@ Household members can tap "I just paid this" on any due bill so neither partner 
 
 - `bill-pay-happy`: marks a due bill `in_flight` and records who paid it in the audit trail.
 - `bill-pay-conflict`: rejects a stale concurrent update with a clear conflict response.
-- `bill-pay-unauth`: blocks unauthenticated or CSRF-less attempts.
 
 ## How to get to it (user POV)
 
 - Sign in at `/login`, open `/` (Paycheck Bills list), and choose the `Mark paid` button beside a due bill.
-- Submit `POST /bills/:id/pay` with an active session and valid `X-XSRF-TOKEN`.
 
 ## Scenarios
 
@@ -566,7 +568,7 @@ Feature: Mark a bill as paid in flight
 
 ## Part 4: Pure-Mo `arvo` CLI & Universal Control Adapter
 
-Installed cleanly via `mo install cmd/arvo/main.mo --name arvo` (single compiled Mo bytecode launcher).
+The implementation stack supplies the CLI in `cmd/arvo/`. With those changes and a Mo build containing Phase 0, install it via `mo install cmd/arvo/main.mo --name arvo`. The control workflows below target compatible apps using the SQLite starter conventions.
 
 ### 4.1 Command Tree
 
@@ -581,11 +583,12 @@ Installed cleanly via `mo install cmd/arvo/main.mo --name arvo` (single compiled
 | `arvo control screenshot / record --run-id ID --out PATH` | Captures PNG screenshot or WebM/MP4 recording into `.arvo/evidence/<run-id>/` (outside git, surviving cleanup). |
 | `arvo control reset --run-id ID [--seed NAME]` | Resets disposable SQLite state deterministically for independent second repro attempts. |
 | `arvo control cleanup --run-id ID` | Kills ONLY PIDs recorded for `--run-id`, deletes disposable `--data` dir, and **verifies evidence files survived**. |
-| `arvo feature [--driver webtest\|playwright\|both] [FILE]` | Parses and executes `.feature.md` specs. |
-| `arvo sim [--seeds N] [--seed REPLAY_SEED] [--steps N]` | Runs `Arvo.Sim` DST suite or deterministically replays a single shrunk failure seed. |
-| `arvo statechart [check\|render] [SPEC]` | Runs Mo BFS or TLA+/TLC statechart verification, replays bug paths against real code, checks sync commits, outputs `.mmd` + `report.md`. |
+| `arvo feature [--validate] [--manifest OUT] [DIR]` | Validates feature maps and optionally exports `@browser` scenarios; it does not invoke either test driver. |
+| `arvo sim [--entry FILE] [--only NAME]` | Runs deterministic simulation tests via `mo test --json`, optionally selecting a named check. |
+| `arvo statechart [check\|render] [--out DIR] [--tla FILE]` | Runs Mo BFS, real-code replay, and sync checks, with optional TLC; writes Mermaid charts and Markdown/JSON reports. |
 | `arvo bench --baseline REF --candidate REF --cmd CMD [--runs 7]` | Runs alternating A/B/A/B benchmarks and enforces `pstack`'s 7-question `/benchmark-checklist` (prints median, range, error count, work-happened check, limiter, and verdict: `faster \| slower \| no_difference \| inconclusive`). |
-| `arvo replay capture\|gen BUNDLE` | Captures/sanitizes a production failure bundle or generates a deterministic Mo regression test from it. |
+| `arvo replay capture --id ID [--out PATH]` | Captures and sanitizes a production failure bundle. Use help for the request and SQLite capture flags. |
+| `arvo replay gen BUNDLE [--out TEST_MO]` | Generates a deterministic Mo regression test from a bundle. |
 | `arvo dossier [--open]` | Renders `.arvo/dossier/index.html` and `.arvo/dossier/pr-summary.md` from the latest `verify.jsonl` and evidence directory. |
 
 ### 4.2 Configuration (`arvo.toml`)
@@ -593,6 +596,8 @@ Installed cleanly via `mo install cmd/arvo/main.mo --name arvo` (single compiled
 ```toml
 [app]
 entry = "main.mo"
+contracts_module = "Routes"
+contracts_fn = "contracts"
 frontend_dir = "frontend"
 pages_dir = "frontend/src/pages"
 contracts_out = "frontend/src/arvo.gen.ts"
@@ -613,7 +618,6 @@ viewports = [
   { name = "desktop", width = 1280, height = 800 },
 ]
 visual_parity_max_diff_pixels = 0
-axe_fail_impacts = ["critical", "serious"]
 
 [testing.tamper_protected]
 globs = [
@@ -657,12 +661,12 @@ globs = [
 
 ### 5.3 Playwright E2E, Accessibility & Visual Parity
 
-Every Playwright test launched through `arvo control drive` enforces these global fail-closed fixtures automatically:
+The SQLite starter's browser verification targets these checks for scenarios run through `arvo control drive`:
 1. **Zero console errors & zero uncaught page errors** (`page.on("console", ...)` / `page.on("pageerror", ...)`).
 2. **Zero unexpected 5xx responses** and zero broken asset loads (`404` on `/assets/*`).
 3. **ARIA-first locators only** (`getByRole`, `getByLabel`, `data-testid` only where no semantic role exists; lint rule forbids CSS-class / nth-child brittle selectors).
-4. **Accessibility gate:** `@axe-core/playwright` runs on every visited Inertia page across both `mobile` (`390×844`) and `desktop` (`1280×800`) viewports, failing on any `critical` or `serious` violation.
-5. **Dual-view persistence check:** For `@db-check` scenarios, after a UI mutation and page reload, Playwright calls `arvo control inspect --sql` / `--audit` to confirm the exact persisted SQLite row and `arvo_events` record.
+4. **Accessibility gate:** `@axe-core/playwright` checks visited pages at the tested `mobile` (`390×844`) and `desktop` (`1280×800`) viewports for `critical` or `serious` violations. This automated gate is not proof of WCAG conformance.
+5. **SQLite persistence check:** For applicable `@db-check` scenarios in the SQLite starter, read-only SQL / audit inspection checks persistence beyond the browser after a mutation and reload.
 6. **Visual parity (opt-in per component/page via `@visual-parity`):** Diffs screenshots against frozen baselines in `snapshots/visual/` with zero-pixel tolerance (or configured threshold). Baseline files are tamper-protected; agents cannot modify baselines silently.
 
 ---
@@ -676,7 +680,7 @@ Every check emits one newline-delimited JSON event so coding agents diagnose fai
 ```json
 {"ts":"2026-11-25T15:02:01Z","tier":"full","phase":"contracts","status":"pass","pages_checked":2,"ms":180}
 {"ts":"2026-11-25T15:02:04Z","tier":"full","phase":"security_matrix","status":"pass","routes":7,"checks":49,"ms":240}
-{"ts":"2026-11-25T15:02:19Z","tier":"full","phase":"sim","status":"fail","suite":"BudgetSim","seed":1842,"invariant":"no_double_counting","shrunk_steps":4,"replay_cmd":"arvo sim --suite BudgetSim --seed 1842"}
+{"ts":"2026-11-25T15:02:19Z","tier":"full","phase":"sim","status":"fail","suite":"BudgetSim","seed":1842,"invariant":"no_double_counting","shrunk_steps":4}
 {"ts":"2026-11-25T15:02:45Z","tier":"full","phase":"mo_mutants","status":"pass","total":218,"killed":218,"survived":0,"kill_rate":1.0}
 {"ts":"2026-11-25T15:03:40Z","tier":"full","phase":"stryker","status":"pass","total":64,"killed":59,"survived":5,"kill_rate":0.922}
 {"ts":"2026-11-25T15:04:12Z","tier":"full","phase":"tamper_check","status":"warn","modified_contracts":["specs/features/pay-bill.feature.md"]}
@@ -684,7 +688,7 @@ Every check emits one newline-delimited JSON event so coding agents diagnose fai
 
 ### 6.2 Contract & Test Tamper Detection
 
-`arvo verify` inspects `git diff <base>..HEAD` and flags ANY modification to:
+`arvo verify` compares protected content against a base ref and includes both committed and working-tree changes. Protected inputs include:
 - `specs/features/**/*.feature.md` (BDD specs / Feature Maps),
 - `snapshots/**/*` (golden JSON/text/ARIA/visual baselines),
 - `strength/**/*` (wrong-version intent suites),
@@ -700,8 +704,8 @@ Tamper warnings do **not** block intentional spec changes, but they pin a high-c
    - **Header Verdict:** `PASS | PASS WITH CONTRACT CHANGES | FAIL | INCONCLUSIVE`, commit SHA, tier, duration.
    - **1. Tamper Alert Banner:** exact contract/spec/snapshot/promise diffs (collapsed to a green "0 contract edits" pill when clean).
    - **2. Visual-First Proof Strip:** mobile (`390×844`) + desktop (`1280×800`) screenshots and recordings per Feature Map entry, with pass/fail badges and DB/Audit cross-check confirmations.
-   - **3. Formal Statecharts:** rendered Mermaid `stateDiagram-v2` charts for every `Arvo.Statechart`, sync commit badge (`in sync` vs `stale`), state count, and shortest counterexample path if any rule broke.
-   - **4. Adversarial & Mutation Scorecard:** Mo `--mutants`, Mo `--strength`, Web-Semantic Mutants, Stryker TS mutation, `Arvo.Sim` seeds/steps/faults, `arvo contracts` sync, axe-core violations.
+   - **3. Formal Statecharts:** rendered Mermaid `stateDiagram-v2` charts from `Arvo.Testing.Statechart`, sync commit badge (`in sync` vs `stale`), state count, and shortest counterexample path if any rule broke.
+   - **4. Adversarial & Mutation Scorecard:** Mo `--mutants`, Mo `--strength`, Web-Semantic Mutants, Stryker TS mutation, `Arvo.Testing.Sim` seeds/steps/faults, `arvo contracts` sync, axe-core violations.
    - **5. Route Security & Query-Budget Matrix:** every `api` route × (`Auth`, `CSRF`, `XSS`, `409`, `422`, `Queries/max`).
    - **6. Decision Trail (`decisions.tsv`) & Independent Verifier `Attention` Section:** append-only table (`ts`, `phase`, `decision`, `why`, `evidence`, `result`) plus reviewer model name and flagged risks/gaps.
 2. **`.arvo/dossier/pr-summary.md`:** `ketchup`-style plain-words summary (under 150 words of prose + inline images + explicit list of any calls waiting on the human).
@@ -710,28 +714,28 @@ Tamper warnings do **not** block intentional spec changes, but they pin a high-c
 
 ## Part 7: Bundled Arvo Agent Skills (`.arvo/skills/`)
 
-Every Arvo installation ships five concise, cold-readable skills tailored to Arvo's real commands:
+Phase 5 bundles five skills tailored to the verification workflow:
 
 | Skill | Trigger | Core Protocol & Non-Negotiables |
 | --- | --- | --- |
 | `arvo-verify` | Completing any feature, refactor, or PR | Match proof to surface; run Tier 0 → Tier 1 → Tier 2; log decision checkpoints to `decisions.tsv`; require an independent verifier agent (never the author turn) to audit the Dossier and emit an `Attention` block; report `INCONCLUSIVE` if any required surface could not run. |
 | `arvo-maintain-specs` | Daily/scheduled or after major churn | Parallel read-only source readers per `.feature.md` + one live `arvo control` pass exercising every feature; edit scope strictly confined to `specs/features/` (never product code); classify findings as **doc drift**, **harness gap**, or **product regression**; end in `clean \| changed \| blocked`. |
 | `arvo-statechart` | Changing state machines, jobs, sessions, or concurrency | Run `arvo statechart`; render plain-English Mermaid chart; prove invariant fails on a scratch broken variant; replay every counterexample against real Mo code; update `sync_commit` only after confirming model-code fidelity. |
-| `arvo-bug-repro` | Fixing any reported or production bug | Reproduce twice through `arvo control` (or `Arvo.Replay` bundle); add focused failing regression test first; fix root cause with smallest change; prove fixed twice with before/after artifacts + blast-radius proof of the one safety fact by running real code. |
+| `arvo-bug-repro` | Fixing any reported or production bug | Reproduce twice through `arvo control` (or an `Arvo.Testing.Replay` bundle); add focused failing regression test first; fix root cause with smallest change; prove fixed twice with before/after artifacts + blast-radius proof of the one safety fact by running real code. |
 | `arvo-correct` | Whenever an AI agent repeats a mistake class | Group repeated mistakes; fix at highest level (`Architecture > Types > Lint with fix > Test > Docs`); prove each new check fails on a real past mistake; keep rule → enforcer table in repo instructions. |
 
 ---
 
 ## Part 8: Crucible Upgrade Plan for `examples/arvo-starter`
 
-`examples/arvo-starter` serves as the proving ground for Phases 1–5. Immediate concrete improvements identified by inspecting the current starter:
+`examples/arvo-starter` is the SQLite proving ground for Phases 1–5. Its planned upgrades are:
 
 1. **Typed Inertia pages:** Replace untyped `Map(Text, Json)` in [examples/arvo-starter/routes.mo](../examples/arvo-starter/routes.mo) (`show_login`, `home`) with concrete `LoginProps`, `HomeProps`, and `SharedProps` structs + `Inertia.render_page` → auto-generate `frontend/src/arvo.gen.ts`.
 2. **Accessible ARIA handles:** Wire `<label htmlFor>` to `<input id>` in [Login.tsx](../examples/arvo-starter/frontend/src/pages/Login.tsx) and add accessible labels + a real `Mark paid` button (`POST /bills/:id/pay`) in [Home.tsx](../examples/arvo-starter/frontend/src/pages/Home.tsx) so `@axe-core/playwright` passes cleanly and `arvo control drive` uses pure ARIA locators.
-3. **Extract `Arvo.Seed` profiles:** Move `bootstrap_db` seeding out of `authenticate` into named `Arvo.Seed` profiles (`empty`, `baseline`, `many_bills`).
+3. **Extract `Arvo.Testing.Seed` profiles:** Move `bootstrap_db` seeding out of `authenticate` into named SQLite seed profiles (`empty`, `baseline`, `many_bills`).
 4. **Add full verification stack to starter:**
-   - Rewrite [examples/arvo-starter/main.mo](../examples/arvo-starter/main.mo)'s 350-line manual test using `Arvo.WebTest` v2 + `Arvo.SecurityMatrix` + query budgets.
+   - Rewrite [examples/arvo-starter/main.mo](../examples/arvo-starter/main.mo)'s manual test using `Arvo.WebTest` v2, `Arvo.Testing.SecurityMatrix`, and SQLite query budgets.
    - Add `specs/features/{auth,bills,csv-import}.feature.md` Executable Feature Maps.
-   - Add `Arvo.Sim` multi-user concurrent bill-payment & session-revocation simulation.
+   - Add `Arvo.Testing.Sim` multi-user bill-payment and session-revocation simulations.
    - Add `strength/` wrong-version suites for starter domain rules + core Arvo modules.
    - Add Vitest (using recorded Mo Inertia fixtures), Stryker config, and Playwright phone/desktop E2E.

@@ -244,10 +244,9 @@ fn parse_args(args: List(Text)) : Result(CliCmd, Text)
 end
 
 fn normalize_app_dir(raw: Text) : Text
-  t = raw.trim
-  no_dot = t.drop_prefix("./") or t
-  no_slash = no_dot.drop_suffix("/") or no_dot
-  if no_slash.empty?: "." else: no_slash
+  return raw if raw.starts_with?("/")
+  rel = raw.split("/").filter(fn(part) not part.empty? and part != "." end).join("/")
+  if rel.empty?: "." else: rel
 end
 
 fn extract_app_dir(args: List(Text)) : Result((Text, List(Text)), Text)
@@ -360,6 +359,9 @@ fn extract_contracts_json(app_dir: Text, cfg: Config.ArvoConfig, files: Files, c
     out.stdout.trim
   else
     probe_path = "arvo-contracts-probe.mo"
+    if files.exists?(probe_path)
+      return Error("cannot create contract probe: #{probe_path} already exists")
+    end
     probe_cmd_path = join_app_path(app_dir, probe_path)
     probe_src = "module ArvoContractsProbe\nuse #{cfg.contracts_module}\nuse Json\nfn main(console: Console)\n  console.print(Json.encode(#{cfg
       .contracts_module}.#{cfg.contracts_fn}()))\nend\n"
@@ -654,15 +656,16 @@ fn run_sim_cmd(
 end
 
 fn resolve_ref_to_merge_base(bref: Text, cmd: Command, git_dur: Duration) : Result(Text, Text)
-  if cmd.run("git", ["merge-base", "HEAD", bref], git_dur) is Ok(mb_out)
+  if cmd.run("git", ["merge-base", "--", "HEAD", bref], git_dur) is Ok(mb_out)
     mb = mb_out.stdout.trim
     if mb_out.ok? and not mb.empty?
       return Ok(mb)
     end
   end
-  if cmd.run("git", ["rev-parse", "--verify", bref], git_dur) is Ok(rv_out)
-    if rv_out.ok?
-      return Ok(bref)
+  if cmd.run("git", ["rev-parse", "--verify", "--end-of-options", "#{bref}^{commit}"], git_dur) is Ok(rv_out)
+    sha = rv_out.stdout.trim
+    if rv_out.ok? and not sha.empty?
+      return Ok(sha)
     end
   end
   Error("cannot resolve tamper --base ref '#{bref}'")
@@ -695,6 +698,21 @@ fn merge_tamper_globs(base: List(Text), extra: List(Text)) : List(Text)
   merged
 end
 
+fn config_tamper_globs(cfg: Config.ArvoConfig) : List(Text)
+  fdir = normalize_app_dir(cfg.features_dir)
+  sdir = normalize_app_dir(cfg.strength_dir)
+  fedir = normalize_app_dir(cfg.frontend_dir)
+  merge_tamper_globs(
+    cfg.tamper_globs,
+    [
+      "arvo.toml",
+      join_app_path(fdir, "**/*.feature.md"),
+      join_app_path(sdir, "**/*"),
+      join_app_path(fedir, "stryker.config.*")
+    ]
+  )
+end
+
 fn run_tamper_phase(
   app_dir: Text,
   tier: Text,
@@ -710,26 +728,16 @@ fn run_tamper_phase(
   timeouts = default_timeouts()
   git_dur = timeouts.git_secs.seconds
   var git_prefix = ""
+  var pfx_ok? = false
   if cmd.run("git", ["rev-parse", "--show-prefix"], git_dur) is Ok(pfx_out)
     if pfx_out.ok?
-      git_prefix = pfx_out.stdout.trim
+      pfx_ok? = true
+      git_prefix = pfx_out.stdout.drop_suffix("\n") or pfx_out.stdout
     end
   end
   effective_prefix = if app_dir == ".": git_prefix else: "#{git_prefix}#{app_dir}/"
 
-  fdir_clean = cfg.features_dir.drop_suffix("/") or cfg.features_dir
-  sdir_clean = cfg.strength_dir.drop_suffix("/") or cfg.strength_dir
-  fedir_clean = cfg.frontend_dir.drop_suffix("/") or cfg.frontend_dir
-  var effective_globs = merge_tamper_globs(Config.default_config().tamper_globs, cfg.tamper_globs)
-  effective_globs = merge_tamper_globs(
-    effective_globs,
-    [
-      "arvo.toml",
-      "#{fdir_clean}/**/*.feature.md",
-      "#{sdir_clean}/**/*",
-      "#{fedir_clean}/stryker.config.*"
-    ]
-  )
+  var effective_globs = merge_tamper_globs(Config.default_config().tamper_globs, config_tamper_globs(cfg))
   repo_toml = if effective_prefix.empty?: "arvo.toml" else: "#{effective_prefix}arvo.toml"
 
   # Never honor working-tree `arvo.toml` `base_ref`: only accept `--base` or trusted base copy.
@@ -758,7 +766,7 @@ fn run_tamper_phase(
       if cmd.run("git", ["show", "#{default_ref}:#{repo_toml}"], git_dur) is Ok(def_toml)
         if def_toml.ok?
           if Config.parse(def_toml.stdout) is Ok(def_cfg)
-            effective_globs = merge_tamper_globs(effective_globs, def_cfg.tamper_globs)
+            effective_globs = merge_tamper_globs(effective_globs, config_tamper_globs(def_cfg))
             if def_cfg.base_ref is Some(trusted_bref)
               case resolve_ref_to_merge_base(trusted_bref, cmd, git_dur)
                 Ok(tr):
@@ -781,7 +789,7 @@ fn run_tamper_phase(
     if cmd.run("git", ["show", "#{compare_ref}:#{repo_toml}"], git_dur) is Ok(base_toml)
       if base_toml.ok?
         if Config.parse(base_toml.stdout) is Ok(base_cfg)
-          effective_globs = merge_tamper_globs(effective_globs, base_cfg.tamper_globs)
+          effective_globs = merge_tamper_globs(effective_globs, config_tamper_globs(base_cfg))
         end
       end
     end
@@ -789,7 +797,7 @@ fn run_tamper_phase(
 
   var all_repo_changed = []
   var st_ok? = false
-  if cmd.run("git", ["status", "--porcelain", "--untracked-files=all"], git_dur) is Ok(st_out)
+  if cmd.run("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"], git_dur) is Ok(st_out)
     if st_out.ok?
       st_ok? = true
       for p in Tamper.parse_git_status_paths(st_out.stdout)
@@ -798,18 +806,17 @@ fn run_tamper_phase(
     end
   end
   var df_ok? = false
-  if cmd.run("git", ["diff", "--no-renames", "--name-only", compare_ref], git_dur) is Ok(df_out)
+  if cmd.run("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", compare_ref, "--"], git_dur) is Ok(df_out)
     if df_out.ok?
       df_ok? = true
-      for ln in df_out.stdout.lines
-        trimmed = ln.trim
-        continue if trimmed.empty?
-        all_repo_changed = all_repo_changed.append(trimmed)
+      for path in df_out.stdout.split("\u{0}")
+        continue if path.empty?
+        all_repo_changed = all_repo_changed.append(path)
       end
     end
   end
 
-  if st_ok? and df_ok?
+  if pfx_ok? and st_ok? and df_ok?
     unique_repo = all_repo_changed.unique
     var app_changed = []
     var repo_mo_checked = []
@@ -1339,8 +1346,22 @@ test "parse_args handles all commands, help flags, and rejects unknown options c
   assert join_app_path(".", "main.mo") == "main.mo"
   assert join_app_path("examples/app", "main.mo") == "examples/app/main.mo"
 
+  base_cmd = Command.fake(Command.replies([
+    (
+      Command.spec("git", ["merge-base", "--", "HEAD", "other"]),
+      Command.output(1, "", "")
+    ),
+    (
+      Command.spec("git", ["rev-parse", "--verify", "--end-of-options", "other^{commit}"]),
+      Command.ok_output("resolved_sha\n")
+    )
+  ]))
+  assert resolve_ref_to_merge_base("other", base_cmd, 15.seconds) == Ok("resolved_sha")
+
   assert parse_invocation(["contracts", "--app", "./examples/app/"]) ==
     Ok(CliInvocation(app_dir: "examples/app", cmd: ContractsCmd(check?: false)))
+  assert parse_invocation(["contracts", "--app", "./examples//./app /"]) ==
+    Ok(CliInvocation(app_dir: "examples/app ", cmd: ContractsCmd(check?: false)))
   assert parse_invocation(["contracts", "--app", "./"]) ==
     Ok(CliInvocation(app_dir: ".", cmd: ContractsCmd(check?: false)))
   assert parse_invocation(["--app", "examples/app", "contracts", "--check"]) ==
@@ -1400,8 +1421,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       Command.ok_output(test_json)
     ),
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
-    (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output("")),
-    (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output(""))
+    (Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]), Command.ok_output("")),
+    (Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]), Command.ok_output(""))
   ])
 
   # 0. Help and invalid arg exit codes
@@ -1583,16 +1604,16 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
     (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
-    (Command.spec("git", ["merge-base", "HEAD", "origin/main"]), Command.ok_output("base_111\n")),
+    (Command.spec("git", ["merge-base", "--", "HEAD", "origin/main"]), Command.ok_output("base_111\n")),
     (
-      Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
+      Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]),
       Command.ok_output(
-        "R  specs/features/login.feature.md -> specs/login_moved.md\n M lib/other.mo\n?? main.mo\n"
+        "D  specs/features/login.feature.md\u{0}A  specs/login_moved.md\u{0} M lib/other.mo\u{0}?? main.mo\u{0}"
       )
     ),
     (
-      Command.spec("git", ["diff", "--no-renames", "--name-only", "base_111"]),
-      Command.ok_output("specs/features/login.feature.md\nmain.mo\nlib/deleted_promise.mo\n")
+      Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "base_111", "--"]),
+      Command.ok_output("specs/features/login.feature.md\u{0}main.mo\u{0}lib/deleted_promise.mo\u{0}")
     ),
     (
       Command.spec("git", ["show", "base_111:arvo.toml"]),
@@ -1649,9 +1670,9 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
     (Command.spec("git", ["rev-parse", "--verify", "origin/main"]), Command.ok_output("origin/main\n")),
     (Command.spec("git", ["merge-base", "HEAD", "origin/main"]), Command.ok_output("trusted_base\n")),
-    (Command.spec("git", ["show", "trusted_base:arvo.toml"]), Command.ok_output("[app]\nentry = \"main.mo\"\n")),
-    (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output("")),
-    (Command.spec("git", ["diff", "--no-renames", "--name-only", "trusted_base"]), Command.ok_output("arvo.toml\nmain.mo\n")),
+    (Command.spec("git", ["show", "trusted_base:arvo.toml"]), Command.ok_output("[app]\nentry = \"main.mo\"\nfeatures_dir = \"./old specs//\"\n")),
+    (Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]), Command.ok_output("")),
+    (Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "trusted_base", "--"]), Command.ok_output("arvo.toml\u{0}main.mo\u{0}old specs/café.feature.md\u{0}")),
     (
       Command.spec("git", ["show", "trusted_base:main.mo"]),
       Command.ok_output("module Main\nfn f(x: Int) : Int\n  promise\n    result == x\n  end\n  x\nend\n")
@@ -1673,6 +1694,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
   assert sneaky_jsonl.contains?("\"phase\":\"tamper_check\",\"status\":\"warn\"")
   assert sneaky_jsonl.contains?("arvo.toml")
   assert sneaky_jsonl.contains?("main.mo (promise)")
+  assert sneaky_jsonl.contains?("old specs/café.feature.md")
 
   # Trusted base_ref read from <default_ref>:arvo.toml is honored cleanly
   files_trusted_cfg = Files.in_memory({
@@ -1691,10 +1713,10 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       Command.spec("git", ["show", "def_sha:arvo.toml"]),
       Command.ok_output("[app]\nentry = \"main.mo\"\n[testing]\nbase_ref = \"release/v1\"\n")
     ),
-    (Command.spec("git", ["merge-base", "HEAD", "release/v1"]), Command.ok_output("rel_sha\n")),
+    (Command.spec("git", ["merge-base", "--", "HEAD", "release/v1"]), Command.ok_output("rel_sha\n")),
     (Command.spec("git", ["show", "rel_sha:arvo.toml"]), Command.ok_output("[app]\nentry = \"main.mo\"\n")),
-    (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output("")),
-    (Command.spec("git", ["diff", "--no-renames", "--name-only", "rel_sha"]), Command.ok_output(""))
+    (Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]), Command.ok_output("")),
+    (Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "rel_sha", "--"]), Command.ok_output(""))
   ])
   assert run_cli(
     Args.of(["verify", "--tier", "fast"]),
@@ -1720,8 +1742,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
     (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("apps/web/\n")),
-    (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output(" M lib/outside.mo\n")),
-    (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output("lib/outside.mo\n")),
+    (Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]), Command.ok_output(" M lib/outside.mo\u{0}")),
+    (Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]), Command.ok_output("lib/outside.mo\u{0}")),
     (
       Command.spec("git", ["show", "HEAD:lib/outside.mo"]),
       Command.ok_output("module Outside\nfn k() : Int\n  promise\n    true\n  end\n  1\nend\n")
@@ -1835,6 +1857,23 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
   ) ==
     0
   assert not files_root_out.exists?("arvo-contracts-probe.mo")
+
+  probe_source = "module ExistingProbe\n"
+  assert files_root_out.write_text("arvo-contracts-probe.mo", probe_source) == Ok(Unit)
+  c_probe_exists = Console.fake()
+  assert run_cli(
+    Args.of(["contracts"]),
+    c_probe_exists,
+    files_root_out,
+    Command.fake(replies_probe_ok),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    1
+  assert c_probe_exists.printed_errors.any?(fn(e) e.contains?("already exists") end)
+  assert files_root_out.read_text("arvo-contracts-probe.mo") == Ok(probe_source)
+  assert files_root_out.remove("arvo-contracts-probe.mo") == Ok(Unit)
 
   replies_probe_bad = Command.replies([
     (Command.spec("mo", ["run", "main.mo", "--arvo-contracts"]), Command.output(1, "", "err")),
@@ -2004,8 +2043,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       Command.ok_output(low_mut_json)
     ),
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
-    (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output("")),
-    (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output(""))
+    (Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]), Command.ok_output("")),
+    (Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]), Command.ok_output(""))
   ])
   assert run_cli(
     Args.of(["sim"]),
@@ -2127,10 +2166,10 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(bad_json)),
       (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
       (
-        Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
+        Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]),
         Command.ok_output("")
       ),
-      (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output(""))
+      (Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]), Command.ok_output(""))
     ])
     assert run_cli(
       Args.of(["sim"]),
@@ -2159,8 +2198,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
     (Command.spec("mo", ["test", "--json", "main.mo"]), Command.output(1, test_json, "nonzero")),
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
-    (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output("")),
-    (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output(""))
+    (Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]), Command.ok_output("")),
+    (Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]), Command.ok_output(""))
   ])
   assert run_cli(
     Args.of(["verify", "--tier", "fast"]),
@@ -2173,7 +2212,7 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
   ) ==
     1
 
-  # Tamper check ignores blank lines from `git diff` even with `"**"` glob
+  # Tamper check ignores empty records from `git diff` even with `"**"` glob
   files_star_glob = Files.in_memory({
     "arvo.toml": "[app]\n[testing.tamper_protected]\nglobs = [\"**\"]\n",
     "frontend/src/pages/Home.tsx": "export default function Home() { return null; }\n",
@@ -2184,8 +2223,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
     (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
-    (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output("")),
-    (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output("\n\n"))
+    (Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]), Command.ok_output("")),
+    (Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]), Command.ok_output("\u{0}\u{0}"))
   ])
   assert run_cli(
     Args.of(["verify", "--tier", "fast"]),
@@ -2233,12 +2272,12 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     ),
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
     (
-      Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
-      Command.ok_output(" M examples/app/main.mo\n M lib/other.mo\n")
+      Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]),
+      Command.ok_output(" M examples/app/main.mo\u{0} M lib/other.mo\u{0}")
     ),
     (
-      Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]),
-      Command.ok_output("examples/app/specs/features/login.feature.md\nlib/other.mo\n\n")
+      Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]),
+      Command.ok_output("examples/app/specs/features/login.feature.md\u{0}lib/other.mo\u{0}\u{0}")
     ),
     (
       Command.spec("git", ["show", "HEAD:examples/app/main.mo"]),
@@ -2341,11 +2380,11 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       Command.output(128, "", "fatal: not a git repo")
     ),
     (
-      Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
+      Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]),
       Command.output(128, "", "fatal: not a git repo")
     ),
     (
-      Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]),
+      Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]),
       Command.output(128, "", "fatal: not a git repo")
     )
   ])
@@ -2372,9 +2411,9 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     (Command.spec("mo", ["check", "main.mo"]), Command.ok_output("")),
     (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
-    (Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]), Command.ok_output("")),
+    (Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]), Command.ok_output("")),
     (
-      Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]),
+      Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]),
       Command.output(128, "", "fatal: bad HEAD")
     )
   ])
@@ -2399,10 +2438,10 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     (Command.spec("mo", ["test", "--json", "main.mo"]), Command.ok_output(test_json)),
     (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
     (
-      Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
+      Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]),
       Command.output(128, "", "fatal: status failed")
     ),
-    (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output(""))
+    (Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]), Command.ok_output(""))
   ])
   assert run_cli(
     Args.of(["verify", "--tier", "fast"]),
@@ -2535,10 +2574,10 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       (Command.spec("mo", ["test", "--jobs", "4", "--json", "--mutants", "main.mo"]), mut_reply),
       (Command.spec("git", ["rev-parse", "--show-prefix"]), Command.ok_output("")),
       (
-        Command.spec("git", ["status", "--porcelain", "--untracked-files=all"]),
+        Command.spec("git", ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]),
         Command.ok_output("")
       ),
-      (Command.spec("git", ["diff", "--no-renames", "--name-only", "HEAD"]), Command.ok_output(""))
+      (Command.spec("git", ["diff", "--no-renames", "--no-relative", "--name-only", "-z", "HEAD", "--"]), Command.ok_output(""))
     ])
     assert run_cli(
       Args.of(["verify", "--tier", "feature"]),
