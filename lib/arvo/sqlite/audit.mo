@@ -1,6 +1,6 @@
-## Append-only `arvo_events` audit trail with before/after/undo JSON snapshots,
+## Append-only `arvo_events` SQLite audit trail with before/after/undo JSON snapshots,
 ## lexicographically time-ordered ULID primary keys, and optimistic concurrency helpers.
-module Arvo.Audit
+module Arvo.Sqlite.Audit
 expose AuditEntry(..),
 AuditError(..),
 VersionConflict(..),
@@ -11,6 +11,7 @@ record,
 list_recent,
 get_by_id,
 ensure_updated
+use Arvo.Id
 use Json
 
 ## One immutable event row decoded from `arvo_events` (`actor` aliased as `actor_name` because `actor` is a Mo keyword).
@@ -42,7 +43,7 @@ table_ddl = "CREATE TABLE IF NOT EXISTS arvo_events (id TEXT PRIMARY KEY, actor 
 entity_idx_ddl = "CREATE INDEX IF NOT EXISTS arvo_events_by_entity ON arvo_events (entity_table, entity_id, created_at)"
 time_idx_ddl = "CREATE INDEX IF NOT EXISTS arvo_events_by_time ON arvo_events (created_at)"
 
-## DDL creating `arvo_events` and its entity/time indexes (ready for `Arvo.Migrations`).
+## DDL creating `arvo_events` and its entity/time indexes (ready for `Arvo.Sqlite.Migrations`).
 fn schema_sql() : Text
   "#{table_ddl}; #{entity_idx_ddl}; #{time_idx_ddl};"
 end
@@ -54,51 +55,9 @@ fn init_schema(db: Sqlite.Database) : Result(Unit, SqliteError)
   db.run(time_idx_ddl, [])
 end
 
-fn crockford_char(idx: Int) : Char
-  alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-  alphabet.chars.get(idx.floor_mod(32)) or '0'
-end
-
-fn encode_time_48(ms: Int) : List(Char)
-  clamped = if ms < 0: 0 else: ms
-  var v = clamped
-  var rev = []
-  var i = 0
-  while i < 10
-    rev = rev.append(crockford_char(v.floor_mod(32)))
-    v = v.floor_div(32)
-    i += 1
-  end
-  rev.reverse
-end
-
-fn encode_5bytes_base32(bs: Bytes, offset: Int) : List(Char)
-  b0 = (bs.get(offset) or 0).to_int
-  b1 = (bs.get(offset + 1) or 0).to_int
-  b2 = (bs.get(offset + 2) or 0).to_int
-  b3 = (bs.get(offset + 3) or 0).to_int
-  b4 = (bs.get(offset + 4) or 0).to_int
-  n40 = (((b0 * 256 + b1) * 256 + b2) * 256 + b3) * 256 + b4
-  var v = n40
-  var rev = []
-  var i = 0
-  while i < 8
-    rev = rev.append(crockford_char(v.floor_mod(32)))
-    v = v.floor_div(32)
-    i += 1
-  end
-  rev.reverse
-end
-
 ## Generates a 26-character Crockford Base32 ULID combining `clock.now` (ms) and 80 random bits.
 fn generate_id(rng: SecureRandom, clock: Clock) : Text
-  epoch = Time.parse("1970-01-01T00:00:00Z") or clock.now
-  ms = (clock.now - epoch).in_milliseconds
-  rand10 = rng.bytes(10)
-  t_chars = encode_time_48(ms)
-  r_hi = encode_5bytes_base32(rand10, 0)
-  r_lo = encode_5bytes_base32(rand10, 5)
-  Text.from_chars(t_chars.concat(r_hi).concat(r_lo))
+  Id.ulid(rng, clock)
 end
 
 fn json_sql_val(opt: Option(Json)) : Sqlite.Value
