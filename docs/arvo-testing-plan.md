@@ -2,10 +2,10 @@
 
 > **Built for AI-authored software with minimal human review:** when agents write almost all of the code, tests can no longer be an afterthought or a rubber stamp. Verification must be **fast in the inner loop**, **adversarial against weak tests**, **honest about which surface it proved**, and **readable by a human in under two minutes**.
 
-**Companion Spec:** [arvo-testing-spec.md](arvo-testing-spec.md)  
-**Companion Framework Docs:** [arvo-plan.md](arvo-plan.md) · [arvo-spec.md](arvo-spec.md)  
-**Status:** Settled design (`2026-11-25`) — ready for Phase 0/1 execution.  
-**Architectural Split:** Arvo-first (pure Mo libraries + pure Mo `arvo` CLI + bundled agent skills), paired with 5 small, high-leverage upstream Mo runtime/compiler additions.
+- **Companion Spec:** [arvo-testing-spec.md](arvo-testing-spec.md)
+- **Companion Framework Docs:** [arvo-plan.md](arvo-plan.md) · [arvo-spec.md](arvo-spec.md)
+- **Status:** Implemented across Phases 0–5 (`2026-11-26`) — Mo Phase 0 primitives on `mo` (`feat/arvo-testing-phase0`) and Arvo Phases 1–5 on `arvo` (`feat/arvo-testing-phase3-5`).
+- **Architectural Split:** Arvo-first (pure Mo libraries + pure Mo `arvo` CLI + bundled agent skills), paired with 5 small, high-leverage upstream Mo runtime/compiler additions.
 
 ---
 
@@ -157,7 +157,7 @@ Shipped directly inside Arvo so every AI coding agent gets the workflow structur
 > [!IMPORTANT]
 > Every phase lands in small, verifiable slices with `./scripts/test.sh` (and later `arvo verify`) green at every commit, proving each new check fails on a deliberate break before marking it done.
 
-### Phase 0: Targeted Upstream Mo Additions (`mo`)
+### Phase 0: Targeted Upstream Mo Additions (`mo`) — Complete
 - **Deliverables:**
   1. `ApiTest.start` → `ApiTest.App` first-class handle (`send`, `run_job`, `routes`).
   2. `Network.fake_scripted` fault-injecting ordered reply/error queue + call log.
@@ -166,7 +166,7 @@ Shipped directly inside Arvo so every AI coding agent gets the workflow structur
   5. Parallel `--jobs N` and NDJSON `--json` reporting for `mo test --mutants` and `--strength`.
 - **Exit Gate:** Mo `ci/check.sh` green; each primitive verified with its own tests, fakes, and error-path checks.
 
-### Phase 1: Pure-Mo Core Testing & Contract Modules (`lib/arvo/`)
+### Phase 1: Pure-Mo Core Testing & Contract Modules (`lib/arvo/`) — Complete
 - **Deliverables:**
   1. Typed `Arvo.Inertia` (`render_page[P, S]`, `PageSpec`, `ContractManifest` via `Json.schema[T]()`).
   2. `Arvo.WebTest` v2 (fluent session client, redirect follower, typed Inertia assertions, flash/error assertions, query-budget assertions, Vitest fixture recorder).
@@ -175,7 +175,7 @@ Shipped directly inside Arvo so every AI coding agent gets the workflow structur
   5. `Arvo.Sim` (multi-actor/clock/jobs/network-fault Web DST engine + deterministic shrinker + trace formatter).
 - **Exit Gate:** All new modules pass `mo check`, `mo test`, `mo test --mutants` (100% kill rate on core modules), and each check in `SecurityMatrix` / `Sim` is proven to fail against deliberately broken starter routes.
 
-### Phase 2: Pure-Mo `arvo` CLI & Executable Feature Maps (`cmd/arvo/`)
+### Phase 2: Pure-Mo `arvo` CLI & Executable Feature Maps (`cmd/arvo/`) — Complete
 - **Deliverables:**
   1. Pure-Mo `arvo` CLI (`mo install cmd/arvo/main.mo --name arvo`) reading `arvo.toml`.
   2. `Arvo.Feature` parser & runner for `.feature.md` Executable Feature Maps (dual-mode: in-memory `WebTest` driver + Playwright driver manifest).
@@ -183,14 +183,14 @@ Shipped directly inside Arvo so every AI coding agent gets the workflow structur
   4. `arvo verify --tier fast|feature|full` orchestrator, tamper-diff detector, and `verify.jsonl` emitter.
 - **Exit Gate:** `arvo verify --tier fast` runs in `<3s` on `examples/arvo-starter`; modifying a Mo prop or `.feature.md` triggers contract error / tamper alert deterministically.
 
-### Phase 3: Universal Control Adapter, Playwright E2E, Vitest + Stryker & Starter Crucible
+### Phase 3: Universal Control Adapter, Playwright E2E, Vitest + Stryker & Starter Crucible — Complete
 - **Deliverables:**
   1. `arvo control` implementing all 7 capabilities (`launch`, `doctor`, `drive`, `inspect`, `screenshot`/`record`, `reset`, `cleanup`) with isolated ports/dirs and parallel-run safety.
   2. Frontend test template in `examples/arvo-starter/frontend`: typed `arvo.gen.ts` props, accessible `<label htmlFor>` forms, Vitest + React Testing Library consuming Mo-recorded Inertia fixtures, Stryker mutation config, and Playwright (phone + desktop, zero console/5xx, axe-core a11y, ARIA snapshots, pixel-diff visual parity).
   3. Complete worked `.feature.md` Feature Map for `examples/arvo-starter` (`auth.feature.md`, `bills.feature.md`, `csv-import.feature.md`) running identically via `WebTest` and Playwright.
 - **Exit Gate:** Two concurrent `arvo control` runs execute side-by-side without colliding; evidence survives cleanup; `arvo verify --tier feature` passes end-to-end on `examples/arvo-starter`; intentional UI, a11y, or prop-rename breaks are caught automatically.
 
-### Phase 4: Formal Statecharts, Web-Semantic Mutants, `--strength`, Perf & Failure Replay
+### Phase 4: Formal Statecharts, Web-Semantic Mutants, `--strength`, Perf & Failure Replay — Complete
 - **Deliverables:**
   1. `Arvo.Statechart` (pure-Mo bounded BFS explorer + optional TLA+/TLC runner → plain-English Mermaid `stateDiagram-v2` + shortest failing path + real-code replay + sync-commit checker), applied first to `Arvo.Jobs` and `Arvo.Session`.
   2. Mandatory `--strength` wrong-version suites for all critical Arvo modules (`Session`, `Csrf`, `Auth`, `Inertia`, `Migrations`, `Jobs`, `Audit`, `Changeset`) + automated Web-Semantic Mutants.
@@ -198,7 +198,7 @@ Shipped directly inside Arvo so every AI coding agent gets the workflow structur
   4. `Arvo.Replay` / `arvo replay-capture` converting sanitized production SQLite + request/job/audit failure bundles into deterministic `WebTest` / `Arvo.Sim` tests.
 - **Exit Gate:** `Arvo.Statechart` renders verified Mermaid statecharts for `Jobs` and `Session` and catches an injected stale-lock/double-claim bug with a replayed counterexample; all `--strength` wrong versions are 100% killed.
 
-### Phase 5: Human Verification Dossier & Bundled Agent Skills
+### Phase 5: Human Verification Dossier & Bundled Agent Skills — Complete
 - **Deliverables:**
   1. `arvo dossier` emitting self-contained `.arvo/dossier/index.html` and `.arvo/dossier/pr-summary.md` (Tamper Alert Banner, Visual Proof Strip, Statecharts, Scorecards, Route Matrix, `decisions.tsv`).
   2. Bundled `.arvo/skills/` (`arvo-verify`, `arvo-maintain-specs`, `arvo-statechart`, `arvo-bug-repro`, `arvo-correct`) with concrete Arvo commands and zero placeholders.

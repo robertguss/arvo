@@ -14,13 +14,13 @@ Build full-stack, single-binary web applications backed by **SQLite** (WAL mode 
   - Double-submit `XSRF-TOKEN` / `X-XSRF-TOKEN` CSRF protection verified in constant time.
   - Password hashing via OpenSSL 3 `EVP_PBE_scrypt` (`N=32768, r=8, p=1`).
   - Capability-confined outbound HTTP (`network.allow_hosts([...])`), symlink-confined static mounts (`openat2(RESOLVE_BENEATH)`), and parameterized SQL queries.
-- **Testable Without Flakes:** Every route, cookie jar, CSRF token, Inertia page prop, multipart upload, database migration, and scheduled background job runs deterministically in memory with `Arvo.WebTest` and `ApiTest.run_job`.
+- **Testable Without Flakes:** Every route, cookie jar, CSRF token, Inertia page prop, multipart upload, database migration, and scheduled background job runs deterministically in memory with `Arvo.WebTest`, `ApiTest.run_job`, and `Arvo.Sim`, backed by `Arvo.SecurityMatrix`, `Arvo.Statechart`, and the pure-Mo `arvo` verification CLI (`arvo verify`, `arvo dossier`).
 
 ---
 
 ## Modules (`lib/arvo/*.mo`)
 
-In Mo, `use Arvo.<Name>` binds the final segment `<Name>`:
+All 20 `lib/arvo/*.mo` modules (12 core framework modules and 8 testing, simulation & formal verification modules). In Mo, `use Arvo.<Name>` binds the final segment `<Name>`:
 
 | Module | Local Alias | Purpose |
 | --- | --- | --- |
@@ -36,6 +36,14 @@ In Mo, `use Arvo.<Name>` binds the final segment `<Name>`:
 | `Arvo.Audit` | `Audit` | ULID event IDs, append-only `arvo_events` audit trail (`actor`, `action`, `before_json`, `after_json`, `undo_json`), and optimistic concurrency helper (`ensure_updated`). |
 | `Arvo.Jobs` | `Jobs` | Durable SQLite `arvo_jobs` queue: transaction-composable `enqueue` / `enqueue_at`, atomic `BEGIN IMMEDIATE` `claim_next`, exponential backoff retries, stale-lock recovery (polled automatically by `mo serve`). |
 | `Arvo.WebTest` | `WebTest` | In-memory browser test harness with automatic cookie jar, `X-XSRF-TOKEN` injection, and `data-page` / Inertia JSON parser. |
+| `Arvo.Seed` | `Seed` | Deterministic seed profile registry shared across `Sqlite.in_memory()` tests, `Arvo.Sim`, `arvo control launch --seed`, and local development. |
+| `Arvo.Snapshot` | `Snapshot` | Tamper-guarded golden JSON and text snapshot assertions with deterministic key sorting and volatile-field redaction (`ARVO_UPDATE_SNAPSHOTS=1` to update baselines). |
+| `Arvo.Props` | `Props` | Reusable algebraic property helpers (`round_trip?`, `idempotent?`, `involution?`, etc.) composable inside Mo `promise` and `test` blocks. |
+| `Arvo.SecurityMatrix` | `SecurityMatrix` | Zero-config fail-closed adversarial route auditor deriving route, auth, CSRF, XSS, open-redirect, Inertia version, strict JSON, FK, migration, and N+1 checks from `app.routes()` and `app.openapi_json()`. |
+| `Arvo.Sim` | `Sim` | Deterministic Web Simulation Testing (DST) engine driving real `ApiTest.App` routes, fake `Clock`, `Arvo.Jobs` retries/crashes, session rotation/replay, per-step invariants, and delta-shrinking. |
+| `Arvo.Feature` | `Feature` | Unified Executable Feature Map (`.feature.md`) parser, in-memory `WebTest` runner, and `@browser` JSON manifest exporter for Playwright execution. |
+| `Arvo.Statechart` | `Statechart` | Pure-Mo bounded BFS statechart explorer with Mermaid `stateDiagram-v2` output and built-in formal models + real-code replay for `Arvo.Jobs` and `Arvo.Session`. |
+| `Arvo.Replay` | `Replay` | Offline sanitized failure capture (stripping cookies, `Authorization`, CSRF tokens, and secret env vars) and standalone regression test generator. |
 
 ---
 
@@ -107,13 +115,39 @@ mo serve main.mo --bind 127.0.0.1 --port 8080
 
 ---
 
+## Verification & Testing (`arvo` CLI & `.arvo/skills/`)
+
+Arvo ships a pure-Mo verification CLI ([`cmd/arvo/main.mo`](cmd/arvo/main.mo)) and bundled workflow skills under [`.arvo/skills/`](.arvo/skills/):
+
+```bash
+mo run cmd/arvo/main.mo --help
+# Or install/invoke `arvo` directly once built
+arvo verify --app examples/arvo-starter --tier fast|feature|full
+```
+
+Key CLI subcommands:
+- `arvo verify [--app DIR] [--tier fast|feature|full] [--json]` — run tiered verification checks + tamper checks and append `.arvo/dossier/verify.jsonl`
+- `arvo contracts [--app DIR] [--check]` — generate or verify `frontend/src/arvo.gen.ts` from `Json.schema[T]()`
+- `arvo feature [--app DIR] [--validate] [--manifest OUT] [DIR]` — validate `.feature.md` Executable Feature Maps and export `@browser` manifests
+- `arvo sim [--app DIR] [--entry FILE] [--only NAME]` — run `Arvo.Sim` deterministic simulation suites
+- `arvo control <launch|doctor|inspect|reset|drive|cleanup> [--app DIR]` — manage isolated runtime instances for verification and debugging
+- `arvo statechart [check|render] [--app DIR] [--out DIR]` — explore/replay `Arvo.Jobs` and `Arvo.Session` statecharts and check sync commits
+- `arvo replay <capture|gen> [--app DIR]` — capture sanitized failure bundles and generate standalone regression tests
+- `arvo bench --baseline-cmd A --candidate-cmd B` — alternating `A/B/A/B` benchmark harness
+- `arvo dossier [--app DIR] [--open]` — render the static HTML Verification Dossier and `<150`-word `pr-summary.md`
+- `arvo log [--app DIR] --phase P --decision D ...` — append a sanitized decision row to `.arvo/dossier/decisions.tsv`
+
+Bundled agent workflows in [`.arvo/skills/`](.arvo/skills/): `arvo-verify`, `arvo-maintain-specs`, `arvo-statechart`, `arvo-bug-repro`, and `arvo-correct`.
+
+---
+
 ## Running the Test Suite
 
 ```bash
 ./scripts/test.sh
 ```
 
-This typechecks and runs every `example`, `promise`, and `test` across all 12 `lib/arvo/*.mo` modules plus the full-stack `examples/arvo-starter/main.mo` `WebTest` suite loaded via `mo.toml`.
+This runs `mo check` and `mo test` across all 20 `lib/arvo/*.mo` modules, `mo check` on `lib/arvo/fixtures/*.mo`, `cmd/arvo/main.mo`, and `examples/arvo-starter/main.mo`, validates Executable Feature Maps (`arvo feature --validate`), contract sync (`arvo contracts --check`), statechart models (`arvo statechart check`), and executes all 9 `--strength` intent-mutation suites (requiring `kill_rate == 1` and `0` survived mutants).
 
 ---
 
