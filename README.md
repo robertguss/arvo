@@ -190,9 +190,10 @@ mo serve main.mo --bind 127.0.0.1 --port 8080
 Arvo ships a pure-Mo verification CLI ([`cmd/arvo/main.mo`](cmd/arvo/main.mo)) and bundled workflow skills under [`.arvo/skills/`](.arvo/skills/):
 
 ```bash
-mo run cmd/arvo/main.mo --help
-# Or install/invoke `arvo` directly once built
-arvo verify --app examples/arvo-starter --tier fast|feature|full
+mo run cmd/arvo/main.mo
+# Or install the executable and invoke it from the repo root
+mo install --name arvo cmd/arvo/main.mo
+arvo verify --app examples/arvo-starter --tier fast
 ```
 
 Key CLI subcommands:

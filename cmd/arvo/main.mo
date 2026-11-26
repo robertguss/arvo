@@ -1281,11 +1281,17 @@ fn run_verify_cmd(
   end
 
   ndjson_lines = events.map(Dossier.event_to_json)
-  if files.make_folder(".arvo/dossier") is Ok(_)
-    _w = files.write_text(".arvo/dossier/verify.jsonl", "#{ndjson_lines.join("\n")}\n")
+  journal_result = case files.make_folder(".arvo/dossier")
+    Ok(_): files.write_text(".arvo/dossier/verify.jsonl", "#{ndjson_lines.join("\n")}\n")
+    Error(e): Error(e)
+  end
+  var artifact_failed? = false
+  if journal_result is Error(e)
+    console.error("arvo verify: failed writing verify.jsonl: #{e}")
+    artifact_failed? = true
   end
 
-  if tier == "full"
+  if tier == "full" and not artifact_failed?
     case DossierHtml.generate_dossier(
       app_dir,
       tier,
@@ -1297,7 +1303,9 @@ fn run_verify_cmd(
       env
     )
       Ok(_): Unit
-      Error(de): console.error("arvo verify: dossier warning: #{de}")
+      Error(de):
+        console.error("arvo verify: failed generating dossier: #{de}")
+        artifact_failed? = true
     end
   end
 
@@ -1309,7 +1317,7 @@ fn run_verify_cmd(
     console.print(Dossier.render_scorecard(tier, events, elapsed_ms(clock, start_all)))
   end
 
-  if events.any?(fn(e) e.status == "fail" end)
+  if artifact_failed? or events.any?(fn(e) e.status == "fail" end)
     1
   else
     0
@@ -3418,6 +3426,6 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
     Env.of({}),
     Network.fake({})
   ) ==
-    0
-  assert c_dos_err.printed_errors.any?(fn(l) l.contains?("dossier warning") end)
+    1
+  assert c_dos_err.printed_errors.any?(fn(l) l.contains?("failed generating dossier") end)
 end

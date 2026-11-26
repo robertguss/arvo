@@ -1,6 +1,6 @@
 ---
 name: arvo-bug-repro
-description: Root-cause bug reproduction and fix workflow using arvo control, Arvo.Replay failure bundles, regression tests, and blast-radius proof before fixing.
+description: Root-cause bug reproduction and fix workflow using arvo control, Arvo.Testing.Replay failure bundles, regression tests, and blast-radius proof before fixing.
 ---
 
 # Reproducible Bug Fix Protocol
@@ -10,7 +10,7 @@ Activate before fixing any reported user bug, CI regression, or production failu
 ## Protocol
 
 1. **Capture & Reproduce Twice:**
-   - If reproducing from a failing run or production incident, capture a sanitized `Arvo.Replay` bundle (`Cookie`, `Authorization`, `X-XSRF-TOKEN`, `Set-Cookie`, and secret env vars redacted automatically):
+   - If reproducing from a failing run or production incident, capture a sanitized `Arvo.Testing.Replay` bundle (`Cookie`, `Authorization`, `X-XSRF-TOKEN`, `Set-Cookie`, and secret env vars redacted automatically):
      ```bash
      arvo replay capture --app examples/arvo-starter --id repro-1 --method POST --path /bills/1/pay --out .arvo/replays/bug.json
      arvo replay gen --app examples/arvo-starter .arvo/replays/bug.json --out .arvo/replays/replay-regression.mo

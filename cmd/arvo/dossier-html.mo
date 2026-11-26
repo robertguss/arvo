@@ -97,15 +97,21 @@ end
 
 ## Computes Spec Part 6.3 dossier headline verdict from `verify.jsonl` events.
 fn compute_verdict(events: List(Dossier.VerifyEvent)) : Text
-  if events.empty? or events.any?(fn(e) e.status == "skipped" end)
-    "INCONCLUSIVE"
-  else if events.any?(fn(e) e.status == "fail" end)
+  if events.any?(fn(e) e.status == "fail" end)
     "FAIL"
-  else if events.any?(fn(e) e.status == "warn" end)
+  else if events.empty? or events.any?(fn(e) not conclusive_event?(e) end)
+    "INCONCLUSIVE"
+  else if not collect_modified_contracts(events).empty?
     "PASS WITH CONTRACT CHANGES"
   else
     "PASS"
   end
+end
+
+fn conclusive_event?(ev: Dossier.VerifyEvent) : Bool
+  not ev.phase.empty? and (ev.status == "pass" or
+    (ev.status == "warn" and ev.phase == "tamper_check" and
+      not (ev.modified_contracts or []).empty?))
 end
 
 fn json_int_array_len(doc: Json, key: Text) : Int
@@ -422,15 +428,13 @@ end
 
 fn render_tamper_banner(events: List(Dossier.VerifyEvent)) : Text
   mods = collect_modified_contracts(events)
-  tamper_warn? = events.any?(fn(e) e.phase == "tamper_check" and e.status == "warn" end)
-  if mods.empty? and not tamper_warn?
+  tamper_pass? = events.any?(fn(e) e.phase == "tamper_check" and e.status == "pass" end)
+  if mods.empty? and tamper_pass?
     "<section id=\"tamper\" class=\"card\">\n  <h2>1. Tamper Alert Banner</h2>\n  <p class=\"pill badge-pass\">0 contract edits — all tamper-protected files match baseline</p>\n</section>"
+  else if mods.empty?
+    "<section id=\"tamper\" class=\"card alert-warn\">\n  <h2>1. Tamper Alert Banner — Contract Baseline Not Verified</h2>\n  <p>Contract baseline warning detected (no explicit paths listed).</p>\n</section>"
   else
-    items = if mods.empty?
-      "<li>Contract baseline warning detected (no explicit paths listed).</li>"
-    else
-      mods.map(fn(p) "<li><code>#{html_escape(p)}</code></li>" end).join("")
-    end
+    items = mods.map(fn(p) "<li><code>#{html_escape(p)}</code></li>" end).join("")
     "<section id=\"tamper\" class=\"card alert-warn\">\n  <h2>1. Tamper Alert Banner — Contract Changed (Human Review Required)</h2>\n  <ul>#{items}</ul>\n</section>"
   end
 end
@@ -439,7 +443,9 @@ fn render_visual_strip(e2e: E2eView, build_sha: Text) : Text
   if not e2e.present?
     return "<section id=\"visual-proof\" class=\"card\">\n  <h2>2. Visual-First Proof Strip</h2>\n  <p class=\"muted\">No Playwright E2E evidence recorded under <code>.arvo/evidence/</code>.</p>\n</section>"
   end
-  stale_badge = if not e2e.build_sha.empty? and e2e.build_sha != build_sha
+  stale_badge = if e2e.build_sha.empty?
+    " <span class=\"pill badge-warn\">UNVERIFIED BUILD SHA</span>"
+  else if e2e.build_sha != build_sha
     " <span class=\"pill badge-warn\">STALE EVIDENCE (e2e=#{html_escape(short_sha_of(e2e.build_sha))})</span>"
   else
     ""
@@ -710,10 +716,21 @@ end
 fn trim_pr_summary_under_limit(sections: List(Text), max_words: Int) : Text
   joined = "#{sections.join("\n\n")}\n"
   return joined if count_words(joined) <= max_words
-  # Trim excess lines/tokens cleanly so pr-summary.md is always strictly < 150 words.
-  wlist = joined.words
-  kept = wlist.take(max_words - 1).join(" ")
-  "#{kept} ...\n"
+  var kept = []
+  var remaining = max_words - 1
+  for line in joined.lines
+    n = count_words(line)
+    if n > remaining
+      if line.starts_with?("- ") and remaining >= 2
+        kept = kept.append("#{line.words.take(remaining).join(" ")} …")
+        return "#{kept.join("\n")}\n"
+      end
+      break
+    end
+    kept = kept.append(line)
+    remaining -= n
+  end
+  "#{kept.join("\n")}\n\n…\n"
 end
 
 ## Renders a concise plain-words PR Markdown summary strictly under 150 words.
@@ -742,7 +759,8 @@ fn render_pr_summary(
   if find_event(events, "stryker") is Some(ev)
     bullets = bullets.append("- Stryker TS: #{ev.killed or 0}/#{ev.total or 0} killed")
   end
-  if e2e.present?
+  fresh_e2e? = e2e.present? and not e2e.build_sha.empty? and e2e.build_sha == build_sha
+  if fresh_e2e?
     bullets = bullets.append(
       "- Playwright: #{e2e.scenarios_passed.size} scenarios, #{e2e.axe_count} axe errors, #{e2e
         .db_checks_passed} DB checks, #{e2e.visual_diff_pixels} diff px"
@@ -767,7 +785,7 @@ fn render_pr_summary(
   var shot_lines = []
   var shown = 0
   for s in e2e.shots
-    break if shown >= 2
+    break if not fresh_e2e? or shown >= 2
     if s.data_uri is Some(_)
       shot_lines = shot_lines.append("![#{s.label}](#{pr_summary_shot_path(s.rel_path)})")
       shown += 1
@@ -777,16 +795,24 @@ fn render_pr_summary(
   mods = collect_modified_contracts(events)
   failed_phases = events.filter(fn(e) e.status == "fail" end).map(fn(e) e.phase end)
   var calls = []
+  if not mods.empty?
+    calls = calls.append("- Review modified contracts: #{mods.take(5).join(", ")}")
+  end
   if not failed_phases.empty?
     calls = calls.append("- Fix failed phases: #{failed_phases.join(", ")}")
+  end
+  incomplete_phases = events.filter(fn(e) e.status != "fail" and not conclusive_event?(e) end).map(
+    fn(e) if e.phase.empty?: "unknown phase" else: e.phase end
+  )
+  if not incomplete_phases.empty?
+    calls = calls.append("- Verify incomplete phases: #{incomplete_phases.join(", ")}")
+  else if events.empty?
+    calls = calls.append("- Run verification; no checks were recorded")
   end
   if not failed_charts.empty?
     calls = calls.append("- Review statechart issues: #{failed_charts.join(", ")}")
   else if sc.present? and not sc.ok?
     calls = calls.append("- Review statechart replay failure")
-  end
-  if not mods.empty?
-    calls = calls.append("- Review modified contracts: #{mods.take(5).join(", ")}")
   end
   calls_md = if calls.empty?
     "None — automated checks passed cleanly."
@@ -798,13 +824,18 @@ fn render_pr_summary(
     "# Verification Summary: #{verdict}",
     "Tier `#{tier}` (`#{short_sha}`) ran #{events.size} checks (#{pass_cnt} passed) in #{total_ms} ms."
   ]
+  if not calls.empty?
+    sections = sections.append("## Calls Waiting on Human\n#{calls_md}")
+  end
   if not bullets.empty?
     sections = sections.append(bullets.join("\n"))
   end
   if not shot_lines.empty?
     sections = sections.append(shot_lines.join("\n"))
   end
-  sections = sections.append("## Calls Waiting on Human\n#{calls_md}")
+  if calls.empty?
+    sections = sections.append("## Calls Waiting on Human\n#{calls_md}")
+  end
   trim_pr_summary_under_limit(sections, 149)
 end
 
@@ -910,6 +941,7 @@ test "DossierHtml renders 6-section static HTML, embeds base64 PNGs, and keeps P
   var ev_s = Dossier.new_event("t", "full", "stryker", "skipped", 0)
   assert compute_verdict([]) == "INCONCLUSIVE"
   assert compute_verdict([ev_p, ev_s]) == "INCONCLUSIVE"
+  assert compute_verdict([ev_p, ev_s, ev_f]) == "FAIL"
   assert compute_verdict([ev_p, ev_w, ev_f]) == "FAIL"
   assert compute_verdict([ev_p, ev_w]) == "PASS WITH CONTRACT CHANGES"
   assert compute_verdict([ev_p]) == "PASS"
@@ -932,6 +964,7 @@ test "DossierHtml renders 6-section static HTML, embeds base64 PNGs, and keeps P
   assert parsed_evs.get(2).map(fn(e) e.modified_contracts end) ==
     Some(Some(["specs/bills.feature.md"]))
   assert parsed_evs.get(3).map(fn(e) e.ms end) == Some(0)
+  assert compute_verdict(parse_verify_jsonl("{}")) == "INCONCLUSIVE"
 
   api_src = """
     module Main
@@ -1195,6 +1228,9 @@ test "DossierHtml renders 6-section static HTML, embeds base64 PNGs, and keeps P
   assert cor_html.contains?("No Playwright E2E evidence recorded")
   assert cor_html.contains?("No statechart report found")
   assert not cor_html.contains?("No open automated failures")
+  assert not cor_html.contains?("all tamper-protected files match baseline")
+  stale_pr = render_pr_summary("fast", "different_sha", 0, ev_clean, load_e2e_view(f_full.read_only, "different_sha"), empty_statechart_view())
+  assert not stale_pr.contains?("Playwright:") and not stale_pr.contains?("login-mobile.png")
 
   # 5c. render_pr_summary defaults, empty views & 5-contract truncation
   ee = empty_e2e_view()
@@ -1243,9 +1279,12 @@ test "DossierHtml renders 6-section static HTML, embeds base64 PNGs, and keeps P
     Env.of({})
   ) is
     Ok(w_out)
-  assert w_out.verdict == "PASS WITH CONTRACT CHANGES"
+  assert w_out.verdict == "INCONCLUSIVE"
   assert f_w.read_text(".arvo/dossier/index.html") is Ok(wh) and
     wh.contains?("Contract baseline warning detected")
+  assert f_w.read_text(".arvo/dossier/pr-summary.md") is Ok(wpr) and
+    wpr.contains?("Verify incomplete phases: tamper_check") and
+    not wpr.contains?("automated checks passed cleanly")
 
   ev_fail = [Dossier.new_event("t", "full", "mo_mutants", "fail", 1)]
   f_f = Files.in_memory({})

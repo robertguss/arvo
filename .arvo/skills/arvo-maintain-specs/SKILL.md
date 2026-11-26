@@ -20,6 +20,7 @@ Run this workflow daily, on schedule, or after major route/UI churn to keep `spe
    - Boot a disposable instance and verify server health:
      ```bash
      arvo control launch --app examples/arvo-starter --seed baseline --run-id spec-audit &
+     # Wait for examples/arvo-starter/.arvo/runs/spec-audit/run.json before proceeding.
      arvo control doctor --app examples/arvo-starter --run-id spec-audit
      ```
    - Exercise every documented `@browser` scenario with Playwright, inspect ARIA trees and DB/audit rows via read-only `arvo control inspect`, and verify screenshots/traces survive cleanup:

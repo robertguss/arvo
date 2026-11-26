@@ -17,7 +17,7 @@ Follow this ladder whenever completing a feature, refactor, or PR. Match proof r
      ```
    - Export real Mo Inertia fixtures whenever response payloads change, then run Vitest + RTL:
      ```bash
-     (cd examples/arvo-starter && mo run main.mo --arvo-export-fixtures)
+     (cd examples/arvo-starter && mo run main.mo -- --arvo-export-fixtures)
      (cd examples/arvo-starter/frontend && npm run test:ci)
      ```
    - Run Tier 0 gate:
@@ -27,13 +27,15 @@ Follow this ladder whenever completing a feature, refactor, or PR. Match proof r
 
 2. **Tier 1 (`feature`) — Mo Mutants, Live Browser E2E, Axe & Visual Parity:**
    - Rebuild production frontend assets if UI files changed: `(cd examples/arvo-starter/frontend && npm run build)`
-   - Launch an isolated runtime via `arvo control`, drive Playwright across `mobile` (`390x844`) and `desktop` (`1280x800`), inspect DB/audit cross-checks, and clean up without losing evidence:
+   - Launch an isolated runtime via `arvo control`. Wait for the launch metadata before running `doctor`, then drive Playwright across `mobile` (`390x844`) and `desktop` (`1280x800`), inspect DB/audit cross-checks, and clean up without losing evidence:
      ```bash
      arvo control launch --app examples/arvo-starter --seed baseline --run-id verify-ui &
+     # Wait for examples/arvo-starter/.arvo/runs/verify-ui/run.json before proceeding.
      arvo control doctor --app examples/arvo-starter --run-id verify-ui
      URL=$(jq -r '.url' examples/arvo-starter/.arvo/runs/verify-ui/run.json)
      SHA=$(jq -r '.build_sha' examples/arvo-starter/.arvo/runs/verify-ui/run.json)
      (cd examples/arvo-starter/frontend && node ./scripts/arvo-playwright.mjs --mode drive --base-url "$URL" --run-id verify-ui --app-dir .. --evidence-dir .arvo/evidence/verify-ui --build-sha "$SHA" --viewport all)
+     arvo control inspect --app examples/arvo-starter --run-id verify-ui --audit
      arvo control cleanup --app examples/arvo-starter --run-id verify-ui
      ```
    - Run Tier 1 gate:
