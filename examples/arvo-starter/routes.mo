@@ -308,7 +308,7 @@ end
 
 fn load_inertia_config(files: ReadFiles, env: Env) : Result(Inertia.InertiaConfig, AppError)
   title = "Arvo Starter"
-  head = "<meta name=\"theme-color\" content=\"#0f172a\">"
+  head = "<meta name=\"theme-color\" content=\"#0f172a\"><link rel=\"icon\" href=\"data:,\">"
   if env.get("VITE_DEV_URL") is Some(dev_url)
     if not dev_url.trim.empty?
       return Ok(Inertia.dev_config(title, dev_url.trim, "src/main.tsx", head))
@@ -379,6 +379,37 @@ fn show_login(req: Api.Request, viewer: Option(Member), files: ReadFiles, env: E
   Ok(Flash.clear_if_present(res, had_flash?, secure_cookies?(env)))
 end
 
+fn json_field_strings(v: Json) : List(Text)
+  case v
+    Json.String(s): [s]
+    Json.Number(n): [n.to_text]
+    Json.Boolean(b): [if b: "true" else: "false"]
+    Json.Null: []
+    Json.Array(_) | Json.Object(_): [v.to_text]
+  end
+end
+
+fn parse_form_or_json(req: Api.Request, label: Text) : Result(Map(Text, List(Text)), AppError)
+  ct = ((req.header("Content-Type") or "").split(";").first or "").trim.ascii_lowercase
+  if ct == "application/json"
+    raw = try req.body.decode_utf8.or_fail(BadUpload(reason: "invalid #{label}: non-UTF-8 JSON"))
+    doc = try Json.parse(raw).map_error(fn(e) BadUpload(reason: "invalid #{label} JSON: #{e}") end)
+    case doc
+      Json.Object(entries):
+        var out = {}
+        for (k, v) in entries
+          out = out.set(k, json_field_strings(v))
+        end
+        Ok(out)
+      Json.Null | Json.Boolean(_) | Json.Number(_) | Json.String(_) | Json.Array(_): Error(
+        BadUpload(reason: "invalid #{label} JSON: expected object")
+      )
+    end
+  else
+    Form.parse_urlencoded(req).map_error(fn(e) BadUpload(reason: "invalid #{label} form: #{e}") end)
+  end
+end
+
 ## Verifies allowlisted email + scrypt password, issues encrypted session + CSRF cookies, and redirects `303`.
 fn post_login(req: Api.Request, db: Sqlite.Database, rng: SecureRandom, clock: Clock, env: Env) : Result(
   Api.Response,
@@ -387,9 +418,7 @@ fn post_login(req: Api.Request, db: Sqlite.Database, rng: SecureRandom, clock: C
   try bootstrap_db(db, rng, clock, env)
   key = try app_secret_key(env)
   sec? = secure_cookies?(env)
-  fields = try Form.parse_urlencoded(req).map_error(
-    fn(e) BadUpload(reason: "invalid login form: #{e}") end
-  )
+  fields = try parse_form_or_json(req, "login")
   email = Auth.normalize_email(Form.field(fields, "email") or "")
   password = Form.field(fields, "password") or ""
 
@@ -530,9 +559,7 @@ fn create_bill(
   env: Env
 ) : Result(Api.Response, AppError)
   return Error(Forbidden) if not Auth.require_csrf(req, member.session)
-  fields = try Form.parse_urlencoded(req).map_error(
-    fn(e) BadUpload(reason: "invalid bill form: #{e}") end
-  )
+  fields = try parse_form_or_json(req, "bill")
   name = (Form.field(fields, "name") or "").trim
   category = (Form.field(fields, "category") or "").trim
   raw_amount = (Form.field(fields, "amount_cents") or "").trim
