@@ -189,6 +189,8 @@ This checks and tests all core `lib/arvo/*.mo` modules, all `lib/arvo/sqlite/*.m
 
 - [Architecture & Roadmap](docs/arvo-plan.md)
 - [Framework Specification](docs/arvo-spec.md)
+- [Testing & Verification Architecture](docs/arvo-testing-plan.md)
+- [Testing & Verification Specification](docs/arvo-testing-spec.md)
 - [SQLite Starter App Guide](examples/arvo-starter/README.md)
 - [MoDB Starter App Guide](examples/arvo-modb-starter/README.md)
 
