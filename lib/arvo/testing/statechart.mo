@@ -77,7 +77,8 @@ fn render_mermaid(
   edges: List((Text, Text, Text)),
   break_ids: List(Text),
   may_break_ids: List(Text)
-) : Text where S: Equal
+) : Text
+  where S: Equal
   var lines = ["stateDiagram-v2"]
 
   # Partition states into named groups and ungrouped nodes preserving discovery order
@@ -261,7 +262,6 @@ end
 # ---------------------------------------------------------------------------
 # Formal model + real-code replay for Arvo.Jobs
 # ---------------------------------------------------------------------------
-
 ## Abstract state of one job modeled from `lib/arvo/jobs.mo`.
 struct JobsModelState
   status: Text
@@ -456,7 +456,9 @@ fn jobs_spec_with(title: Text, allow_double_claim?: Bool) : ChartSpec(
 )
   ChartSpec(
     title: title,
-    covered_files: ["lib/arvo/sqlite/jobs.mo:claim_next,complete,fail_or_retry,requeue_stale_running"],
+    covered_files: [
+      "lib/arvo/sqlite/jobs.mo:claim_next,complete,fail_or_retry,requeue_stale_running"
+    ],
     sync_commit: "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
     max_states: 200,
     initial_states: [
@@ -500,18 +502,15 @@ end
 
 ## Replays an abstract `JobsModelAction` sequence against real `Arvo.Jobs` + `Sqlite.in_memory()`,
 ## flagging `MODEL_DRIFT` whenever real SQLite behavior diverges from expected state.
-fn replay_jobs_path(
-  actions: List(JobsModelAction),
-  sqlite: Sqlite,
-  rng: SecureRandom,
-  clock: Clock
-) : Result(Jobs.JobRecord, Text)
+fn replay_jobs_path(actions: List(JobsModelAction), sqlite: Sqlite, rng: SecureRandom, clock: Clock) : Result(
+  Jobs.JobRecord,
+  Text
+)
   t0 = clock.now
   db = try sqlite.open(":memory:").map_error(fn(e) "#{e}" end)
   try Jobs.init_schema(db).map_error(fn(e) "#{e}" end)
-  jid = try Jobs.enqueue_at(db, rng, clock, "default", "email.send", Json.Object({}), t0, 2).map_error(
-    fn(e) "#{e}" end
-  )
+  jid = try Jobs.enqueue_at(db, rng, clock, "default", "email.send", Json.Object({}), t0, 2)
+    .map_error(fn(e) "#{e}" end)
   stale_ttl = 60
   var last_attempts = None
   for act in actions
@@ -529,8 +528,9 @@ fn replay_jobs_path(
       Complete: try Jobs.complete(db, clock, jid).map_error(fn(e) "#{e}" end)
       FailOrRetry:
         cur_att = try last_attempts.or_fail("MODEL_DRIFT: FailOrRetry without prior Claim")
-        _fr = try Jobs.fail_or_retry(db, clock, jid, cur_att, 2, "transient")
-          .map_error(fn(e) "#{e}" end)
+        _fr = try Jobs.fail_or_retry(db, clock, jid, cur_att, 2, "transient").map_error(
+          fn(e) "#{e}" end
+        )
       WorkerStalls: clock.sleep(stale_ttl.seconds)
       RequeueStale:
         changed = try Jobs.requeue_stale_running(db, clock, stale_ttl).map_error(fn(e) "#{e}" end)
@@ -550,7 +550,6 @@ end
 # ---------------------------------------------------------------------------
 # Formal model + real-code replay for Arvo.Session
 # ---------------------------------------------------------------------------
-
 ## Abstract state of a user session modeled from `lib/arvo/session.mo`.
 struct SessionModelState
   status: Text
@@ -652,11 +651,9 @@ fn session_spec_with(title: Text, allow_bug?: Bool) : ChartSpec(
       "lib/arvo/sqlite/sessions.mo:create,load,rotate,revoke,revoke_all_for_member,prune_expired",
       "lib/arvo/session.mo:prepare_material,unseal_token_hash,verify_stored"
     ],
-    sync_commit: "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+    sync_commit: "9321ddbfd5b20abf8bd62d4e04d8f4a7129769ed",
     max_states: 200,
-    initial_states: [
-      SessionModelState(status: "guest", current_valid?: false, old_valid?: false)
-    ],
+    initial_states: [SessionModelState(status: "guest", current_valid?: false, old_valid?: false)],
     step_fn: fn(s) session_steps_common(s, allow_bug?) end,
     view_state: fn(s)
       auth_tag = if s.current_valid?: "auth=ok" else: "auth=denied"
@@ -758,7 +755,9 @@ fn replay_session_path(
     ).map_error(fn(e) "#{e}" end)
     actual_auth? = loaded_cur is Some(_)
     if actual_auth? != expected_auth?
-      return Error("MODEL_DRIFT: expected auth=#{expected_auth?}, real Session.load=#{actual_auth?}")
+      return Error(
+        "MODEL_DRIFT: expected auth=#{expected_auth?}, real Session.load=#{actual_auth?}"
+      )
     end
   end
   Ok(actual_auth?)
@@ -780,10 +779,14 @@ test "Arvo.Statechart explores Jobs and Session cleanly, replays real code, and 
   assert j_rep.mermaid_mmd.contains?(
     "  state \"Queued\" as grp_0 {\n    S0 : pending (try 0/2, due)\n    S3 : pending (try 1/2, backoff)\n    S5 : pending (try 1/2, due)\n  }"
   )
-  assert j_rep.mermaid_mmd.contains?("  state \"Executing\" as grp_1 {\n    S1 : running (try 1/2, due)")
+  assert j_rep.mermaid_mmd.contains?(
+    "  state \"Executing\" as grp_1 {\n    S1 : running (try 1/2, due)"
+  )
   assert j_rep.mermaid_mmd.contains?("S4 : running (try 1/2, due, stale)")
   assert j_rep.mermaid_mmd.contains?("S6 : running (try 2/2, due)")
-  assert j_rep.mermaid_mmd.contains?("  state \"Terminal\" as grp_2 {\n    S2 : completed (try 1/2, backoff)")
+  assert j_rep.mermaid_mmd.contains?(
+    "  state \"Terminal\" as grp_2 {\n    S2 : completed (try 1/2, backoff)"
+  )
   assert j_rep.mermaid_mmd.contains?("S8 : failed (try 2/2, backoff)")
   assert j_rep.mermaid_mmd.contains?("Worker claims due job")
   assert j_rep.mermaid_mmd.contains?("S3 --> S5 : Retry backoff elapses")
@@ -792,10 +795,21 @@ test "Arvo.Statechart explores Jobs and Session cleanly, replays real code, and 
   assert j_md.contains?("## Statechart: Arvo.Jobs Lifecycle (PASS)")
   assert j_md.contains?("States explored: 10")
 
-  assert replay_jobs_path([TickWait], Sqlite.in_memory(), SecureRandom.seeded(11), Clock.fixed(t0)) is Error(_)
-  assert replay_jobs_path([FailOrRetry], Sqlite.in_memory(), SecureRandom.seeded(11), Clock.fixed(t0)) is
+  assert replay_jobs_path([TickWait], Sqlite.in_memory(), SecureRandom.seeded(11), Clock.fixed(t0)) is
     Error(_)
-  assert replay_jobs_path([Claim, Complete], Sqlite.in_memory(), SecureRandom.seeded(11), Clock.fixed(t0)) is
+  assert replay_jobs_path(
+    [FailOrRetry],
+    Sqlite.in_memory(),
+    SecureRandom.seeded(11),
+    Clock.fixed(t0)
+  ) is
+    Error(_)
+  assert replay_jobs_path(
+    [Claim, Complete],
+    Sqlite.in_memory(),
+    SecureRandom.seeded(11),
+    Clock.fixed(t0)
+  ) is
     Ok(r_ok)
   assert r_ok.state == "completed" and r_ok.attempts == 1
   assert replay_jobs_path(
@@ -831,7 +845,12 @@ test "Arvo.Statechart explores Jobs and Session cleanly, replays real code, and 
     Ok(r_rec)
   assert r_rec.state == "completed" and r_rec.attempts == 2
   assert (clk_stale.now - t0).in_seconds == 60
-  assert replay_jobs_path([RequeueStale], Sqlite.in_memory(), SecureRandom.seeded(11), Clock.fixed(t0)) is
+  assert replay_jobs_path(
+    [RequeueStale],
+    Sqlite.in_memory(),
+    SecureRandom.seeded(11),
+    Clock.fixed(t0)
+  ) is
     Error(_)
 
   # 2. Broken Jobs double-claim produces shortest 2-step counterexample and triggers MODEL_DRIFT on real code
@@ -849,7 +868,9 @@ test "Arvo.Statechart explores Jobs and Session cleanly, replays real code, and 
   assert bj_rep.mermaid_mmd.split("class S1 mayBreak").size == 2
   bj_md = format_report(bj_spec, bj_rep)
   assert bj_md.contains?("(FAIL)")
-  assert bj_md.contains?("### Counterexamples\n1. **Broken rule:** Attempt count never exceeds max_attempts")
+  assert bj_md.contains?(
+    "### Counterexamples\n1. **Broken rule:** Attempt count never exceeds max_attempts"
+  )
   assert bj_md.contains?("Step 2: Buggy worker double-claims running job")
   term_inv = j_spec.invariants.get(2) or stop "expected terminal invariant"
   assert not term_inv.holds?(
@@ -874,15 +895,25 @@ test "Arvo.Statechart explores Jobs and Session cleanly, replays real code, and 
   assert s_rep.states_explored == 5
   assert s_rep.transitions_explored == 5
   assert not s_rep.mermaid_mmd.contains?(" breaks\n")
-  assert s_rep.mermaid_mmd.contains?("  state \"Unauthenticated\" as grp_0 {\n    S0 : guest (auth=denied)")
+  assert s_rep.mermaid_mmd.contains?(
+    "  state \"Unauthenticated\" as grp_0 {\n    S0 : guest (auth=denied)"
+  )
   assert s_rep.mermaid_mmd.contains?("S2 : revoked (auth=denied)")
   assert s_rep.mermaid_mmd.contains?("S3 : expired (auth=denied)")
   assert s_rep.mermaid_mmd.contains?("S4 : pruned (auth=denied)")
-  assert s_rep.mermaid_mmd.contains?("  state \"Authenticated\" as grp_1 {\n    S1 : active (auth=ok)")
+  assert s_rep.mermaid_mmd.contains?(
+    "  state \"Authenticated\" as grp_1 {\n    S1 : active (auth=ok)"
+  )
   assert format_report(s_spec, s_rep).contains?("## Statechart: Arvo.Session Lifecycle (PASS)")
 
   sess_cfg = Session.default_config(true)
-  assert replay_session_path([], sess_cfg, Sqlite.in_memory(), SecureRandom.seeded(22), Clock.fixed(t0)) ==
+  assert replay_session_path(
+    [],
+    sess_cfg,
+    Sqlite.in_memory(),
+    SecureRandom.seeded(22),
+    Clock.fixed(t0)
+  ) ==
     Ok(false)
   assert replay_session_path(
     [CreateSession],

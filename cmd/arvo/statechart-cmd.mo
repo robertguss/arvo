@@ -101,12 +101,10 @@ fn extract_covered_file_paths(covered_files: List(Text)) : List(Text)
 end
 
 ## Checks whether `covered_files` have changed since `sync_commit` (`in_sync` vs `STALE_FORMAL_CHECK`).
-fn check_sync_commit(
-  covered_files: List(Text),
-  sync_commit: Text,
-  cmd: Command,
-  env: Env
-) : (Bool, Text)
+fn check_sync_commit(covered_files: List(Text), sync_commit: Text, cmd: Command, env: Env) : (
+  Bool,
+  Text
+)
   t = default_timeouts()
   short_sha = Text.from_chars(sync_commit.chars.take(8))
   base_files = extract_covered_file_paths(covered_files)
@@ -149,14 +147,13 @@ fn find_tla_files(files: ReadFiles, explicit: Option(Text)) : List(Text)
     None:
       case files.walk("specs/formal")
         Error(_): []
-        Ok(ents):
-          ents.filter_map(fn(e)
-            if e.kind is File and e.name.ends_with?(".tla")
-              Some("specs/formal/#{e.name}")
-            else
-              None
-            end
-          end).sort
+        Ok(ents): ents.filter_map(fn(e)
+          if e.kind is File and e.name.ends_with?(".tla")
+            Some("specs/formal/#{e.name}")
+          else
+            None
+          end
+        end).sort
       end
   end
 end
@@ -191,7 +188,11 @@ fn run_replay_suite(cmd: Command) : (Bool, Text)
       if out.ok? and sum.failed == 0 and sum.stopped == 0 and sum.errors == 0 and sum.passed > 0
         (true, "replay passed (#{sum.passed} check(s))")
       else
-        (false, "replay failed (passed=#{sum.passed}, failed=#{sum.failed + sum.stopped}, errors=#{sum.errors})")
+        (
+          false,
+          "replay failed (passed=#{sum.passed}, failed=#{sum.failed + sum.stopped}, errors=#{sum
+            .errors})"
+        )
       end
   end
 end
@@ -231,13 +232,10 @@ fn outcome_to_json(o: SingleChartOutcome) : Json
   })
 end
 
-fn evaluate_and_write(
-  out_dir: Text,
-  files: Files,
-  cmd: Command,
-  env: Env,
-  tla_opt: Option(Text)
-) : Result((Bool, Int, Int, List(SingleChartOutcome), Text, List(Text), Text), Text)
+fn evaluate_and_write(out_dir: Text, files: Files, cmd: Command, env: Env, tla_opt: Option(Text)) : Result(
+  (Bool, Int, Int, List(SingleChartOutcome), Text, List(Text), Text),
+  Text
+)
   try files.make_folder(out_dir).map_error(fn(e) "failed creating #{out_dir}: #{e}" end)
 
   j_spec = Statechart.jobs_chart_spec()
@@ -344,13 +342,7 @@ fn elapsed_ms(clock: Clock, started: Time) : Int
 end
 
 ## Executes `arvo statechart [check|render]`.
-fn run_statechart_cmd(
-  sargs: StatechartArgs,
-  files: Files,
-  cmd: Command,
-  env: Env,
-  console: Console
-) : Int
+fn run_statechart_cmd(sargs: StatechartArgs, files: Files, cmd: Command, env: Env, console: Console) : Int
   if sargs.help?
     console.print(statechart_usage())
     return 0
@@ -390,7 +382,8 @@ fn run_statechart_cmd(
 end
 
 ## Runs statechart verification as a phase inside `arvo verify --tier full`.
-fn run_statechart_phase(tier: Text, files: Files, cmd: Command, clock: Clock, env: Env) : Dossier.VerifyEvent
+fn run_statechart_phase(tier: Text, files: Files, cmd: Command, clock: Clock, env: Env) : Dossier
+  .VerifyEvent
   t = clock.now
   out_dir = ".arvo/dossier/statecharts"
   case evaluate_and_write(out_dir, files, cmd, env, None)
@@ -454,7 +447,7 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
         [
           "diff",
           "--name-only",
-          "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+          Statechart.jobs_chart_spec().sync_commit,
           "--",
           "lib/arvo/sqlite/jobs.mo"
         ]
@@ -467,7 +460,7 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
         [
           "diff",
           "--name-only",
-          "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+          Statechart.session_chart_spec().sync_commit,
           "--",
           "lib/arvo/sqlite/sessions.mo",
           "lib/arvo/session.mo"
@@ -479,8 +472,14 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
       Command.spec("mo", ["test", "--json", "lib/arvo/testing/statechart.mo"]),
       Command.ok_output(replay_ok_json)
     ),
-    (Command.spec("tlc", ["-cleanup", "specs/formal/jobs.tla"]), Command.ok_output("Model checking completed.\n")),
-    (Command.spec("tlc", ["-cleanup", "specs/formal/bad.tla"]), Command.output(1, "", "Invariant violated"))
+    (
+      Command.spec("tlc", ["-cleanup", "specs/formal/jobs.tla"]),
+      Command.ok_output("Model checking completed.\n")
+    ),
+    (
+      Command.spec("tlc", ["-cleanup", "specs/formal/bad.tla"]),
+      Command.output(1, "", "Invariant violated")
+    )
   ])
 
   c_help = Console.fake()
@@ -525,10 +524,17 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
     0
   assert c_ren.printed.any?(fn(l) l.contains?("stateDiagram-v2") end)
 
-  ev_pass = run_statechart_phase("full", files_ok, Command.fake(rep_clean), Clock.fixed(t0), Env.of({}))
-  assert ev_pass.status == "pass" and ev_pass.total == Some(15) and ev_pass.passed == Some(2) and
-    ev_pass.failed ==
-    Some(0)
+  ev_pass = run_statechart_phase(
+    "full",
+    files_ok,
+    Command.fake(rep_clean),
+    Clock.fixed(t0),
+    Env.of({})
+  )
+  assert ev_pass.status == "pass" and
+    ev_pass.total == Some(15) and
+    ev_pass.passed == Some(2) and
+    ev_pass.failed == Some(0)
 
   # Stale sync_commit detection via git diff AND via ARVO_GIT_DIFF_FILES worktree fallback
   rep_stale_git = Command.replies([
@@ -538,7 +544,7 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
         [
           "diff",
           "--name-only",
-          "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+          Statechart.jobs_chart_spec().sync_commit,
           "--",
           "lib/arvo/sqlite/jobs.mo"
         ]
@@ -551,7 +557,7 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
         [
           "diff",
           "--name-only",
-          "dbaaf0311d379d828af75ab08b6fa2b61ce9e839",
+          Statechart.session_chart_spec().sync_commit,
           "--",
           "lib/arvo/sqlite/sessions.mo",
           "lib/arvo/session.mo"
@@ -564,7 +570,13 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
       Command.ok_output(replay_ok_json)
     )
   ])
-  ev_stale = run_statechart_phase("full", files_ok, Command.fake(rep_stale_git), Clock.fixed(t0), Env.of({}))
+  ev_stale = run_statechart_phase(
+    "full",
+    files_ok,
+    Command.fake(rep_stale_git),
+    Clock.fixed(t0),
+    Env.of({})
+  )
   assert ev_stale.status == "fail" and ev_stale.passed == Some(0) and ev_stale.failed == Some(1)
   assert (ev_stale.detail or "").contains?("STALE_FORMAL_CHECK")
   c_stale = Console.fake()
@@ -574,7 +586,8 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
     Command.fake(rep_stale_git),
     Env.of({}),
     c_stale
-  ) == 1
+  ) ==
+    1
   assert (c_stale.printed.first or "").starts_with?("# Statechart verification: FAIL")
   assert (c_stale.printed.first or "").contains?("STALE_FORMAL_CHECK")
 
@@ -594,7 +607,16 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
     Command.fake(
       Command.replies([
         (
-          Command.spec("git", ["diff", "--name-only", "f11ca6ffc25128538844c952cb0b3bf4cafee177", "--", "lib/arvo/jobs.mo"]),
+          Command.spec(
+            "git",
+            [
+              "diff",
+              "--name-only",
+              "f11ca6ffc25128538844c952cb0b3bf4cafee177",
+              "--",
+              "lib/arvo/jobs.mo"
+            ]
+          ),
           Command.output(128, "", "not a git repository")
         )
       ])
@@ -650,7 +672,12 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
   ) ==
     0
   assert run_statechart_cmd(
-    StatechartArgs(subcmd: "check", out_dir: None, tla_file: Some("specs/formal/bad.tla"), help?: false),
+    StatechartArgs(
+      subcmd: "check",
+      out_dir: None,
+      tla_file: Some("specs/formal/bad.tla"),
+      help?: false
+    ),
     files_tla,
     Command.fake(rep_clean),
     Env.of({}),
@@ -658,7 +685,12 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
   ) ==
     1
   assert run_statechart_cmd(
-    StatechartArgs(subcmd: "check", out_dir: None, tla_file: Some("specs/formal/missing_tlc.tla"), help?: false),
+    StatechartArgs(
+      subcmd: "check",
+      out_dir: None,
+      tla_file: Some("specs/formal/missing_tlc.tla"),
+      help?: false
+    ),
     files_tla,
     Command.fake(rep_clean).allow_programs(["git", "mo"]),
     Env.of({}),
@@ -669,15 +701,21 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
   for (bad_rep, expect_sub) in [
     (Command.output(1, replay_ok_json, ""), "failed=0"),
     (
-      Command.ok_output("{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":1,\"errors\":0}\n"),
+      Command.ok_output(
+        "{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":1,\"errors\":0}\n"
+      ),
       "failed=1"
     ),
     (
-      Command.ok_output("{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":1}\n"),
+      Command.ok_output(
+        "{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":1}\n"
+      ),
       "errors=1"
     ),
     (
-      Command.ok_output("{\"record\":\"totals\",\"passed\":0,\"failed\":0,\"stopped\":0,\"errors\":0}\n"),
+      Command.ok_output(
+        "{\"record\":\"totals\",\"passed\":0,\"failed\":0,\"stopped\":0,\"errors\":0}\n"
+      ),
       "passed=0"
     )
   ]
