@@ -1896,6 +1896,99 @@ fn render_mobrowse_e2e_mo(n: NewArgs) : Text
   modb? = n.db == "modb"
   full? = n.auth == "full"
   allow? = n.auth == "allowlist"
+  if modb? and full?
+    return """
+    ## Zero-Chromium MoBrowse SEO, Inertia shell, `/__arvo`, and PNG evidence suite for `#{n
+      .app_name}`.
+    ## Note: `mo 0.4.x` caps per-program lowering work (`E1152`), so full `Main` + `Modb.AuthStore`
+    ## routes run in `mo test main.mo` and out-of-process via `sh scripts/mobrowse-e2e.sh`.
+    module TestMobrowseE2e
+    use Api
+    use Arvo.DevDashboard
+    use Arvo.Inertia
+    use Arvo.Mobrowse.E2e
+    use Json
+    use Mobrowse.Arvo
+    use Mobrowse.Png
+
+    api
+      port 8080
+      static "/assets" from "public/assets"
+      get "/" show_home
+      get "/__arvo" dev_dashboard
+    end
+
+    fn show_home(req: Api.Request) : Api.Response
+      cfg = Inertia.InertiaConfig(
+        app_title: "#{n.app_name}",
+        version: "v1",
+        vite_dev_url: None,
+        entry_js: "/assets/main.js",
+        entry_css: [],
+        head_extra: "<meta name=\\"description\\" content=\\"Calm full-stack web apps in Mo.\\">"
+      )
+      Inertia.render_with_status(
+        req,
+        cfg,
+        200,
+        "Home",
+        {"app_name": Json.String("#{n.app_name}")},
+        {}
+      )
+    end
+
+    fn dev_dashboard(req: Api.Request, rf: ReadFiles, rng: SecureRandom, env: Env) : Api.Response
+      dev_on? = (env.get("ARVO_DEV") or "0") == "1"
+      mbox = env.get("ARVO_DEV_MAILBOX") or ".arvo/mailbox"
+      dcfg = DevDashboard.default_config("#{n.app_name}", dev_on?, Some(mbox))
+      DevDashboard.handle(req, rf, rng, dcfg, DevDashboard.empty_snapshot("modb"))
+    end
+
+    test "#{n.app_name} MoBrowse SEO head, responsive Inertia shell, fail-closed /__arvo, and PNG evidence"
+      files = Files.in_memory({"public/assets/main.js": "console.log('#{n.app_name}');"})
+      rng = SecureRandom.seeded(42)
+      clock = Clock.fixed(Time.parse("2026-11-28T00:00:00Z") or stop "clock")
+
+      app_off = ApiTest.start(TestMobrowseE2e, clock, files, Env.of({"ARVO_DEV": "0"}), rng)
+      assert Arvo.visit(Arvo.new(), app_off, "/") is Ok(b_home)
+      assert Arvo.status(b_home) == 200
+      assert Arvo.inertia_page(b_home) is Ok(hp)
+      assert hp.component == "Home"
+      assert E2e.assert_seo_head(b_home, "#{n.app_name}", Some("Calm full-stack"), None) is Ok(_)
+      assert not Arvo.has_horizontal_overflow?(b_home)
+      assert not Arvo.has_horizontal_overflow?(Arvo.with_viewport(b_home, 390.0, 844.0))
+      assert Arvo.visit(b_home, app_off, "/__arvo") is Ok(b404)
+      assert Arvo.status(b404) == 404
+
+      app_dev = ApiTest.start(TestMobrowseE2e, clock, files, Env.of({"ARVO_DEV": "1"}), rng)
+      assert Arvo.visit(Arvo.new(), app_dev, "/__arvo") is Ok(dash)
+      assert Arvo.status(dash) == 200
+      assert Arvo.visible?(dash, "Active Sessions")
+      assert not Arvo.has_horizontal_overflow?(dash)
+      png = Arvo.screenshot_png(dash)
+      assert png.slice(0, 4).to_hex == "89504e47"
+      assert Png.decode_png(png, 8000000, 2048) is Ok(_)
+
+      ev_files = Files.in_memory({})
+      run0 = E2e.record_db_check(E2e.record_scenario(E2e.new_run("smoke_e2e", "local"), "#{n.app_name}-home"))
+      assert E2e.capture_page(
+        run0,
+        ev_files,
+        "dev-dashboard",
+        dash,
+        [E2e.ViewportSpec(name: "desktop", width: 640.0, height: 400.0)],
+        None,
+        2,
+        false
+      ) is
+        Ok(run1)
+      assert E2e.finalize_report(run1, ev_files) is Ok(sum)
+      assert sum.passed?
+      assert ev_files.exists?(sum.report_path)
+    end
+    """
+  end
+
   app_start = if modb?
     "app = ApiTest.start(Main, files, clock, rng, env)"
   else
@@ -2043,6 +2136,96 @@ fn render_mobrowse_e2e_mo(n: NewArgs) : Text
   """
 end
 
+fn render_mobrowse_e2e_sh(n: NewArgs) : Text
+  target_path = if n.auth != "none": "/login" else: "/"
+  """
+  #!/usr/bin/env sh
+  # Out-of-process live-server MoBrowse E2E runner for #{n.app_name}.
+  # Runs `mo serve main.mo` and `mobrowse` in separate processes, working for all presets without E1152.
+  set -eu
+
+  APP_DIR="$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)"
+  MO_BIN="${MO:-mo}"
+  MOBROWSE_BIN="${MOBROWSE:-mobrowse}"
+
+  if ! command -v "$MO_BIN" >/dev/null 2>&1; then
+    printf 'mobrowse-e2e.sh: missing `mo` binary (set MO=/path/to/mo or add mo to PATH)\\n' >&2
+    exit 1
+  fi
+  if ! command -v "$MOBROWSE_BIN" >/dev/null 2>&1; then
+    printf 'mobrowse-e2e.sh: missing `mobrowse` binary (set MOBROWSE=/path/to/mobrowse or add mobrowse to PATH)\\n' >&2
+    exit 1
+  fi
+
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/arvo-mobrowse-e2e.XXXXXX")"
+  SRV_PID=""
+  cleanup() {
+    if [ -n "$SRV_PID" ]; then
+      kill "$SRV_PID" 2>/dev/null || true
+      wait "$SRV_PID" 2>/dev/null || true
+    fi
+    rm -rf "$WORK"
+  }
+  trap cleanup EXIT HUP INT TERM
+
+  mkdir -p "$WORK/data"
+  if [ -f "$APP_DIR/public/manifest.json" ]; then
+    cp -R "$APP_DIR/public" "$WORK/data/public"
+  else
+    mkdir -p "$WORK/data/public/assets"
+    printf '{"src/main.tsx":{"file":"assets/main.js","css":[],"isEntry":true}}\\n' > "$WORK/data/public/manifest.json"
+    printf "console.log('%s');\\n" "#{n.app_name}" > "$WORK/data/public/assets/main.js"
+  fi
+
+  (
+    export ARVO_SECRET_KEY="1111111111111111111111111111111122222222222222222222222222222222"
+    export ARVO_ALLOWLIST="ada@example.local"
+    export ARVO_SEED_PASSWORD="horse-staple-battery"
+    export ARVO_INSECURE_COOKIES="1"
+    export ARVO_DEV="1"
+    exec "$MO_BIN" serve "$APP_DIR/main.mo" --port 0 --bind 127.0.0.1 --data "$WORK/data" --ready-file "$WORK/ready.json"
+  ) >"$WORK/server.log" 2>&1 &
+  SRV_PID=$!
+
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$WORK/ready.json" ]; do
+    if ! kill -0 "$SRV_PID" 2>/dev/null; then
+      cat "$WORK/server.log" >&2 || true
+      printf 'mobrowse-e2e.sh: mo serve exited before writing ready.json\\n' >&2
+      exit 1
+    fi
+    sleep 0.1 2>/dev/null || sleep 1
+    i=$((i + 1))
+  done
+
+  if [ ! -s "$WORK/ready.json" ]; then
+    cat "$WORK/server.log" >&2 || true
+    printf 'mobrowse-e2e.sh: timed out waiting for ready.json\\n' >&2
+    exit 1
+  fi
+
+  URL="$(tr ',{' '\\n' < "$WORK/ready.json" | sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"//p' | sed 's/".*//' | head -n 1)"
+  if [ -z "$URL" ]; then
+    cat "$WORK/ready.json" >&2 || true
+    printf 'mobrowse-e2e.sh: could not parse url from ready.json\\n' >&2
+    exit 1
+  fi
+
+  "$MOBROWSE_BIN" --allow-hosts 127.0.0.1 fetch "$URL#{target_path}"
+  "$MOBROWSE_BIN" --allow-hosts 127.0.0.1 snapshot "$URL#{target_path}"
+  "$MOBROWSE_BIN" --allow-hosts 127.0.0.1 layout "$URL#{target_path}"
+  (cd "$WORK" && "$MOBROWSE_BIN" --allow-hosts 127.0.0.1 screenshot "$URL#{target_path}" shot.png)
+
+  MAGIC="$(od -An -tx1 -N4 "$WORK/shot.png" | tr -d ' \\n')"
+  if [ "$MAGIC" != "89504e47" ]; then
+    printf 'mobrowse-e2e.sh: expected PNG magic 89504e47, got %s\\n' "$MAGIC" >&2
+    exit 1
+  fi
+
+  printf 'MoBrowse live E2E passed (%s).\\n' "$URL#{target_path}"
+  """
+end
+
 ## Returns all relative file `(path, contents)` pairs generated for `nargs`.
 fn plan_app_files(nargs: NewArgs) : List((Text, Text))
   gen_ts = Codegen.generate_ts(build_contracts(nargs), None)
@@ -2070,6 +2253,7 @@ fn plan_app_files(nargs: NewArgs) : List((Text, Text))
   end
   if nargs.mobrowse?
     list = list.append(("test-mobrowse-e2e.mo", render_mobrowse_e2e_mo(nargs)))
+    list = list.append(("scripts/mobrowse-e2e.sh", render_mobrowse_e2e_sh(nargs)))
   end
   list
 end
@@ -2117,6 +2301,7 @@ fn run_new(nargs: NewArgs, files: Files, console: Console) : Int
   console.print("  mo test main.mo")
   if nargs.mobrowse?
     console.print("  mo test test-mobrowse-e2e.mo")
+    console.print("  sh scripts/mobrowse-e2e.sh")
   end
   console.print("  arvo dev")
   0
@@ -2154,6 +2339,7 @@ test "NewCmd validates app names, scaffolds MoDB/SQLite presets with exact arvo.
   assert files.exists?("acme-bills/routes.mo")
   assert files.exists?("acme-bills/main.mo")
   assert not files.exists?("acme-bills/test-mobrowse-e2e.mo")
+  assert not files.exists?("acme-bills/scripts/mobrowse-e2e.sh")
   assert files.exists?("acme-bills/frontend/src/arvo.gen.ts")
   assert files.exists?("acme-bills/frontend/src/pages/Login.tsx")
   assert files.exists?("acme-bills/frontend/src/pages/Register.tsx")
@@ -2167,6 +2353,29 @@ test "NewCmd validates app names, scaffolds MoDB/SQLite presets with exact arvo.
     rm.contains?("Arvo.Modb.AuthStore") and
     rm.contains?("post_mcp") and
     rm.contains?("create_org")
+
+  assert parse_new_args([
+    "mb-modb-full",
+    "--mobrowse",
+    "--arvo-path",
+    "../../arvo",
+    "--modb-path",
+    "../../modb",
+    "--mobrowse-path",
+    "../../mobrowse"
+  ]) is
+    Ok(n_mb_default)
+  assert n_mb_default.db == "modb" and n_mb_default.auth == "full" and n_mb_default.mobrowse?
+  assert run_new(n_mb_default, files, Console.fake()) == 0
+  assert files.exists?("mb-modb-full/test-mobrowse-e2e.mo")
+  assert files.exists?("mb-modb-full/scripts/mobrowse-e2e.sh")
+  assert files.read_text("mb-modb-full/test-mobrowse-e2e.mo") is Ok(mb_def_e2e) and
+    mb_def_e2e.contains?("module TestMobrowseE2e") and
+    mb_def_e2e.contains?("use Arvo.Mobrowse.E2e") and
+    not mb_def_e2e.contains?("use Main")
+  assert files.read_text("mb-modb-full/scripts/mobrowse-e2e.sh") is Ok(mb_def_sh) and
+    mb_def_sh.contains?("mobrowse") and
+    mb_def_sh.contains?("/login")
 
   assert parse_new_args([
     "mb-app",
@@ -2184,12 +2393,14 @@ test "NewCmd validates app names, scaffolds MoDB/SQLite presets with exact arvo.
   assert n_mb.mobrowse? and n_mb.mobrowse_path == "../../mobrowse"
   assert run_new(n_mb, files, Console.fake()) == 0
   assert files.exists?("mb-app/test-mobrowse-e2e.mo")
+  assert files.exists?("mb-app/scripts/mobrowse-e2e.sh")
   assert files.read_text("mb-app/mo.toml") is Ok(mb_toml) and
     mb_toml.contains?("arvo-mobrowse") and
     mb_toml.contains?("mobrowse = { path = \"../../mobrowse\" }")
   assert files.read_text("mb-app/test-mobrowse-e2e.mo") is Ok(mb_e2e) and
     mb_e2e.contains?("module TestMobrowseE2e") and
-    mb_e2e.contains?("use Arvo.Mobrowse.E2e")
+    mb_e2e.contains?("use Arvo.Mobrowse.E2e") and
+    mb_e2e.contains?("use Main")
 
   # Refuses overwrite without --force, permits with --force
   assert run_new(n_modb, files, Console.fake()) == 1

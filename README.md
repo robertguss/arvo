@@ -117,6 +117,8 @@ In Mo, `use Arvo.<...>.<Name>` binds the final segment `<Name>`.
 | --- | --- | --- |
 | `Arvo.Mobrowse.E2e` | `E2e` | Zero-Chromium E2E evidence (`e2e-report.json`), desktop/mobile PNG baseline diffing (`capture_page`), and SSR SEO `<head>` assertions (`inspect_seo_head`, `assert_seo_head`) over `Mobrowse.Arvo`. |
 
+`arvo new --mobrowse` scaffolds both an in-process `test-mobrowse-e2e.mo` suite and an out-of-process `scripts/mobrowse-e2e.sh` live-server runner (`mo serve` + `mobrowse` CLI); for large `MoDB + Auth v2` apps, running `scripts/mobrowse-e2e.sh` keeps Arvo and MoBrowse in separate compilation units within `mo 0.4.x`'s lowering budget (`E1152`).
+
 ### `@arvo/react` Kit (`packages/arvo-react/`)
 
 Turnkey React 19 + Inertia v2 + TypeScript UI kit exporting:

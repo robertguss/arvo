@@ -186,8 +186,25 @@ run_mobrowse_suite() {
   "$MO" test "$smoke_tmp/mobrowse-smoke/main.mo"
   "$MO" check "$smoke_tmp/mobrowse-smoke/test-mobrowse-e2e.mo"
   "$MO" test "$smoke_tmp/mobrowse-smoke/test-mobrowse-e2e.mo"
+  sh -n "$smoke_tmp/mobrowse-smoke/scripts/mobrowse-e2e.sh"
 
   if [ -f "$arvo_root/../modb/mo.toml" ]; then
+    echo "==> Scaffolding and testing \`arvo new --mobrowse\` (MoDB + Full Auth default)"
+    (
+      cd "$smoke_tmp"
+      "$MO" run "$arvo_root/cmd/arvo/main.mo" new mobrowse-modb-full-smoke \
+        --db modb --auth full --mobrowse \
+        --dir mobrowse-modb-full-smoke \
+        --arvo-path "$arvo_root" \
+        --modb-path "$arvo_root/../modb" \
+        --mobrowse-path "$mobrowse_root"
+    )
+    "$MO" check "$smoke_tmp/mobrowse-modb-full-smoke/main.mo"
+    "$MO" test "$smoke_tmp/mobrowse-modb-full-smoke/main.mo"
+    "$MO" check "$smoke_tmp/mobrowse-modb-full-smoke/test-mobrowse-e2e.mo"
+    "$MO" test "$smoke_tmp/mobrowse-modb-full-smoke/test-mobrowse-e2e.mo"
+    sh -n "$smoke_tmp/mobrowse-modb-full-smoke/scripts/mobrowse-e2e.sh"
+
     echo "==> Scaffolding and testing \`arvo new --mobrowse\` (MoDB + Allowlist Auth)"
     (
       cd "$smoke_tmp"
@@ -202,6 +219,7 @@ run_mobrowse_suite() {
     "$MO" test "$smoke_tmp/mobrowse-modb-smoke/main.mo"
     "$MO" check "$smoke_tmp/mobrowse-modb-smoke/test-mobrowse-e2e.mo"
     "$MO" test "$smoke_tmp/mobrowse-modb-smoke/test-mobrowse-e2e.mo"
+    sh -n "$smoke_tmp/mobrowse-modb-smoke/scripts/mobrowse-e2e.sh"
   fi
 }
 

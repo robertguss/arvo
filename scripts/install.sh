@@ -27,7 +27,7 @@ Options:
   --mo-version TAG         Pin mo release tag (e.g. v0.4.1 or 0.4.1)
   --modb-version TAG       Pin modb release tag (e.g. v0.9.0 or 0.9.0)
   --mobrowse-version TAG   Pin mobrowse release tag (e.g. v0.7.0 or 0.7.0)
-  --arvo-version TAG       Pin arvo release tag (e.g. v0.2.1 or 0.2.1)
+  --arvo-version TAG       Pin arvo release tag (e.g. v0.2.2 or 0.2.2)
   --dana-version TAG       Pin dana release tag (implies --with-dana)
   -h, --help               Show this help
 EOF
