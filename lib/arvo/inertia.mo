@@ -14,8 +14,12 @@ version_mismatch?,
 check_version,
 render,
 render_with_status,
+render_with_nonce,
+render_with_status_and_nonce,
 render_page,
 render_page_with_status,
+render_page_with_nonce,
+render_page_with_status_and_nonce,
 page_contract,
 page_contract_schemas,
 redirect,
@@ -333,35 +337,47 @@ fn filter_partial_props(req: Api.Request, component: Text, merged: Map(Text, Jso
   end
 end
 
-fn render_asset_tags(cfg: InertiaConfig) : Text
+fn script_nonce_attr(nonce: Option(Text)) : Text
+  case nonce
+    Some(n) if not n.trim.empty?: " nonce=\"#{escape_html(n.trim)}\""
+    Some(_) | None: ""
+  end
+end
+
+fn render_asset_tags_with_nonce(cfg: InertiaConfig, nonce: Option(Text)) : Text
+  n_attr = script_nonce_attr(nonce)
   case cfg.vite_dev_url
     Some(dev_raw):
       base = escape_html(dev_raw.drop_suffix("/") or dev_raw)
       entry = escape_html(cfg.entry_js.drop_prefix("/") or cfg.entry_js)
       [
-        "<script type=\"module\">",
+        "<script type=\"module\"#{n_attr}>",
         "import RefreshRuntime from \"#{base}/@react-refresh\"",
         "RefreshRuntime.injectIntoGlobalHook(window)",
         "window.$RefreshReg$ = () => {}",
         "window.$RefreshSig$ = () => (type) => type",
         "window.__vite_plugin_react_preamble_installed__ = true",
         "</script>",
-        "<script type=\"module\" src=\"#{base}/@vite/client\"></script>",
-        "<script type=\"module\" src=\"#{base}/#{entry}\"></script>"
+        "<script type=\"module\"#{n_attr} src=\"#{base}/@vite/client\"></script>",
+        "<script type=\"module\"#{n_attr} src=\"#{base}/#{entry}\"></script>"
       ].join("\n  ")
     None:
       css_tags = cfg.entry_css.map(
         fn(href) "<link rel=\"stylesheet\" href=\"#{escape_html(href)}\">" end
       )
-      js_tag = "<script type=\"module\" src=\"#{escape_html(cfg.entry_js)}\"></script>"
+      js_tag = "<script type=\"module\"#{n_attr} src=\"#{escape_html(cfg.entry_js)}\"></script>"
       css_tags.append(js_tag).join("\n  ")
   end
 end
 
-fn render_html_shell(cfg: InertiaConfig, page_json_text: Text) : Text
+fn render_asset_tags(cfg: InertiaConfig) : Text
+  render_asset_tags_with_nonce(cfg, None)
+end
+
+fn render_html_shell_with_nonce(cfg: InertiaConfig, page_json_text: Text, nonce: Option(Text)) : Text
   escaped_title = escape_html(cfg.app_title)
   escaped_page = escape_html(page_json_text)
-  assets = render_asset_tags(cfg)
+  assets = render_asset_tags_with_nonce(cfg, nonce)
   extra = if cfg.head_extra.trim.empty?: "" else: "\n  #{cfg.head_extra}"
   [
     "<!doctype html>",
@@ -379,14 +395,18 @@ fn render_html_shell(cfg: InertiaConfig, page_json_text: Text) : Text
   ].join("\n")
 end
 
-## Renders an Inertia v2 response with explicit HTTP `status` (JSON for `X-Inertia: true`, HTML shell otherwise).
-fn render_with_status(
+fn render_html_shell(cfg: InertiaConfig, page_json_text: Text) : Text
+  render_html_shell_with_nonce(cfg, page_json_text, None)
+end
+
+fn render_with_status_inner(
   req: Api.Request,
   cfg: InertiaConfig,
   status: Int,
   component: Text,
   props: Map(Text, Json),
-  shared: Map(Text, Json)
+  shared: Map(Text, Json),
+  nonce: Option(Text)
 ) : Api.Response
   var merged = shared
   for (k, v) in props
@@ -405,9 +425,46 @@ fn render_with_status(
       "application/json; charset=utf-8"
     ).with_header("X-Inertia", "true").with_header("Vary", "X-Inertia")
   else
-    html = render_html_shell(cfg, page_obj.to_text)
+    html = render_html_shell_with_nonce(cfg, page_obj.to_text, nonce)
     Api.html_response(status, html).with_header("Vary", "X-Inertia")
   end
+end
+
+## Renders an Inertia v2 response with explicit HTTP `status` and optional CSP `nonce` on `<script>` tags.
+fn render_with_status_and_nonce(
+  req: Api.Request,
+  cfg: InertiaConfig,
+  status: Int,
+  component: Text,
+  props: Map(Text, Json),
+  shared: Map(Text, Json),
+  nonce: Text
+) : Api.Response
+  render_with_status_inner(req, cfg, status, component, props, shared, Some(nonce))
+end
+
+## Renders a `200 OK` Inertia v2 response attaching CSP `nonce` to initial HTML `<script>` tags.
+fn render_with_nonce(
+  req: Api.Request,
+  cfg: InertiaConfig,
+  component: Text,
+  props: Map(Text, Json),
+  shared: Map(Text, Json),
+  nonce: Text
+) : Api.Response
+  render_with_status_and_nonce(req, cfg, 200, component, props, shared, nonce)
+end
+
+## Renders an Inertia v2 response with explicit HTTP `status` (JSON for `X-Inertia: true`, HTML shell otherwise).
+fn render_with_status(
+  req: Api.Request,
+  cfg: InertiaConfig,
+  status: Int,
+  component: Text,
+  props: Map(Text, Json),
+  shared: Map(Text, Json)
+) : Api.Response
+  render_with_status_inner(req, cfg, status, component, props, shared, None)
 end
 
 ## Renders a `200 OK` Inertia v2 page response.
@@ -459,6 +516,41 @@ fn render_page(req: Api.Request, cfg: InertiaConfig, component: Text, props: P, 
   .Response
   where P: Json, S: Json
   render_page_with_status(req, cfg, 200, component, props, shared)
+end
+
+## Renders an Inertia v2 page with explicit `status` and CSP `nonce` from typed `Json`-deriving structs.
+fn render_page_with_status_and_nonce(
+  req: Api.Request,
+  cfg: InertiaConfig,
+  status: Int,
+  component: Text,
+  props: P,
+  shared: S,
+  nonce: Text
+) : Api.Response
+  where P: Json, S: Json
+  render_with_status_and_nonce(
+    req,
+    cfg,
+    status,
+    component,
+    json_object_fields(props.to_json),
+    json_object_fields(shared.to_json),
+    nonce
+  )
+end
+
+## Renders a `200 OK` Inertia v2 page with CSP `nonce` from typed `Json`-deriving structs.
+fn render_page_with_nonce(
+  req: Api.Request,
+  cfg: InertiaConfig,
+  component: Text,
+  props: P,
+  shared: S,
+  nonce: Text
+) : Api.Response
+  where P: Json, S: Json
+  render_page_with_status_and_nonce(req, cfg, 200, component, props, shared, nonce)
 end
 
 ## Builds a `PageContract` directly from JSON schemas.
@@ -766,4 +858,47 @@ test "render_page renders typed props/shared with escaping, partial reloads, sta
 
   encoded = Json.encode(contract)
   assert Json.decode_strict[PageContract](encoded) == Ok(contract)
+end
+
+test "render_with_nonce and render_page_with_nonce inject escaped CSP nonces on dev and prod script tags"
+  prod_cfg = InertiaConfig(
+    app_title: "NonceApp",
+    version: "v1",
+    vite_dev_url: None,
+    entry_js: "/assets/main.js",
+    entry_css: ["/assets/main.css"],
+    head_extra: ""
+  )
+  prod_html = render_with_nonce(Api.get("/"), prod_cfg, "Home", {}, {}, "n_123\"bad").text
+  assert prod_html.contains?(
+    "<script type=\"module\" nonce=\"n_123&quot;bad\" src=\"/assets/main.js\"></script>"
+  )
+
+  dev_cfg = dev_config("Dev", "http://127.0.0.1:5173", "src/main.tsx", "")
+  dev_html = render_page_with_nonce(
+    Api.get("/"),
+    dev_cfg,
+    "Items",
+    SamplePageProps(title: "ok", count: 1, note: None),
+    SampleSharedProps(viewer: None, errors: {}),
+    "devNonce99"
+  ).text
+  assert dev_html.contains?("<script type=\"module\" nonce=\"devNonce99\">")
+  assert dev_html.contains?(
+    "<script type=\"module\" nonce=\"devNonce99\" src=\"http://127.0.0.1:5173/@vite/client\"></script>"
+  )
+  assert dev_html.contains?(
+    "<script type=\"module\" nonce=\"devNonce99\" src=\"http://127.0.0.1:5173/src/main.tsx\"></script>"
+  )
+
+  xhr_res = render_with_nonce(
+    Api.get("/").with_header("X-Inertia", "true"),
+    prod_cfg,
+    "Home",
+    {"ok": Json.Boolean(true)},
+    {},
+    "n_123"
+  )
+  assert xhr_res.status == 200
+  assert xhr_res.header("X-Inertia") == Some("true")
 end

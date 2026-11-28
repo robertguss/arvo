@@ -5,6 +5,8 @@ module Main
 use Api
 use Arvo.Inertia
 use Arvo.Modb.Jobs
+use Arvo.Modb.Testing
+use Arvo.SecurityMatrixCore
 use Arvo.WebTest
 use Json
 use Modb.Ledger
@@ -446,4 +448,56 @@ test "MoDB starter refuses to bootstrap without explicit credentials"
   ).status ==
     500
   assert not files.read_only.exists?(Routes.ledger_db_path)
+end
+
+test "MoDB starter passes zero-config Arvo.Modb.Testing SecurityMatrix and MoDB invariant checks"
+  manifest_json = """
+    {
+      "src/main.tsx": {
+        "file": "assets/main-a1b2c3d4.js",
+        "css": ["assets/main-f9e8d7c6.css"],
+        "isEntry": true
+      }
+    }
+    """
+  files = Files.in_memory({
+    "public/manifest.json": manifest_json,
+    "public/assets/main-a1b2c3d4.js": "console.log('arvo modb starter');",
+    "public/assets/main-f9e8d7c6.css": "body{margin:0}"
+  })
+  rng = SecureRandom.seeded(2027)
+  t0 = Time.parse("2026-11-27T09:00:00Z") or stop "t0"
+  clock = Clock.fixed(t0)
+  env = Env.of({
+    "ARVO_SECRET_KEY": "1111111111111111111111111111111122222222222222222222222222222222",
+    "ARVO_ALLOWLIST": "ada@household.local",
+    "ARVO_SEED_PASSWORD": "horse-staple-battery",
+    "ARVO_INSECURE_COOKIES": "1"
+  })
+  app = ApiTest.start(Main, files, clock, rng, env)
+
+  guest = WebTest.with_header(WebTest.start(), "Host", "localhost:8080")
+  (authed, login_res) = WebTest.post_form(
+    guest,
+    app,
+    "/login",
+    [("email", "ada@household.local"), ("password", "horse-staple-battery")]
+  )
+  _ = WebTest.expect_status(login_res, 303)
+
+  cfg = SecurityMatrixCore.default_config(
+    [("GET", "/login"), ("POST", "/login")],
+    Inertia.version_from_manifest(manifest_json.bytes)
+  )
+  report = Testing.run_security_matrix(
+    app,
+    files.read_only,
+    [(Routes.sessions_db_path, false), (Routes.ledger_db_path, true)],
+    authed,
+    cfg
+  )
+  assert SecurityMatrixCore.passed?(report)
+  SecurityMatrixCore.assert_clean(report)
+  assert report.routes_checked >= 6
+  assert report.checks_run >= 25
 end

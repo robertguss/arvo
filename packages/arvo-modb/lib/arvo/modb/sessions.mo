@@ -4,8 +4,12 @@
 module Arvo.Modb.Sessions
 expose SessionError(..),
 StoredSession(..),
+SessionView(..),
+sessions_by_expiry,
 sessions_table,
+expiry_secs,
 create_in_store,
+create_with_meta_in_store,
 load_from_store,
 touch_in_store,
 rotate_in_store,
@@ -13,15 +17,24 @@ revoke_in_store,
 revoke_all_in_store,
 prune_expired_in_store,
 create,
+create_with_keyring,
 load_read_only,
+load_read_only_with_keyring,
 load,
+load_with_keyring,
 rotate,
 revoke,
 revoke_all_for_member,
+revoke_others_for_member,
+list_for_member,
+mark_reauthenticated,
+mark_mfa_verified,
 prune_expired
 use Api
+use Arvo.Keyring
 use Arvo.Session
 use Crypto
+use Json
 use Modb
 use Modb.Errors
 use Modb.Table
@@ -34,6 +47,25 @@ struct StoredSession
   expires_at: Time
   last_seen_at: Time
   created_at: Time
+  user_agent: Option(Text)
+  ip_prefix: Option(Text)
+  auth_method: Option(Text)
+  reauthenticated_at: Option(Time)
+  mfa_verified_at: Option(Time)
+end
+
+## Redacted session metadata returned by session-list and keyring-load APIs (never leaks hashes or CSRF tokens).
+struct SessionView
+  id: Text
+  member_id: Text
+  expires_at: Time
+  last_seen_at: Time
+  created_at: Time
+  user_agent: Option(Text)
+  ip_prefix: Option(Text)
+  auth_method: Option(Text)
+  reauthenticated_at: Option(Time)
+  mfa_verified_at: Option(Time)
 end
 
 ## Errors arising from session creation, loading, rotation, or MoDB storage operations.
@@ -51,11 +83,23 @@ fn sessions_by_member() : Table.Index(Text, StoredSession, Text)
   Table.text_index[Text, StoredSession]("_arvo_sessions_by_member", fn(s) s.member_id end)
 end
 
-## Layer 2 `Modb.Table` definition for `_arvo_sessions` with unique token-hash and member indexes.
+fn expiry_secs(t: Time) : Decimal
+  epoch = Time.parse("1970-01-01T00:00:00Z") or t
+  (t - epoch).in_seconds
+end
+
+fn sessions_by_expiry() : Table.Index(Text, StoredSession, Decimal)
+  Table.decimal_index[Text, StoredSession](
+    "_arvo_sessions_by_expiry",
+    fn(s) expiry_secs(s.expires_at) end
+  )
+end
+
+## Layer 2 `Modb.Table` definition for `_arvo_sessions` with token-hash, member, and expiry indexes.
 fn sessions_table() : Table.Table(Text, StoredSession)
   Table.text_key[StoredSession]("_arvo_sessions").with_index(sessions_by_token()).with_index(
     sessions_by_member()
-  )
+  ).with_index(sessions_by_expiry())
 end
 
 fn map_token_error(err: Session.TokenError) : SessionError
@@ -73,15 +117,52 @@ fn not_found_table?(err: Table.TableError) : Bool
   err is Table.Storage(Errors.Io(NotFound(path: _)))
 end
 
-fn build_stored(mat: Session.SessionMaterial) : StoredSession
+fn build_stored_with_meta(mat: Session.SessionMaterial, meta: Session.SessionMeta) : StoredSession
   StoredSession(
     member_id: mat.session.member_id,
     token_hash: mat.token_hash,
     csrf_token: mat.session.csrf_token,
     expires_at: mat.session.expires_at,
     last_seen_at: mat.issued_at,
-    created_at: mat.issued_at
+    created_at: mat.issued_at,
+    user_agent: meta.user_agent,
+    ip_prefix: meta.ip_prefix,
+    auth_method: meta.auth_method,
+    reauthenticated_at: meta.reauthenticated_at,
+    mfa_verified_at: meta.mfa_verified_at
   )
+end
+
+fn build_stored(mat: Session.SessionMaterial) : StoredSession
+  build_stored_with_meta(mat, Session.default_meta())
+end
+
+fn to_view(id: Text, row: StoredSession) : SessionView
+  SessionView(
+    id: id,
+    member_id: row.member_id,
+    expires_at: row.expires_at,
+    last_seen_at: row.last_seen_at,
+    created_at: row.created_at,
+    user_agent: row.user_agent,
+    ip_prefix: row.ip_prefix,
+    auth_method: row.auth_method,
+    reauthenticated_at: row.reauthenticated_at,
+    mfa_verified_at: row.mfa_verified_at
+  )
+end
+
+## Inserts `mat` and `meta` into an open `Modb.Store` (Layer 2) and returns `(Store, Session)`.
+fn create_with_meta_in_store(
+  store: Modb.Store,
+  mat: Session.SessionMaterial,
+  meta: Session.SessionMeta
+) : Result((Modb.Store, Session.Session), SessionError)
+  tbl = sessions_table()
+  row = build_stored_with_meta(mat, meta)
+  next_store = try Table.write_tx(store, fn(tx) Table.put(tx, tbl, mat.session.id, row) end)
+    .map_error(fn(e) Storage(e) end)
+  Ok((next_store, mat.session))
 end
 
 ## Inserts `mat` into an open `Modb.Store` (Layer 2) and returns the updated `(Store, Session)`.
@@ -89,11 +170,7 @@ fn create_in_store(store: Modb.Store, mat: Session.SessionMaterial) : Result(
   (Modb.Store, Session.Session),
   SessionError
 )
-  tbl = sessions_table()
-  row = build_stored(mat)
-  next_store = try Table.write_tx(store, fn(tx) Table.put(tx, tbl, mat.session.id, row) end)
-    .map_error(fn(e) Storage(e) end)
-  Ok((next_store, mat.session))
+  create_with_meta_in_store(store, mat, Session.default_meta())
 end
 
 ## Looks up a session by unsealed `token_hash` inside an open `Modb.Store` without mutating disk.
@@ -197,29 +274,25 @@ fn revoke_all_in_store(store: Modb.Store, member_id: Text) : Result(
   )
 end
 
-## Deletes all sessions in `store` with `expires_at <= now`, returning `(next_store, deleted_count)`.
+## Deletes all sessions in `store` with `expires_at <= now` using the expiry index (O(expired)).
 fn prune_expired_in_store(store: Modb.Store, now: Time) : Result(
   (Modb.Store, Int),
   Table.TableError
 )
   tbl = sessions_table()
-  rows = try Table.all(store, tbl)
-  var expired_ids = []
-  for (sid, row) in rows
-    if row.expires_at <= now
-      expired_ids = expired_ids.append(sid)
-    end
-  end
-  return Ok((store, 0)) if expired_ids.empty?
+  idx = sessions_by_expiry()
+  hi = expiry_secs(now) + ("0.000001".to_decimal or 0.000001)
+  expired = try Table.range_by(store, tbl, idx, None, Some(hi), 0)
+  return Ok((store, 0)) if expired.empty?
   Table.transact(
     store,
     fn(e) e end,
     fn(tx)
       var cur = tx
-      for sid in expired_ids
+      for (sid, _row) in expired
         cur = try Table.delete(cur, tbl, sid)
       end
-      Ok((cur, expired_ids.size))
+      Ok((cur, expired.size))
     end
   )
 end
@@ -389,7 +462,7 @@ end
 fn prune_expired(files: Files, db_path: Text, clock: Clock) : Result(Int, Table.TableError)
   return Ok(0) if not files.read_only.exists?(db_path)
   now = clock.now
-  Modb.with_exclusive_lock(
+  res = Modb.with_exclusive_lock(
     files,
     db_path,
     fn(me) Table.Storage(me) end,
@@ -398,6 +471,239 @@ fn prune_expired(files: Files, db_path: Text, clock: Clock) : Result(Int, Table.
       Ok(deleted)
     end
   )
+  case res
+    Ok(n): Ok(n)
+    Error(e): if not_found_table?(e): Ok(0) else: Error(e)
+  end
+end
+
+## Issues a new keyring-sealed session with security metadata under an exclusive advisory lock.
+fn create_with_keyring(
+  files: Files,
+  db_path: Text,
+  rng: SecureRandom,
+  clock: Clock,
+  keyring: Keyring.Keyring,
+  member_id: Text,
+  meta: Session.SessionMeta,
+  cfg: Session.SessionConfig
+) : Result((Session.Session, Text), SessionError)
+  mat = try Session.prepare_material_with_keyring(rng, clock, keyring, member_id, cfg).map_error(
+    map_token_error
+  )
+  Modb.with_exclusive_lock(
+    files,
+    db_path,
+    fn(me) Storage(Table.Storage(me)) end,
+    fn(s)
+      (_next, sess) = try create_with_meta_in_store(s, mat, meta)
+      Ok((sess, mat.cookie_val))
+    end
+  )
+end
+
+## Lock-free keyring-aware session authentication using strictly `ReadFiles`.
+## Returns `Some((Session, SessionView, needs_rekey?))` when active, or `Ok(None)`.
+fn load_read_only_with_keyring(
+  req: Api.Request,
+  rf: ReadFiles,
+  db_path: Text,
+  clock: Clock,
+  keyring: Keyring.Keyring,
+  cfg: Session.SessionConfig
+) : Result(Option((Session.Session, SessionView, Bool)), SessionError)
+  unsealed = case Session.unseal_token_hash_with_keyring(req, keyring, cfg)
+    Some(u): u
+    None: return Ok(None)
+  end
+  now = clock.now
+  pair = try load_pair_read_only(rf, db_path, unsealed.token_hash, now)
+  Ok(pair.map(fn(p) (p.0, to_view(p.0.id, p.1), unsealed.needs_rekey?) end))
+end
+
+## Keyring-aware session load with throttled `last_seen_at` writes and rotation hint (`needs_rekey?`).
+fn load_with_keyring(
+  req: Api.Request,
+  files: Files,
+  db_path: Text,
+  clock: Clock,
+  keyring: Keyring.Keyring,
+  cfg: Session.SessionConfig,
+  touch_interval_seconds: Int
+) : Result(Option((Session.Session, SessionView, Bool)), SessionError)
+  unsealed = case Session.unseal_token_hash_with_keyring(req, keyring, cfg)
+    Some(u): u
+    None: return Ok(None)
+  end
+  now = clock.now
+  pair = try load_pair_read_only(files.read_only, db_path, unsealed.token_hash, now)
+  (sess, stored) = case pair
+    Some(p): p
+    None: return Ok(None)
+  end
+  var view = to_view(sess.id, stored)
+  if touch_due?(stored, now, touch_interval_seconds)
+    _touched = try Modb.with_exclusive_lock(
+      files,
+      db_path,
+      fn(me) Storage(Table.Storage(me)) end,
+      fn(s)
+        _ns = try touch_if_due_in_store(s, sess.id, now, touch_interval_seconds).map_error(
+          fn(e) Storage(e) end
+        )
+        Ok(Unit)
+      end
+    )
+    view.last_seen_at = now
+  end
+  Ok(Some((sess, view, unsealed.needs_rekey?)))
+end
+
+fn format_utc_iso(t: Time) : Text
+  raw = t.to_text
+  base = raw.drop_suffix("Z") or raw
+  parts = base.split(".")
+  return "#{base}.000000Z" if parts.size == 1
+  whole = parts.first or base
+  frac = parts.get(1) or ""
+  zeros = if frac.byte_count < 6: "0".repeat(6 - frac.byte_count) else: ""
+  "#{whole}.#{frac}#{zeros}Z"
+end
+
+## Lists all active (unexpired) sessions belonging to `member_id`, newest first (`SessionView`).
+fn list_for_member(rf: ReadFiles, db_path: Text, member_id: Text, clock: Clock) : Result(
+  List(SessionView),
+  Table.TableError
+)
+  return Ok([]) if not rf.exists?(db_path)
+  now = clock.now
+  tbl = sessions_table()
+  idx = sessions_by_member()
+  res = Modb.with_shared_lock(
+    rf,
+    db_path,
+    fn(me) Table.Storage(me) end,
+    fn(s)
+      matches = try Table.lookup(s, tbl, idx, member_id)
+      active = matches.filter(fn(p) p.1.expires_at > now end).map(fn(p) to_view(p.0, p.1) end)
+      Ok(active.sort_by_desc(fn(v) "#{format_utc_iso(v.created_at)}|#{v.id}" end))
+    end
+  )
+  case res
+    Ok(v): Ok(v)
+    Error(e): if not_found_table?(e): Ok([]) else: Error(e)
+  end
+end
+
+## Revokes every session belonging to `member_id` except `keep_session_id`, returning the count deleted.
+fn revoke_others_for_member(files: Files, db_path: Text, member_id: Text, keep_session_id: Text) : Result(
+  Int,
+  Table.TableError
+)
+  return Ok(0) if not files.read_only.exists?(db_path)
+  tbl = sessions_table()
+  idx = sessions_by_member()
+  res = Modb.with_exclusive_lock(
+    files,
+    db_path,
+    fn(me) Table.Storage(me) end,
+    fn(s)
+      matches = try Table.lookup(s, tbl, idx, member_id)
+      to_del = matches.filter(fn(p) p.0 != keep_session_id end)
+      return Ok(0) if to_del.empty?
+      (_ns, count) = try Table.transact(
+        s,
+        fn(e) e end,
+        fn(tx)
+          var cur = tx
+          for (sid, _row) in to_del
+            cur = try Table.delete(cur, tbl, sid)
+          end
+          Ok((cur, to_del.size))
+        end
+      )
+      Ok(count)
+    end
+  )
+  case res
+    Ok(n): Ok(n)
+    Error(e): if not_found_table?(e): Ok(0) else: Error(e)
+  end
+end
+
+## Records a fresh step-up re-authentication timestamp (`reauthenticated_at`) on `session_id`.
+fn mark_reauthenticated(files: Files, db_path: Text, session_id: Text, clock: Clock) : Result(
+  Bool,
+  Table.TableError
+)
+  return Ok(false) if not files.read_only.exists?(db_path)
+  now = clock.now
+  tbl = sessions_table()
+  res = Modb.with_exclusive_lock(
+    files,
+    db_path,
+    fn(me) Table.Storage(me) end,
+    fn(s)
+      (_ns, updated?) = try Table.transact(
+        s,
+        fn(e) e end,
+        fn(tx)
+          case try Table.tx_get(tx, tbl, session_id)
+            None: Ok((tx, false))
+            Some(row):
+              var next = row
+              next.reauthenticated_at = Some(now)
+              next.last_seen_at = now
+              tx1 = try Table.put(tx, tbl, session_id, next)
+              Ok((tx1, true))
+          end
+        end
+      )
+      Ok(updated?)
+    end
+  )
+  case res
+    Ok(b): Ok(b)
+    Error(e): if not_found_table?(e): Ok(false) else: Error(e)
+  end
+end
+
+## Records MFA verification (`mfa_verified_at` and `reauthenticated_at`) on `session_id`.
+fn mark_mfa_verified(files: Files, db_path: Text, session_id: Text, clock: Clock) : Result(
+  Bool,
+  Table.TableError
+)
+  return Ok(false) if not files.read_only.exists?(db_path)
+  now = clock.now
+  tbl = sessions_table()
+  res = Modb.with_exclusive_lock(
+    files,
+    db_path,
+    fn(me) Table.Storage(me) end,
+    fn(s)
+      (_ns, updated?) = try Table.transact(
+        s,
+        fn(e) e end,
+        fn(tx)
+          case try Table.tx_get(tx, tbl, session_id)
+            None: Ok((tx, false))
+            Some(row):
+              var next = row
+              next.mfa_verified_at = Some(now)
+              next.reauthenticated_at = Some(now)
+              next.last_seen_at = now
+              tx1 = try Table.put(tx, tbl, session_id, next)
+              Ok((tx1, true))
+          end
+        end
+      )
+      Ok(updated?)
+    end
+  )
+  case res
+    Ok(b): Ok(b)
+    Error(e): if not_found_table?(e): Ok(false) else: Error(e)
+  end
 end
 
 fn must_ok_msess(res: Result(A, B)) : A
@@ -540,4 +846,110 @@ test "modb sessions support read-only loads, throttled touches, AAD binding, rot
     )
   ) ==
     None
+end
+
+test "modb sessions indexed expiry pruning, legacy row decode, keyring rotation, member list, and step-up"
+  files = Files.in_memory({})
+  rf = files.read_only
+  path = "sessions_v2.modb"
+  rng = SecureRandom.seeded(93)
+  k1 = rng.bytes(32)
+  k2 = rng.bytes(32)
+  kr1 = must_ok_msess(Keyring.single("k1", k1))
+  kr2 = must_ok_msess(
+    Keyring.from_entries([Keyring.KeyEntry(id: "k2", key: k2), Keyring.KeyEntry(id: "k1", key: k1)])
+  )
+  t0 = Time.parse("2026-11-21T12:00:00Z") or stop "t0"
+  cfg_short = Session.SessionConfig(cookie_name: "arvo_session", ttl_seconds: 100, secure?: true)
+  cfg_long = Session.SessionConfig(cookie_name: "arvo_session", ttl_seconds: 200, secure?: true)
+
+  # Exact microsecond expiry boundary on sessions_by_expiry
+  meta1 = Session.SessionMeta(
+    user_agent: Some("ArvoBrowser/1.0"),
+    ip_prefix: Some("203.0.113.0/24"),
+    auth_method: Some("password"),
+    reauthenticated_at: None,
+    mfa_verified_at: None
+  )
+  (sa, ca) = must_ok_msess(
+    create_with_keyring(files, path, rng, Clock.fixed(t0), kr1, "mem_1", meta1, cfg_short)
+  )
+  (sb, cb) = must_ok_msess(
+    create_with_keyring(
+      files,
+      path,
+      rng,
+      Clock.fixed(t0 + 1.millisecond),
+      kr1,
+      "mem_1",
+      Session.default_meta(),
+      cfg_short
+    )
+  )
+  (sc, cc) = must_ok_msess(
+    create_with_keyring(
+      files,
+      path,
+      rng,
+      Clock.fixed(t0 + 2.seconds),
+      kr2,
+      "mem_1",
+      Session.default_meta(),
+      cfg_long
+    )
+  )
+
+  # Keyring load_read_only_with_keyring opens k1 cookie under kr2 with needs_rekey? = true
+  req_ca = Api.get("/").with_header("Cookie", "arvo_session=#{ca}")
+  assert must_ok_msess(
+    load_read_only_with_keyring(req_ca, rf, path, Clock.fixed(t0 + 10.seconds), kr2, cfg_short)
+  ) is
+    Some((_s_ca, view_ca, true))
+  assert view_ca.ip_prefix == Some("203.0.113.0/24")
+
+  # Active list before expiry shows all 3 newest-first with redacted SessionView
+  listed0 = must_ok_msess(list_for_member(rf, path, "mem_1", Clock.fixed(t0 + 2.seconds)))
+  assert listed0.size == 3
+  assert (listed0.get(2) or stop "sa").user_agent == Some("ArvoBrowser/1.0")
+
+  # Prune at exact expiry of sa (t0 + 100s) deletes sa and preserves sb (expires t0 + 100.001s) and sc
+  assert must_ok_msess(prune_expired(files, path, Clock.fixed(t0 + 100.seconds))) == 1
+  listed1 = must_ok_msess(list_for_member(rf, path, "mem_1", Clock.fixed(t0 + 100.seconds)))
+  assert listed1.size == 2
+  assert not listed1.any?(fn(v) v.id == sa.id end)
+  assert listed1.any?(fn(v) v.id == sb.id end)
+  assert must_ok_msess(
+    load_read_only_with_keyring(req_ca, rf, path, Clock.fixed(t0 + 10.seconds), kr2, cfg_short)
+  ) ==
+    None
+  req_cb = Api.get("/").with_header("Cookie", "arvo_session=#{cb}")
+  assert must_ok_msess(
+    load_read_only_with_keyring(req_cb, rf, path, Clock.fixed(t0 + 100.seconds), kr2, cfg_short)
+  ) is
+    Some((_s_cb, _view_cb, true))
+
+  # Mark reauthenticated + MFA verified + revoke_others_for_member
+  req_cc = Api.get("/").with_header("Cookie", "arvo_session=#{cc}")
+  assert must_ok_msess(
+    mark_mfa_verified(
+      files,
+      path,
+      listed1.first.map(fn(v) v.id end) or "",
+      Clock.fixed(t0 + 101.seconds)
+    )
+  )
+  assert must_ok_msess(mark_reauthenticated(files, path, sc.id, Clock.fixed(t0 + 101.seconds)))
+  assert must_ok_msess(
+    load_with_keyring(req_cc, files, path, Clock.fixed(t0 + 102.seconds), kr2, cfg_long, 0)
+  ) is
+    Some((sess_cc, view_cc, false))
+  assert view_cc.mfa_verified_at == Some(t0 + 101.seconds)
+  assert view_cc.reauthenticated_at == Some(t0 + 101.seconds)
+  assert must_ok_msess(revoke_others_for_member(files, path, "mem_1", sess_cc.id)) == 1
+  assert must_ok_msess(list_for_member(rf, path, "mem_1", Clock.fixed(t0 + 100.seconds))).size == 1
+
+  # Legacy raw JSON row (without new Option metadata fields) decodes cleanly as None metadata
+  legacy_json = "{\"member_id\":\"mem_old\",\"token_hash\":\"#{Crypto.sha256("legacy".bytes).to_hex}\",\"csrf_token\":\"csrf1\",\"expires_at\":\"2027-01-01T00:00:00Z\",\"last_seen_at\":\"2026-11-21T12:00:00Z\",\"created_at\":\"2026-11-21T12:00:00Z\"}"
+  assert Json.decode_strict[StoredSession](legacy_json.bytes) is Ok(dec_leg)
+  assert dec_leg.user_agent == None and dec_leg.mfa_verified_at == None
 end

@@ -3,6 +3,7 @@
 ## claiming, exponential backoff retries, and stale-lock recovery.
 module Arvo.Modb.Jobs
 expose JobRecord(..),
+QueueStats(..),
 jobs_table,
 format_utc_iso,
 backoff_seconds,
@@ -17,8 +18,13 @@ claim_next,
 complete,
 fail_or_retry,
 requeue_stale_running,
+retry_failed,
+cancel_job,
+queue_stats,
+list_page,
 list_recent
 use Arvo.Id
+use Arvo.Pagination
 use Json
 use Modb
 use Modb.Errors
@@ -43,13 +49,31 @@ struct JobRecord
   updated_at: Text
 end
 
-fn jobs_by_ready() : Table.Index(Text, JobRecord, Text)
-  Table.text_index[Text, JobRecord]("_arvo_jobs_by_ready", fn(j) "#{j.state}|#{j.run_at}" end)
+## Zero-decode per-state job counts derived via `Table.count_by`.
+struct QueueStats
+  pending: Int
+  running: Int
+  completed: Int
+  failed: Int
+  cancelled: Int
 end
 
-## Layer 2 `Modb.Table` definition for `_arvo_jobs` with a `(state, run_at)` readiness index.
+fn jobs_by_ready() : Table.Index(Text, JobRecord, (Text, Text))
+  Table.composite_index[Text, Text, Text, JobRecord](
+    "_arvo_jobs_by_ready_v2",
+    Table.text_codec(),
+    Table.text_codec(),
+    fn(j) (j.state, j.run_at) end
+  )
+end
+
+fn jobs_by_state() : Table.Index(Text, JobRecord, Text)
+  Table.text_index[Text, JobRecord]("_arvo_jobs_by_state", fn(j) j.state end)
+end
+
+## Layer 2 `Modb.Table` definition for `_arvo_jobs` with M17 composite `(state, run_at)` and `state` indexes.
 fn jobs_table() : Table.Table(Text, JobRecord)
-  Table.text_key[JobRecord]("_arvo_jobs").with_index(jobs_by_ready())
+  Table.text_key[JobRecord]("_arvo_jobs").with_index(jobs_by_ready()).with_index(jobs_by_state())
 end
 
 fn not_found_table?(err: Table.TableError) : Bool
@@ -221,7 +245,14 @@ fn claim_next(files: Files, db_path: Text, clock: Clock, job_names: List(Text)) 
     db_path,
     fn(me) Table.Storage(me) end,
     fn(s)
-      due = try Table.range_by(s, tbl, idx, Some("pending|"), Some("pending|#{now_iso}~"), 0)
+      due = try Table.range_by(
+        s,
+        tbl,
+        idx,
+        Some(("pending", "")),
+        Some(("pending", "#{now_iso}~")),
+        0
+      )
       maybe_match = due.find(fn(pair)
         j = pair.1
         j.state == "pending" and j.run_at <= now_iso and job_names.any?(fn(n) n == j.job_name end)
@@ -358,7 +389,7 @@ fn requeue_stale_running(files: Files, db_path: Text, clock: Clock, stale_second
     db_path,
     fn(me) Table.Storage(me) end,
     fn(s)
-      running = try Table.range_by(s, tbl, idx, Some("running|"), Some("running|~"), 0)
+      running = try Table.range_by(s, tbl, idx, Some(("running", "")), Some(("running", "~")), 0)
       var stale = []
       for (jid, job) in running
         is_stale? = case job.locked_at
@@ -416,6 +447,159 @@ fn list_recent(rf: ReadFiles, db_path: Text, limit: Int) : Result(List(JobRecord
   case res
     Ok(v): Ok(v)
     Error(e): if not_found_table?(e): Ok([]) else: Error(e)
+  end
+end
+
+## Returns zero-decode per-state queue counts using `_arvo_jobs_by_state` (`Table.count_by`).
+fn queue_stats(rf: ReadFiles, db_path: Text) : Result(QueueStats, Table.TableError)
+  if not rf.exists?(db_path)
+    return Ok(QueueStats(pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0))
+  end
+  idx = jobs_by_state()
+  res = Modb.with_shared_lock(
+    rf,
+    db_path,
+    fn(me) Table.Storage(me) end,
+    fn(s)
+      p = try Table.count_by(s, idx, "pending")
+      r = try Table.count_by(s, idx, "running")
+      c = try Table.count_by(s, idx, "completed")
+      f = try Table.count_by(s, idx, "failed")
+      x = try Table.count_by(s, idx, "cancelled")
+      Ok(QueueStats(pending: p, running: r, completed: c, failed: f, cancelled: x))
+    end
+  )
+  case res
+    Ok(v): Ok(v)
+    Error(e):
+      if not_found_table?(e)
+        Ok(QueueStats(pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0))
+      else
+        Error(e)
+      end
+  end
+end
+
+## Returns keyset-paginated jobs (optionally filtered by exact `state`) backed by `Table.scan_page`/`range_page`.
+fn list_page(rf: ReadFiles, db_path: Text, state: Option(Text), params: Pagination.PageParams) : Result(
+  Pagination.CursorPage(JobRecord),
+  Table.TableError
+)
+  return Ok(Pagination.empty()) if params.limit <= 0 or not rf.exists?(db_path)
+  tbl = jobs_table()
+  idx = jobs_by_state()
+  res = Modb.with_shared_lock(
+    rf,
+    db_path,
+    fn(me) Table.Storage(me) end,
+    fn(s)
+      page_res = case state
+        Some(st): try Table.range_page(
+          s,
+          tbl,
+          idx,
+          Some(st),
+          Some("#{st}\u{0}"),
+          params.limit,
+          params.cursor
+        )
+        None: try Table.scan_page(s, tbl, None, None, params.limit, params.cursor)
+      end
+      Ok(
+        Pagination.CursorPage(
+          items: page_res.items.map(fn(p) p.1 end),
+          next_cursor: page_res.next_cursor,
+          has_more?: page_res.has_more
+        )
+      )
+    end
+  )
+  case res
+    Ok(v): Ok(v)
+    Error(e): if not_found_table?(e): Ok(Pagination.empty()) else: Error(e)
+  end
+end
+
+## Requeues a terminal `'failed'` or `'cancelled'` job for immediate retry (`attempts = 0`).
+fn retry_failed(files: Files, db_path: Text, clock: Clock, job_id: Text) : Result(
+  Bool,
+  Table.TableError
+)
+  return Ok(false) if not files.read_only.exists?(db_path)
+  now_iso = format_utc_iso(clock.now)
+  tbl = jobs_table()
+  res = Modb.with_exclusive_lock(
+    files,
+    db_path,
+    fn(me) Table.Storage(me) end,
+    fn(s)
+      (_next, changed) = try Table.transact(
+        s,
+        fn(e) e end,
+        fn(tx)
+          case try Table.tx_get(tx, tbl, job_id)
+            None: Ok((tx, false))
+            Some(job):
+              if job.state != "failed" and job.state != "cancelled"
+                return Ok((tx, false))
+              end
+              var updated = job
+              updated.state = "pending"
+              updated.attempts = 0
+              updated.run_at = now_iso
+              updated.locked_at = None
+              updated.last_error = None
+              updated.updated_at = now_iso
+              tx1 = try Table.put(tx, tbl, job_id, updated)
+              Ok((tx1, true))
+          end
+        end
+      )
+      Ok(changed)
+    end
+  )
+  case res
+    Ok(b): Ok(b)
+    Error(e): if not_found_table?(e): Ok(false) else: Error(e)
+  end
+end
+
+## Cancels a `'pending'` job, moving it to `'cancelled'` so workers will never claim it.
+fn cancel_job(files: Files, db_path: Text, clock: Clock, job_id: Text) : Result(
+  Bool,
+  Table.TableError
+)
+  return Ok(false) if not files.read_only.exists?(db_path)
+  now_iso = format_utc_iso(clock.now)
+  tbl = jobs_table()
+  res = Modb.with_exclusive_lock(
+    files,
+    db_path,
+    fn(me) Table.Storage(me) end,
+    fn(s)
+      (_next, changed) = try Table.transact(
+        s,
+        fn(e) e end,
+        fn(tx)
+          case try Table.tx_get(tx, tbl, job_id)
+            None: Ok((tx, false))
+            Some(job):
+              return Ok((tx, false)) if job.state != "pending"
+              var updated = job
+              updated.state = "cancelled"
+              updated.locked_at = None
+              updated.updated_at = now_iso
+              tx1 = try Table.put(tx, tbl, job_id, updated)
+              Ok((tx1, true))
+          end
+        end
+      )
+      Ok(changed)
+    end
+  )
+  case res
+    Ok(b): Ok(b)
+    Error(e): if not_found_table?(e): Ok(false) else: Error(e)
   end
 end
 
@@ -551,4 +735,66 @@ test "stale claim owners cannot complete or retry jobs and stale final attempts 
   assert failed.state == "failed"
   assert failed.attempts == failed.max_attempts and failed.locked_at == None
   assert failed.last_error is Some(_)
+end
+
+test "modb jobs queue_stats, keyset list_page pagination, retry_failed, and cancel_job"
+  files = Files.in_memory({})
+  rf = files.read_only
+  path = "jobs_v2.modb"
+  rng = SecureRandom.seeded(95)
+  t0 = Time.parse("2026-11-27T08:00:00Z") or stop "t0"
+
+  assert queue_stats(rf, path) ==
+    Ok(QueueStats(pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0))
+  assert list_page(rf, path, None, Pagination.PageParams(limit: 5, cursor: None)) ==
+    Ok(Pagination.empty())
+
+  assert enqueue(files, path, rng, Clock.fixed(t0), "mail.send", Json.int(1)) is Ok(j1)
+  assert enqueue(files, path, rng, Clock.fixed(t0 + 1.second), "mail.send", Json.int(2)) is Ok(j2)
+  assert enqueue(files, path, rng, Clock.fixed(t0 + 2.seconds), "mail.send", Json.int(3)) is Ok(j3)
+  assert enqueue_at(
+    files,
+    path,
+    rng,
+    Clock.fixed(t0 + 3.seconds),
+    "default",
+    "fail.job",
+    Json.Null,
+    t0 + 3.seconds,
+    1
+  ) is
+    Ok(j4)
+
+  # Fail j4 and complete j1, cancel j3
+  assert claim_next(files, path, Clock.fixed(t0 + 3.seconds), ["mail.send"]) is Ok(Some(c1))
+  assert c1.id == j1
+  assert complete(files, path, Clock.fixed(t0 + 3.seconds), j1, c1.attempts) == Ok(Unit)
+
+  assert claim_next(files, path, Clock.fixed(t0 + 3.seconds), ["fail.job"]) is Ok(Some(c4))
+  assert fail_or_retry(files, path, Clock.fixed(t0 + 3.seconds), j4, c4.attempts, "boom") ==
+    Ok(Unit)
+
+  assert cancel_job(files, path, Clock.fixed(t0 + 4.seconds), j3) == Ok(true)
+  assert cancel_job(files, path, Clock.fixed(t0 + 4.seconds), j1) == Ok(false)
+
+  assert queue_stats(rf, path) ==
+    Ok(QueueStats(pending: 1, running: 0, completed: 1, failed: 1, cancelled: 1))
+
+  # Multi-page unfiltered cursor pagination (page size 2 -> 2 pages of 2 items = all 4)
+  assert list_page(rf, path, None, Pagination.PageParams(limit: 2, cursor: None)) is Ok(pg1)
+  assert pg1.items.size == 2 and pg1.has_more? and pg1.next_cursor is Some(_)
+  assert list_page(rf, path, None, Pagination.PageParams(limit: 2, cursor: pg1.next_cursor)) is
+    Ok(pg2)
+  assert pg2.items.size == 2 and not pg2.has_more? and pg2.next_cursor == None
+  all_ids = pg1.items.concat(pg2.items).map(fn(j) j.id end)
+  assert all_ids == [j1, j2, j3, j4]
+
+  # Filtered cursor pagination + retry_failed
+  assert list_page(rf, path, Some("failed"), Pagination.PageParams(limit: 5, cursor: None)) is
+    Ok(fpg)
+  assert fpg.items.map(fn(j) j.id end) == [j4]
+  assert retry_failed(files, path, Clock.fixed(t0 + 5.seconds), j4) == Ok(true)
+  assert retry_failed(files, path, Clock.fixed(t0 + 5.seconds), j1) == Ok(false)
+  assert queue_stats(rf, path) ==
+    Ok(QueueStats(pending: 2, running: 0, completed: 1, failed: 0, cancelled: 1))
 end

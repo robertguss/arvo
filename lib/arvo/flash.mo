@@ -9,10 +9,13 @@ with_notice,
 with_alert,
 with_errors,
 attach,
+attach_with_keyring,
 take,
+take_with_keyring,
 clear_if_present
 use Api
 use Arvo.Cookie
+use Arvo.Keyring
 use Crypto
 use Json
 
@@ -116,6 +119,47 @@ fn clear_if_present(res: Api.Response, had_cookie?: Bool, secure?: Bool) : Api.R
   end
 end
 
+fn flash_cookie_options(secure?: Bool) : Cookie.CookieOptions
+  Cookie.CookieOptions(
+    path: "/",
+    max_age: Some(flash_max_age),
+    http_only?: true,
+    secure?: secure?,
+    same_site: Cookie.Lax
+  )
+end
+
+## Seals `data` with `keyring.primary_id` (`v2.<kid>.<b64>`) and attaches `arvo_flash`.
+fn attach_with_keyring(
+  res: Api.Response,
+  rng: SecureRandom,
+  keyring: Keyring.Keyring,
+  data: FlashData,
+  secure?: Bool
+) : Api.Response
+  plaintext = Json.encode(data).bytes
+  case Keyring.seal(rng, keyring, plaintext, flash_aad)
+    Error(_): res
+    Ok(encoded): Cookie.set(res, cookie_name, encoded, flash_cookie_options(secure?))
+  end
+end
+
+## Reads and authenticates `arvo_flash` using `keyring` (supports both `v2.<kid>.` and legacy cookies).
+fn take_with_keyring(req: Api.Request, keyring: Keyring.Keyring) : (FlashData, Bool)
+  case Cookie.get(req, cookie_name)
+    None: (empty(), false)
+    Some(raw):
+      case Keyring.open(keyring, raw, flash_aad)
+        None: (empty(), true)
+        Some(opened):
+          case Json.decode_strict[FlashData](opened.plaintext)
+            Ok(data): (data, true)
+            Error(_): (empty(), true)
+          end
+      end
+  end
+end
+
 test "flash round-trips across 303 redirect and fails closed on tampering"
   rng = SecureRandom.seeded(101)
   key = rng.bytes(32)
@@ -157,4 +201,40 @@ test "flash round-trips across 303 redirect and fails closed on tampering"
   (tampered_data, tampered_had?) = take(tampered_req, key)
   assert tampered_had?
   assert empty?(tampered_data)
+end
+
+test "flash keyring supports rotation and legacy attach cookies"
+  rng = SecureRandom.seeded(102)
+  k1 = rng.bytes(32)
+  k2 = rng.bytes(32)
+  kr1 = case Keyring.single("k1", k1)
+    Ok(k): k
+    Error(_): stop "kr1"
+  end
+  kr2 = case Keyring.from_entries([
+    Keyring.KeyEntry(id: "k2", key: k2),
+    Keyring.KeyEntry(id: "k1", key: k1)
+  ])
+    Ok(k): k
+    Error(_): stop "kr2"
+  end
+
+  data = with_notice("Rotated flash ok")
+  res1 = attach_with_keyring(Api.redirect_see_other("/"), rng, kr1, data, true)
+  hdr1 = res1.header("Set-Cookie") or ""
+  assert hdr1.starts_with?("arvo_flash=v2.k1.")
+  pair1 = (hdr1.split(";").first or "").trim
+  assert take_with_keyring(Api.get("/").with_header("Cookie", pair1), kr2) == (data, true)
+  assert take_with_keyring(Api.get("/").with_header("Cookie", "arvo_flash=v2.k2.bad"), kr2) == (
+    empty(),
+    true
+  )
+  assert take_with_keyring(Api.get("/"), kr2) == (empty(), false)
+
+  leg_res = attach(Api.redirect_see_other("/"), rng, k1, with_alert("Legacy"), true)
+  leg_pair = ((leg_res.header("Set-Cookie") or "").split(";").first or "").trim
+  assert take_with_keyring(Api.get("/").with_header("Cookie", leg_pair), kr2) == (
+    with_alert("Legacy"),
+    true
+  )
 end
