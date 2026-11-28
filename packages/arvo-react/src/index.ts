@@ -1,3 +1,11 @@
+export { AuditTimeline } from "./components/AuditTimeline";
+export type {
+  AuditTimelineEntry,
+  AuditTimelineProps,
+  ReplayCallItem,
+  ReplayProposalItem,
+  RowDiffItem,
+} from "./components/AuditTimeline";
 export { useArvoLive } from "./hooks/useArvoLive";
 export type {
   EventSourceLike,

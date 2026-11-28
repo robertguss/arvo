@@ -138,6 +138,10 @@ run_modb_suite() {
     "$MO" test "$f"
   done
 
+  echo "==> Checking and testing MoDB backup runner ($MO)"
+  "$MO" check "$arvo_root/packages/arvo-modb/cmd/backup/main.mo"
+  "$MO" test "$arvo_root/packages/arvo-modb/cmd/backup/main.mo"
+
   echo "==> Checking and testing examples/arvo-modb-starter via mo.toml path dependencies"
   "$MO" check "$arvo_root/examples/arvo-modb-starter/main.mo"
   "$MO" test "$arvo_root/examples/arvo-modb-starter/main.mo"

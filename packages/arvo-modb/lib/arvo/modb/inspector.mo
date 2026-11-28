@@ -1,12 +1,13 @@
 ## Strictly `ReadFiles`-only MoDB runtime inspector populating `Arvo.DevDashboard.DashboardSnapshot`
 ## across `Arvo.Modb.Jobs`, `Arvo.Modb.Sessions`, `Modb.buckets`, `_modb_audit`, `Modb.Sync`,
-## and optional `Modb.Fts` live search previews.
+## `Modb.Replay` / `Modb.World` (`Arvo.Modb.TimeTravel`), and optional `Modb.Fts` previews.
 module Arvo.Modb.Inspector
 expose InspectorConfig(..), default_config, collect_store_snapshot, collect_snapshot
 use Api
 use Arvo.DevDashboard
 use Arvo.Modb.Jobs
 use Arvo.Modb.Sessions
+use Arvo.Modb.TimeTravel
 use Arvo.Session
 use Json
 use Modb
@@ -192,24 +193,39 @@ fn collect_snapshot(rf: ReadFiles, cfg: InspectorConfig) : Result(
   sess_path = cfg.sessions_db_path or cfg.db_path
   jobs = try collect_jobs(rf, jobs_path, cfg.max_recent_jobs)
   sessions = try collect_sessions(rf, sess_path)
-  store = if rf.exists?(cfg.db_path)
+  audit_cap = clamp_cap(cfg.max_audit_entries, 25)
+  (store, time_travel) = if rf.exists?(cfg.db_path)
     try Modb.with_shared_lock(
       rf,
       cfg.db_path,
       fn(me) me.to_text end,
-      fn(s) collect_store_snapshot(s, cfg) end
+      fn(s)
+        st = try collect_store_snapshot(s, cfg)
+        tt = try TimeTravel.collect_time_travel_from_store(s, audit_cap)
+        Ok((st, tt))
+      end
     )
   else
-    DevDashboard.StoreSnapshot(
-      engine: "modb",
-      buckets: [],
-      audit_entries: [],
-      sync_peers: [],
-      fts_query: None,
-      fts_hits: []
+    (
+      DevDashboard.StoreSnapshot(
+        engine: "modb",
+        buckets: [],
+        audit_entries: [],
+        sync_peers: [],
+        fts_query: None,
+        fts_hits: []
+      ),
+      DevDashboard.empty_time_travel()
     )
   end
-  Ok(DevDashboard.DashboardSnapshot(jobs: jobs, sessions: sessions, store: store))
+  Ok(
+    DevDashboard.DashboardSnapshot(
+      jobs: jobs,
+      sessions: sessions,
+      store: store,
+      time_travel: time_travel
+    )
+  )
 end
 
 test "Arvo.Modb.Inspector collects ReadFiles-only snapshot across Jobs, Sessions, Ledger, Sync, and FTS"
@@ -289,4 +305,13 @@ test "Arvo.Modb.Inspector collects ReadFiles-only snapshot across Jobs, Sessions
     res.text.contains?("s3-prod") and
     res.text.contains?("water") and
     res.text.contains?("note.index")
+  assert snap.time_travel.calls.empty?
+  audit_res = DevDashboard.handle(
+    Api.get("/__arvo/audit"),
+    rf,
+    rng,
+    DevDashboard.default_config("AcmeMoDB", true, None),
+    snap
+  )
+  assert audit_res.status == 200 and audit_res.text.contains?("note.index")
 end

@@ -31,6 +31,10 @@ api
   get "/__arvo" Routes.dev_dashboard
   get "/__arvo/mailbox" Routes.dev_dashboard
   get "/__arvo/storage.json" Routes.dev_dashboard
+  get "/__arvo/audit" Routes.dev_dashboard
+  get "/__arvo/audit.json" Routes.dev_dashboard
+  get "/__arvo/replay" Routes.dev_dashboard
+  get "/__arvo/replay.json" Routes.dev_dashboard
 
   scope "/bills"
     get "/search" Routes.search_bills
@@ -557,6 +561,10 @@ test "Flagship MoDB starter serves /live SSE, /bills/search BM25+ FTS, /mcp acti
   assert WebTest.get(s1, app_prod, "/__arvo").1.status == 404
   assert WebTest.get(s1, app_prod, "/__arvo/mailbox").1.status == 404
   assert WebTest.get(s1, app_prod, "/__arvo/storage.json").1.status == 404
+  assert WebTest.get(s1, app_prod, "/__arvo/audit").1.status == 404
+  assert WebTest.get(s1, app_prod, "/__arvo/audit.json").1.status == 404
+  assert WebTest.get(s1, app_prod, "/__arvo/replay").1.status == 404
+  assert WebTest.get(s1, app_prod, "/__arvo/replay.json").1.status == 404
 
   # B. BM25+ Full-Text Search via /bills/search?q=Electric finds Bill #1
   (s2, search_res) = WebTest.get(s1, app_prod, "/bills/search?q=Electric")
@@ -642,4 +650,13 @@ test "Flagship MoDB starter serves /live SSE, /bills/search BM25+ FTS, /mcp acti
   dev_mbox = WebTest.get(s5, app_dev, "/__arvo/mailbox").1
   assert dev_mbox.status == 200 and
     dev_mbox.text.contains?("http://127.0.0.1:8080/verify?token=devtok123")
+  dev_audit_html = WebTest.get(s5, app_dev, "/__arvo/audit").1
+  assert dev_audit_html.status == 200 and
+    dev_audit_html.text.contains?("Audit &amp; Replay Timeline")
+  dev_audit_json = WebTest.get(s5, app_dev, "/__arvo/audit.json").1
+  assert dev_audit_json.status == 200 and dev_audit_json.text.contains?("\"audit_entries\"")
+  dev_replay_html = WebTest.get(s5, app_dev, "/__arvo/replay").1
+  assert dev_replay_html.status == 200 and dev_replay_html.text.contains?("Time-Travel Replay")
+  dev_replay_json = WebTest.get(s5, app_dev, "/__arvo/replay.json").1
+  assert dev_replay_json.status == 200 and dev_replay_json.text.contains?("\"proposals\"")
 end

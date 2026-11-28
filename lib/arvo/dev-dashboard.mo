@@ -1,6 +1,6 @@
 ## Self-contained HTML/JSON local developer & operator dashboard (`/__arvo`) providing
 ## the Dev Mailbox (captured emails + one-click magic/verification URLs), job queue
-## stats, active sessions, and storage audit/sync/search snapshots. Always returns `404` when disabled.
+## stats, active sessions, audit/replay timeline, and speculative worlds. Always returns `404` when disabled.
 module Arvo.DevDashboard
 expose DashboardConfig(..),
 JobSummary(..),
@@ -10,12 +10,20 @@ AuditSummary(..),
 SyncPeerSummary(..),
 SearchPreviewHit(..),
 StoreSnapshot(..),
+ReplayCallSummary(..),
+RowDiffSummary(..),
+ReplayProposalSummary(..),
+WorldSummary(..),
+TimeTravelSnapshot(..),
 DashboardSnapshot(..),
 default_config,
+empty_time_travel,
 empty_snapshot,
 handle,
 render_overview_html,
-render_mailbox_html
+render_mailbox_html,
+render_audit_html,
+render_replay_html
 use Api
 use Arvo.Inertia
 use Arvo.Mail
@@ -99,11 +107,74 @@ struct StoreSnapshot
   fts_hits: List(SearchPreviewHit)
 end
 
+## Recorded replayable call summary rendered on `/__arvo/audit` and `/__arvo/replay`.
+struct ReplayCallSummary
+  seq: Int
+  audit_seq: Option(Int)
+  schema_version: Int
+  principal: Text
+  action: Text
+  reason: Text
+  at: Text
+  outcome_kind: Text
+  outcome_detail: Text
+  world_id: Option(Text)
+end
+
+## Row-level diff summary for one storage bucket in a replay proposal.
+struct RowDiffSummary
+  bucket: Text
+  added: Int
+  removed: Int
+  modified: Int
+end
+
+## Simulated or applied time-travel replay proposal summary.
+struct ReplayProposalSummary
+  id: Text
+  description: Text
+  status: Text
+  created_by: Text
+  created_at: Text
+  total_calls: Int
+  excluded: Int
+  unchanged: Int
+  reply_changed: Int
+  now_refused: Int
+  now_invariant_blocked: Int
+  bucket_diffs: List(RowDiffSummary)
+end
+
+## Speculative agent workspace summary.
+struct WorldSummary
+  id: Text
+  principal: Text
+  grant_id: Text
+  base_txid: Int
+  step_count: Int
+  status: Text
+  created_at: Text
+  expires_at: Text
+end
+
+## Time-travel replay call log, proposals, and speculative worlds.
+struct TimeTravelSnapshot
+  calls: List(ReplayCallSummary)
+  proposals: List(ReplayProposalSummary)
+  worlds: List(WorldSummary)
+end
+
 ## Complete dashboard snapshot passed into `DevDashboard.handle`.
 struct DashboardSnapshot
   jobs: JobQueueSnapshot
   sessions: List(SessionSummary)
   store: StoreSnapshot
+  time_travel: TimeTravelSnapshot
+end
+
+## Empty `TimeTravelSnapshot` for backends without replay history.
+fn empty_time_travel() : TimeTravelSnapshot
+  TimeTravelSnapshot(calls: [], proposals: [], worlds: [])
 end
 
 ## Default configuration mounting at `/__arvo` (strictly gated by `enabled?`).
@@ -128,7 +199,8 @@ fn empty_snapshot(engine: Text) : DashboardSnapshot
       sync_peers: [],
       fts_query: None,
       fts_hits: []
-    )
+    ),
+    time_travel: empty_time_travel()
   )
 end
 
@@ -190,6 +262,8 @@ fn wrap_layout(cfg: DashboardConfig, title: Text, active_tab: Text, nonce: Text,
   base = normalize_base_path(cfg.base_path)
   overview_cls = if active_tab == "overview": "tab active" else: "tab"
   mailbox_cls = if active_tab == "mailbox": "tab active" else: "tab"
+  audit_cls = if active_tab == "audit": "tab active" else: "tab"
+  replay_cls = if active_tab == "replay": "tab active" else: "tab"
   """
   <!doctype html>
   <html lang="en">
@@ -200,7 +274,7 @@ fn wrap_layout(cfg: DashboardConfig, title: Text, active_tab: Text, nonce: Text,
     <style nonce="#{esc(nonce)}">
       body{font-family:ui-sans-serif,system-ui,sans-serif;margin:0;background:#0f172a;color:#e2e8f0;line-height:1.5}
       header{background:#1e293b;border-bottom:1px solid #334155;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;gap:16px}
-      nav{display:flex;gap:12px}
+      nav{display:flex;flex-wrap:wrap;gap:8px}
       .tab{color:#cbd5e1;text-decoration:none;padding:6px 12px;border-radius:6px;font-size:14px;border:1px solid transparent}
       .tab.active{background:#334155;color:#fff;border-color:#475569}
       main{max-width:1100px;margin:24px auto;padding:0 20px}
@@ -224,8 +298,12 @@ fn wrap_layout(cfg: DashboardConfig, title: Text, active_tab: Text, nonce: Text,
       <nav>
         <a class="#{overview_cls}" href="#{esc(base)}">Overview</a>
         <a class="#{mailbox_cls}" href="#{esc(base)}/mailbox">Dev Mailbox</a>
+        <a class="#{audit_cls}" href="#{esc(base)}/audit">Audit</a>
+        <a class="#{replay_cls}" href="#{esc(base)}/replay">Replay</a>
         <a class="tab" href="#{esc(base)}/jobs.json">jobs.json</a>
         <a class="tab" href="#{esc(base)}/storage.json">storage.json</a>
+        <a class="tab" href="#{esc(base)}/audit.json">audit.json</a>
+        <a class="tab" href="#{esc(base)}/replay.json">replay.json</a>
       </nav>
     </header>
     <main>#{body_html}</main>
@@ -374,6 +452,93 @@ fn render_mailbox_html(cfg: DashboardConfig, mails: List(Mail.CapturedMail), non
   wrap_layout(cfg, "Dev Mailbox (#{mails.size})", "mailbox", nonce, cards)
 end
 
+## Renders the Audit & Replay Call Timeline HTML page.
+fn render_audit_html(cfg: DashboardConfig, snap: DashboardSnapshot, nonce: Text) : Text
+  audit_rows = if snap.store.audit_entries.empty?
+    "<tr><td colspan=\"5\">No audit entries recorded yet.</td></tr>"
+  else
+    snap.store.audit_entries.map(fn(a)
+      "<tr><td>##{a.seq} (tx #{a.txid})</td><td>#{esc(a.principal)}</td><td><code>#{esc(a.action)}</code></td><td>#{esc(
+        a.summary
+      )}</td><td>#{esc(a.at)}</td></tr>"
+    end).join("")
+  end
+
+  call_rows = if snap.time_travel.calls.empty?
+    "<tr><td colspan=\"6\">No replayable calls recorded yet.</td></tr>"
+  else
+    snap.time_travel.calls.map(fn(c)
+      reason_txt = if c.reason.empty?: "-" else: c.reason
+      "<tr><td>##{c.seq} (v#{c.schema_version})</td><td>#{esc(c.principal)}</td><td><code>#{esc(
+        c.action
+      )}</code></td><td><span class=\"badge\">#{esc(c.outcome_kind)}</span> #{esc(c.outcome_detail)}</td><td>#{esc(
+        reason_txt
+      )}</td><td>#{esc(c.at)}</td></tr>"
+    end).join("")
+  end
+
+  body = """
+  <h2>Audit &amp; Replay Timeline</h2>
+  <div class="grid">
+    <div class="card"><div class="k">Audit Entries</div><div class="v">#{snap.store.audit_entries
+    .size}</div></div>
+    <div class="card"><div class="k">Replayable Calls</div><div class="v">#{snap.time_travel.calls
+    .size}</div></div>
+  </div>
+  <h2>Hash-Chained Audit Log</h2>
+  <table><thead><tr><th>Seq / Tx</th><th>Principal</th><th>Action</th><th>Summary</th><th>At</th></tr></thead><tbody>#{audit_rows}</tbody></table>
+  <h2>Replayable Action Log</h2>
+  <table><thead><tr><th>Seq / Schema</th><th>Principal</th><th>Action</th><th>Outcome</th><th>Reason</th><th>At</th></tr></thead><tbody>#{call_rows}</tbody></table>
+  """
+  wrap_layout(cfg, "Audit Timeline", "audit", nonce, body)
+end
+
+## Renders the Time-Travel Replay Proposals & Speculative Worlds HTML page.
+fn render_replay_html(cfg: DashboardConfig, snap: DashboardSnapshot, nonce: Text) : Text
+  prop_rows = if snap.time_travel.proposals.empty?
+    "<tr><td colspan=\"6\">No time-travel replay proposals yet.</td></tr>"
+  else
+    snap.time_travel.proposals.map(fn(p)
+      diff_badges = if p.bucket_diffs.empty?
+        "<span>-</span>"
+      else
+        p.bucket_diffs.map(fn(d)
+          "<span class=\"badge\">#{esc(d.bucket)}: +#{d.added} / ~#{d.modified} / -#{d.removed}</span>"
+        end).join("")
+      end
+      "<tr><td><code>#{esc(p.id)}</code></td><td><span class=\"badge\">#{esc(p.status)}</span></td><td>#{esc(
+        p.description
+      )}</td><td>#{p.excluded} excl / #{p.unchanged} unch / #{p.reply_changed} chg</td><td>#{diff_badges}</td><td>#{esc(
+        p.created_by
+      )}</td></tr>"
+    end).join("")
+  end
+
+  world_rows = if snap.time_travel.worlds.empty?
+    "<tr><td colspan=\"6\">No speculative worlds recorded.</td></tr>"
+  else
+    snap.time_travel.worlds.map(fn(w)
+      "<tr><td><code>#{esc(w.id)}</code></td><td>#{esc(w.principal)}</td><td><span class=\"badge\">#{esc(
+        w.status
+      )}</span></td><td>tx #{w.base_txid}</td><td>#{w.step_count}</td><td>#{esc(w.expires_at)}</td></tr>"
+    end).join("")
+  end
+
+  body = """
+  <h2>Time-Travel Replay &amp; Speculative Worlds</h2>
+  <div class="grid">
+    <div class="card"><div class="k">Proposals</div><div class="v">#{snap.time_travel.proposals.size}</div></div>
+    <div class="card"><div class="k">Speculative Worlds</div><div class="v">#{snap.time_travel
+    .worlds.size}</div></div>
+  </div>
+  <h2>Replay Proposals</h2>
+  <table><thead><tr><th>ID</th><th>Status</th><th>Description</th><th>Outcome Summary</th><th>Bucket Diffs</th><th>Author</th></tr></thead><tbody>#{prop_rows}</tbody></table>
+  <h2>Speculative Worlds</h2>
+  <table><thead><tr><th>ID</th><th>Principal</th><th>Status</th><th>Base Tx</th><th>Steps</th><th>Expires</th></tr></thead><tbody>#{world_rows}</tbody></table>
+  """
+  wrap_layout(cfg, "Time-Travel Replay", "replay", nonce, body)
+end
+
 fn json_no_store(val: T, nonce: Text) : Api.Response where T: Json
   res = Api.encoded_json_response(200, val.to_json).with_header("Cache-Control", "no-store")
   Security.apply_headers(res, dashboard_headers(nonce))
@@ -434,6 +599,22 @@ fn handle(
       })
     end)
     json_no_store(Json.Array(mails), nonce)
+  else if sub == "/audit"
+    html = render_audit_html(cfg, snap, nonce)
+    res = Api.html_response(200, html).with_header("Cache-Control", "no-store")
+    Security.apply_headers(res, hdrs)
+  else if sub == "/audit.json"
+    payload = Json.Object({
+      "audit_entries": snap.store.audit_entries.to_json,
+      "replay_calls": snap.time_travel.calls.to_json
+    })
+    json_no_store(payload, nonce)
+  else if sub == "/replay"
+    html = render_replay_html(cfg, snap, nonce)
+    res = Api.html_response(200, html).with_header("Cache-Control", "no-store")
+    Security.apply_headers(res, hdrs)
+  else if sub == "/replay.json"
+    json_no_store(snap.time_travel, nonce)
   else if sub == "/jobs.json"
     json_no_store(snap.jobs, nonce)
   else if sub == "/sessions.json"
@@ -445,7 +626,7 @@ fn handle(
   end
 end
 
-test "Arvo.DevDashboard fails closed when disabled, renders Dev Mailbox links cleanly, and escapes XSS"
+test "Arvo.DevDashboard fails closed when disabled, renders Dev Mailbox & Audit/Replay cleanly, and escapes XSS"
   t0 = Time.parse("2026-11-28T01:00:00Z") or stop "t0"
   rng = SecureRandom.seeded(99)
   f = Files.in_memory({})
@@ -506,12 +687,65 @@ test "Arvo.DevDashboard fails closed when disabled, renders Dev Mailbox links cl
       fts_hits: [
         SearchPreviewHit(doc_id: "doc_1", scope: "public", score: "1.42", matched_terms: ["water"])
       ]
+    ),
+    time_travel: TimeTravelSnapshot(
+      calls: [
+        ReplayCallSummary(
+          seq: 1,
+          audit_seq: Some(1),
+          schema_version: 1,
+          principal: "usr_1",
+          action: "bill.create",
+          reason: "<img src=x onerror=alert(1)>",
+          at: t0.to_text,
+          outcome_kind: "ok",
+          outcome_detail: "{\"id\":1}",
+          world_id: None
+        )
+      ],
+      proposals: [
+        ReplayProposalSummary(
+          id: "prop_1",
+          description: "<script>xss()</script> Undo #1",
+          status: "pending",
+          created_by: "usr_1",
+          created_at: t0.to_text,
+          total_calls: 1,
+          excluded: 1,
+          unchanged: 0,
+          reply_changed: 0,
+          now_refused: 0,
+          now_invariant_blocked: 0,
+          bucket_diffs: [RowDiffSummary(bucket: "bills", added: 0, removed: 1, modified: 0)]
+        )
+      ],
+      worlds: [
+        WorldSummary(
+          id: "w_1",
+          principal: "agent_1",
+          grant_id: "g_1",
+          base_txid: 2,
+          step_count: 3,
+          status: "open",
+          created_at: t0.to_text,
+          expires_at: t0.to_text
+        )
+      ]
     )
   )
 
   # Disabled config ALWAYS returns 404 across every endpoint
   off_cfg = default_config("Acme", false, Some("tmp/mailbox"))
-  for p in ["/__arvo", "/__arvo/mailbox", "/__arvo/mailbox.json", "/__arvo/jobs.json"]
+  for p in [
+    "/__arvo",
+    "/__arvo/mailbox",
+    "/__arvo/mailbox.json",
+    "/__arvo/audit",
+    "/__arvo/audit.json",
+    "/__arvo/replay",
+    "/__arvo/replay.json",
+    "/__arvo/jobs.json"
+  ]
     assert handle(Api.get(p), rf, rng, off_cfg, snap).status == 404
   end
 
@@ -548,6 +782,26 @@ test "Arvo.DevDashboard fails closed when disabled, renders Dev Mailbox links cl
   assert mbox.status == 200
   assert mbox.text.contains?("href=\"https://localhost:8080/magic?token=abc_123\"")
   assert mbox.text.contains?("<iframe sandbox=\"\" srcdoc=\"&lt;script&gt;evil()&lt;/script&gt;")
+
+  audit_html = handle(Api.get("/__arvo/audit"), rf, rng, on_cfg, snap)
+  assert audit_html.status == 200
+  assert audit_html.text.contains?("&lt;img src=x onerror=alert(1)&gt;")
+  assert not audit_html.text.contains?("<img src=x")
+
+  assert handle(Api.get("/__arvo/audit.json"), rf, rng, on_cfg, snap) is adoc_res and
+    adoc_res.status == 200 and
+    adoc_res.text.contains?("\"replay_calls\"")
+
+  replay_html = handle(Api.get("/__arvo/replay"), rf, rng, on_cfg, snap)
+  assert replay_html.status == 200
+  assert replay_html.text.contains?("&lt;script&gt;xss()&lt;/script&gt;")
+  assert not replay_html.text.contains?("<script>xss()")
+  assert replay_html.text.contains?("bills: +0 / ~0 / -1")
+  assert replay_html.text.contains?("w_1")
+
+  assert handle(Api.get("/__arvo/replay.json"), rf, rng, on_cfg, snap) is rdoc_res and
+    rdoc_res.status == 200 and
+    rdoc_res.text.contains?("\"prop_1\"")
 
   assert handle(Api.get("/__arvo/mailbox.json"), rf, rng, on_cfg, snap).status == 200
   assert handle(Api.get("/__arvo/jobs.json"), rf, rng, on_cfg, snap).json is Ok(jdoc) and
