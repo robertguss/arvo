@@ -1,0 +1,8 @@
+[package]
+name = "arvo-mobrowse-tests"
+version = "0.2.1"
+
+[dependencies]
+arvo = { path = "../../.." }
+arvo-mobrowse = { path = ".." }
+mobrowse = { path = "../../../../mobrowse" }

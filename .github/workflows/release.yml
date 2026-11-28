@@ -72,6 +72,7 @@ jobs:
 
             depends_on "robertguss/tap/mo"
             depends_on "robertguss/tap/modb"
+            depends_on "robertguss/tap/mobrowse"
 
             def install
               libexec.install "mo.toml", "lib", "cmd", "packages", "bin"
@@ -83,11 +84,18 @@ jobs:
               inreplace libexec/"packages/arvo-modb/cmd/backup/mo.toml",
                         'modb = { path = "../../../../../modb" }',
                         %(modb = { path = "#{Formula["modb"].opt_libexec}" })
+              inreplace libexec/"packages/arvo-mobrowse/mo.toml",
+                        'mobrowse = { path = "../../../mobrowse" }',
+                        %(mobrowse = { path = "#{Formula["mobrowse"].opt_libexec}" })
+              inreplace libexec/"packages/arvo-mobrowse/tests/mo.toml",
+                        'mobrowse = { path = "../../../../mobrowse" }',
+                        %(mobrowse = { path = "#{Formula["mobrowse"].opt_libexec}" })
 
               (bin/"arvo").write_env_script libexec/"bin/arvo",
                 ARVO_ROOT: libexec,
                 MO: Formula["mo"].opt_bin/"mo",
-                MODB_PATH: Formula["modb"].opt_libexec
+                MODB_PATH: Formula["modb"].opt_libexec,
+                MOBROWSE_PATH: Formula["mobrowse"].opt_libexec
 
               doc.install "README.md", "LICENSE"
             end
@@ -97,6 +105,9 @@ jobs:
               system bin/"arvo", "new", "smoke-app", "--dir", testpath/"smoke-app"
               assert_match Formula["modb"].opt_libexec.to_s, (testpath/"smoke-app/mo.toml").read
               system Formula["mo"].opt_bin/"mo", "check", testpath/"smoke-app/main.mo"
+              system bin/"arvo", "new", "mobrowse-smoke", "--mobrowse", "--dir", testpath/"mobrowse-smoke"
+              assert_match Formula["mobrowse"].opt_libexec.to_s, (testpath/"mobrowse-smoke/mo.toml").read
+              assert_predicate testpath/"mobrowse-smoke/test-mobrowse-e2e.mo", :exist?
             end
           end
           """

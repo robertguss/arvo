@@ -111,6 +111,12 @@ In Mo, `use Arvo.<...>.<Name>` binds the final segment `<Name>`.
 | `Arvo.Modb.TimeTravel` | `TimeTravel` | `ReadFiles` time-travel inspector + offline selective-undo preview and proposal accept/discard lifecycle. |
 | `Arvo.Modb.Testing` | `Testing` | Zero-config `SecurityMatrix` & `Modb.Ledger` hash-chain/invariant auditor for MoDB apps. |
 
+### MoBrowse Zero-Chromium E2E Package (`packages/arvo-mobrowse/`, requires sibling `mobrowse`)
+
+| Module | Local Alias | Purpose |
+| --- | --- | --- |
+| `Arvo.Mobrowse.E2e` | `E2e` | Zero-Chromium E2E evidence (`e2e-report.json`), desktop/mobile PNG baseline diffing (`capture_page`), and SSR SEO `<head>` assertions (`inspect_seo_head`, `assert_seo_head`) over `Mobrowse.Arvo`. |
+
 ### `@arvo/react` Kit (`packages/arvo-react/`)
 
 Turnkey React 19 + Inertia v2 + TypeScript UI kit exporting:
@@ -128,12 +134,12 @@ Turnkey React 19 + Inertia v2 + TypeScript UI kit exporting:
 ```sh
 brew install robertguss/tap/arvo
 # Update later:
-brew update && brew upgrade mo modb arvo
+brew update && brew upgrade mo modb mobrowse arvo
 ```
 
 ### Linux / No-Homebrew Installer (`x86_64` Linux & Apple Silicon macOS)
 
-Installs or upgrades `mo`, `modb`, `modb-mcp`, and `arvo` into `~/.local/bin` and `~/.local/share` with SHA-256 verification:
+Installs or upgrades `mo`, `modb`, `modb-mcp`, `mobrowse`, `mobrowse-viewer`, and `arvo` into `~/.local/bin` and `~/.local/share` with SHA-256 verification:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/robertguss/arvo/main/scripts/install.sh | sh
@@ -157,7 +163,7 @@ Requires [**Mo 0.4.1+**](https://github.com/robertguss/mo).
 
 ```bash
 # Scaffold a new full-stack app (interactive or scripted via bin/arvo or cmd/arvo)
-./bin/arvo new my-app --db modb --auth full
+./bin/arvo new my-app --db modb --auth full --mobrowse
 cd my-app && ../bin/arvo dev
 ```
 
@@ -168,7 +174,7 @@ cd my-app && ../bin/arvo dev
 Run pure-Mo commands directly via `mo run cmd/arvo/main.mo ...`, or invoke the host wrapper [`bin/arvo`](bin/arvo) (needed for `--emit-script` workflows that build frontends, vendor dependencies, SSH to `exe.dev` VMs, or run full project checks):
 
 ### App & `exe.dev` Deployment Commands
-- `arvo new <app-name> [--db modb|sqlite] [--auth full|allowlist|none]` — scaffold a new Arvo + React app
+- `arvo new <app-name> [--db modb|sqlite] [--auth full|allowlist|none] [--orgs] [--mcp] [--mobrowse]` — scaffold a new Arvo + React app (with optional MoBrowse E2E + SEO suite `test-mobrowse-e2e.mo`)
 - `arvo dev [--app DIR] [--port 8080] [--vite-port 5173] [--no-vite]` — run Vite HMR + `mo serve --watch`
 - `arvo gen <resource|auth|page|job|mcp-tool> <Name> [fields...]` — generate explicit Mo handlers + React pages
 - `arvo doctor [--app DIR] [--prod] [--json]` — audit `arvo.toml`, secrets, hardening, and `mo check`
@@ -193,17 +199,17 @@ Run pure-Mo commands directly via `mo run cmd/arvo/main.mo ...`, or invoke the h
 ## Running the Test Suite
 
 ```bash
-# Core + SQLite + Testing + CLI + examples/arvo-starter (auto-runs MoDB suite if ../modb exists)
+# Core + SQLite + Testing + CLI + examples/arvo-starter (auto-runs MoDB/MoBrowse suites if siblings exist)
 ./scripts/test.sh
 
-# Explicitly select a MoDB checkout
-MODB_PATH=/path/to/modb ./scripts/test.sh
+# Explicitly select MoDB and/or MoBrowse checkouts
+MODB_PATH=/path/to/modb MOBROWSE_PATH=/path/to/mobrowse ./scripts/test.sh
 
 # React / TypeScript component & hook suite
 npm --prefix packages/arvo-react run typecheck && npm --prefix packages/arvo-react test
 ```
 
-`./scripts/test.sh` enforces zero `Sqlite`/`Modb` leakage inside `lib/arvo/*.mo`, checks & tests all core/SQLite/testing/fixture/CLI/starter modules, validates `.feature.md` specs and `arvo contracts --check`, runs statechart sync & replay checks, passes all 14 `--strength` suites at `kill_rate == 1`, and tests `packages/arvo-modb/lib/arvo/modb/*.mo`, `packages/arvo-modb/cmd/backup/main.mo`, and `examples/arvo-modb-starter/main.mo`.
+`./scripts/test.sh` enforces zero `Sqlite`/`Modb`/`Mobrowse` leakage inside `lib/arvo/*.mo`, checks & tests all core/SQLite/testing/fixture/CLI/starter modules, validates `.feature.md` specs and `arvo contracts --check`, runs statechart sync & replay checks, passes all 14 `--strength` suites at `kill_rate == 1`, tests `packages/arvo-modb/` + `examples/arvo-modb-starter/main.mo`, and tests `packages/arvo-mobrowse/` + `arvo new --mobrowse` end-to-end apps.
 
 ---
 

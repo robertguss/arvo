@@ -15,10 +15,14 @@ if [ "${MODB_PATH+x}" = x ] && { [ ! -f "$MODB_PATH/mo.toml" ] || [ ! -d "$MODB_
   echo "ERROR: MODB_PATH must point to a MoDB checkout containing mo.toml and src: '$MODB_PATH'" >&2
   exit 1
 fi
+if [ "${MOBROWSE_PATH+x}" = x ] && { [ ! -f "$MOBROWSE_PATH/mo.toml" ] || [ ! -d "$MOBROWSE_PATH/src" ]; }; then
+  echo "ERROR: MOBROWSE_PATH must point to a MoBrowse checkout containing mo.toml and src: '$MOBROWSE_PATH'" >&2
+  exit 1
+fi
 
-echo "==> Checking core Arvo modules are SQLite- and MoDB-free"
-if grep -rnE "Sqlite|Modb" "$ROOT"/lib/arvo/*.mo; then
-  echo "ERROR: top-level core module references Sqlite or Modb!" >&2
+echo "==> Checking core Arvo modules are SQLite-, MoDB-, and MoBrowse-free"
+if grep -rnE "Sqlite|Modb|Mobrowse" "$ROOT"/lib/arvo/*.mo; then
+  echo "ERROR: top-level core module references Sqlite, Modb, or Mobrowse!" >&2
   exit 1
 fi
 
@@ -154,17 +158,98 @@ run_modb_suite() {
   )
 }
 
+run_mobrowse_suite() {
+  local arvo_root="$1"
+  local mobrowse_root
+  mobrowse_root="$(cd "$arvo_root/../mobrowse" && pwd)"
+
+  echo "==> Checking and testing Arvo MoBrowse E2E + SEO package ($MO)"
+  "$MO" check "$arvo_root/packages/arvo-mobrowse/lib/arvo/mobrowse/e2e.mo"
+  "$MO" test "$arvo_root/packages/arvo-mobrowse/lib/arvo/mobrowse/e2e.mo"
+  "$MO" check "$arvo_root/packages/arvo-mobrowse/tests/e2e-suite.mo"
+  "$MO" test "$arvo_root/packages/arvo-mobrowse/tests/e2e-suite.mo"
+
+  local smoke_tmp
+  smoke_tmp="$(mktemp -d)"
+  CLEANUP_DIRS+=("$smoke_tmp")
+
+  echo "==> Scaffolding and testing \`arvo new --mobrowse\` (SQLite + Full Auth)"
+  (
+    cd "$smoke_tmp"
+    "$MO" run "$arvo_root/cmd/arvo/main.mo" new mobrowse-smoke \
+      --db sqlite --auth full --mobrowse \
+      --dir mobrowse-smoke \
+      --arvo-path "$arvo_root" \
+      --mobrowse-path "$mobrowse_root"
+  )
+  "$MO" check "$smoke_tmp/mobrowse-smoke/main.mo"
+  "$MO" test "$smoke_tmp/mobrowse-smoke/main.mo"
+  "$MO" check "$smoke_tmp/mobrowse-smoke/test-mobrowse-e2e.mo"
+  "$MO" test "$smoke_tmp/mobrowse-smoke/test-mobrowse-e2e.mo"
+
+  if [ -f "$arvo_root/../modb/mo.toml" ]; then
+    echo "==> Scaffolding and testing \`arvo new --mobrowse\` (MoDB + Allowlist Auth)"
+    (
+      cd "$smoke_tmp"
+      "$MO" run "$arvo_root/cmd/arvo/main.mo" new mobrowse-modb-smoke \
+        --db modb --auth allowlist --mobrowse \
+        --dir mobrowse-modb-smoke \
+        --arvo-path "$arvo_root" \
+        --modb-path "$arvo_root/../modb" \
+        --mobrowse-path "$mobrowse_root"
+    )
+    "$MO" check "$smoke_tmp/mobrowse-modb-smoke/main.mo"
+    "$MO" test "$smoke_tmp/mobrowse-modb-smoke/main.mo"
+    "$MO" check "$smoke_tmp/mobrowse-modb-smoke/test-mobrowse-e2e.mo"
+    "$MO" test "$smoke_tmp/mobrowse-modb-smoke/test-mobrowse-e2e.mo"
+  fi
+}
+
+MODB_SRC=""
+MOBROWSE_SRC=""
+NEED_STAGE=0
+
 if [ "${MODB_PATH+x}" = x ]; then
+  MODB_SRC="$MODB_PATH"
+  NEED_STAGE=1
+elif [ -d "$ROOT/../modb" ]; then
+  MODB_SRC="$ROOT/../modb"
+fi
+
+if [ "${MOBROWSE_PATH+x}" = x ]; then
+  MOBROWSE_SRC="$MOBROWSE_PATH"
+  NEED_STAGE=1
+elif [ -d "$ROOT/../mobrowse" ]; then
+  MOBROWSE_SRC="$ROOT/../mobrowse"
+fi
+
+TARGET_ARVO="$ROOT"
+if [ "$NEED_STAGE" = "1" ]; then
   TMP="$(mktemp -d)"
   CLEANUP_DIRS+=("$TMP")
-  mkdir -p "$TMP/arvo" "$TMP/modb"
-  tar -C "$ROOT" --exclude=.git --exclude=node_modules -cf - . | tar -C "$TMP/arvo" -xf -
-  cp -a "$MODB_PATH/mo.toml" "$MODB_PATH/src" "$TMP/modb/"
-  run_modb_suite "$TMP/arvo"
-elif [ -d "$ROOT/../modb" ]; then
-  run_modb_suite "$ROOT"
+  mkdir -p "$TMP/arvo"
+  tar -C "$ROOT" --exclude=.git --exclude=node_modules --exclude=.arvo --exclude=target -cf - . | tar -C "$TMP/arvo" -xf -
+  if [ -n "$MODB_SRC" ]; then
+    mkdir -p "$TMP/modb"
+    cp -a "$MODB_SRC/mo.toml" "$MODB_SRC/src" "$TMP/modb/"
+  fi
+  if [ -n "$MOBROWSE_SRC" ]; then
+    mkdir -p "$TMP/mobrowse"
+    cp -a "$MOBROWSE_SRC/mo.toml" "$MOBROWSE_SRC/src" "$TMP/mobrowse/"
+  fi
+  TARGET_ARVO="$TMP/arvo"
+fi
+
+if [ -n "$MODB_SRC" ]; then
+  run_modb_suite "$TARGET_ARVO"
 else
   echo "==> Skipping optional MoDB tests (sibling ../modb not found; set MODB_PATH=/path/to/modb to run)"
+fi
+
+if [ -n "$MOBROWSE_SRC" ]; then
+  run_mobrowse_suite "$TARGET_ARVO"
+else
+  echo "==> Skipping optional MoBrowse tests (sibling ../mobrowse not found; set MOBROWSE_PATH=/path/to/mobrowse to run)"
 fi
 
 echo "All Arvo tests passed."

@@ -21,11 +21,14 @@ struct NewArgs
   auth: Text
   orgs?: Bool
   mcp?: Bool
+  mobrowse?: Bool
   dir: Option(Text)
   arvo_path: Text
   modb_path: Text
+  mobrowse_path: Text
   arvo_path_explicit?: Bool
   modb_path_explicit?: Bool
+  mobrowse_path_explicit?: Bool
   force?: Bool
   help?: Bool
 end
@@ -67,7 +70,7 @@ end
 ## Usage text for `arvo new`.
 fn new_usage() : Text
   """
-    usage: arvo new <app-name> [--db modb|sqlite] [--auth full|allowlist|none] [--orgs] [--mcp] [flags]
+    usage: arvo new <app-name> [--db modb|sqlite] [--auth full|allowlist|none] [--orgs] [--mcp] [--mobrowse] [flags]
 
     Scaffolds a complete, test-ready full-stack Arvo + Inertia v2 + React 19 application
     with native Auth, Live SSE, Dev Dashboard (/__arvo), Feature Maps, and TypeScript contracts.
@@ -77,9 +80,11 @@ fn new_usage() : Text
       --auth full|allowlist|none Native auth preset (default: full)
       --orgs                    Include multi-tenant workspace / organization creation
       --mcp                     Include Arvo.Action + POST /mcp JSON-RPC endpoint
+      --mobrowse                Include MoBrowse zero-Chromium E2E + SEO test suite (test-mobrowse-e2e.mo)
       --dir PATH                Target directory (default: <app-name>)
       --arvo-path PATH          Path to Arvo repo in mo.toml (default: $ARVO_ROOT or ../arvo)
       --modb-path PATH          Path to MoDB repo in mo.toml (default: $MODB_PATH or ../modb)
+      --mobrowse-path PATH      Path to MoBrowse repo in mo.toml (default: $MOBROWSE_PATH or ../mobrowse)
       --force                   Overwrite existing scaffolded files
       -h, --help                Show this help
     """
@@ -124,11 +129,14 @@ fn parse_new_args(rest: List(Text)) : Result(NewArgs, Text)
   var auth = "full"
   var orgs? = false
   var mcp? = false
+  var mobrowse? = false
   var dir = None
   var arvo_path = "../arvo"
   var modb_path = "../modb"
+  var mobrowse_path = "../mobrowse"
   var arvo_path_explicit? = false
   var modb_path_explicit? = false
+  var mobrowse_path_explicit? = false
   var force? = false
 
   var i = 0
@@ -142,11 +150,14 @@ fn parse_new_args(rest: List(Text)) : Result(NewArgs, Text)
           auth: auth,
           orgs?: orgs?,
           mcp?: mcp?,
+          mobrowse?: mobrowse?,
           dir: dir,
           arvo_path: arvo_path,
           modb_path: modb_path,
+          mobrowse_path: mobrowse_path,
           arvo_path_explicit?: arvo_path_explicit?,
           modb_path_explicit?: modb_path_explicit?,
+          mobrowse_path_explicit?: mobrowse_path_explicit?,
           force?: force?,
           help?: true
         )
@@ -155,6 +166,8 @@ fn parse_new_args(rest: List(Text)) : Result(NewArgs, Text)
       orgs? = true
     else if a == "--mcp"
       mcp? = true
+    else if a == "--mobrowse"
+      mobrowse? = true
     else if a == "--force"
       force? = true
     else if a == "--db"
@@ -182,6 +195,10 @@ fn parse_new_args(rest: List(Text)) : Result(NewArgs, Text)
       modb_path = try need_val(rest, i, "--modb-path")
       modb_path_explicit? = true
       i += 1
+    else if a == "--mobrowse-path"
+      mobrowse_path = try need_val(rest, i, "--mobrowse-path")
+      mobrowse_path_explicit? = true
+      i += 1
     else if a.starts_with?("-")
       return Error("unknown flag '#{a}' for `arvo new`. Run `arvo new --help`.")
     else if not seen_name?
@@ -205,18 +222,21 @@ fn parse_new_args(rest: List(Text)) : Result(NewArgs, Text)
       auth: auth,
       orgs?: orgs?,
       mcp?: mcp?,
+      mobrowse?: mobrowse?,
       dir: dir,
       arvo_path: arvo_path,
       modb_path: modb_path,
+      mobrowse_path: mobrowse_path,
       arvo_path_explicit?: arvo_path_explicit?,
       modb_path_explicit?: modb_path_explicit?,
+      mobrowse_path_explicit?: mobrowse_path_explicit?,
       force?: force?,
       help?: false
     )
   )
 end
 
-## Applies `ARVO_ROOT` and `MODB_PATH` environment defaults when `--arvo-path` / `--modb-path` were omitted.
+## Applies `ARVO_ROOT`, `MODB_PATH`, and `MOBROWSE_PATH` environment defaults when path flags were omitted.
 fn resolve_env_paths(nargs: NewArgs, env: Env) : NewArgs
   var out = nargs
   if not out.arvo_path_explicit?
@@ -235,6 +255,16 @@ fn resolve_env_paths(nargs: NewArgs, env: Env) : NewArgs
         t = m.trim
         if not t.empty?
           out.modb_path = t
+        end
+      None: Unit
+    end
+  end
+  if not out.mobrowse_path_explicit?
+    case env.get("MOBROWSE_PATH")
+      Some(mb):
+        t = mb.trim
+        if not t.empty?
+          out.mobrowse_path = t
         end
       None: Unit
     end
@@ -276,27 +306,21 @@ fn build_contracts(n: NewArgs) : List(Inertia.PageContract)
 end
 
 fn render_mo_toml(n: NewArgs) : Text
-  if n.db == "modb"
-    """
-    [package]
-    name = "#{n.app_name}"
-    version = "0.1.0"
+  deps = [
+    Some("arvo = { path = \"#{n.arvo_path}\" }"),
+    if n.db == "modb": Some("arvo-modb = { path = \"#{n.arvo_path}/packages/arvo-modb\" }") else: None,
+    if n.db == "modb": Some("modb = { path = \"#{n.modb_path}\" }") else: None,
+    if n.mobrowse?: Some("arvo-mobrowse = { path = \"#{n.arvo_path}/packages/arvo-mobrowse\" }") else: None,
+    if n.mobrowse?: Some("mobrowse = { path = \"#{n.mobrowse_path}\" }") else: None
+  ].filter_map(fn(x) x end).join("\n")
+  """
+  [package]
+  name = "#{n.app_name}"
+  version = "0.1.0"
 
-    [dependencies]
-    arvo = { path = "#{n.arvo_path}" }
-    arvo-modb = { path = "#{n.arvo_path}/packages/arvo-modb" }
-    modb = { path = "#{n.modb_path}" }
-    """
-  else
-    """
-    [package]
-    name = "#{n.app_name}"
-    version = "0.1.0"
-
-    [dependencies]
-    arvo = { path = "#{n.arvo_path}" }
-    """
-  end
+  [dependencies]
+  #{deps}
+  """
 end
 
 fn render_arvo_toml(n: NewArgs) : Text
@@ -1868,6 +1892,157 @@ fn render_register_tsx() : Text
   """
 end
 
+fn render_mobrowse_e2e_mo(n: NewArgs) : Text
+  modb? = n.db == "modb"
+  full? = n.auth == "full"
+  allow? = n.auth == "allowlist"
+  app_start = if modb?
+    "app = ApiTest.start(Main, files, clock, rng, env)"
+  else
+    "sql = Sqlite.in_memory()\n  app = ApiTest.start(Main, sql, clock, files, env, rng)"
+  end
+  app_dev_start = if modb?
+    "app_dev = ApiTest.start(Main, files_dev, clock, rng, env_dev)"
+  else
+    "sql_dev = Sqlite.in_memory()\n  app_dev = ApiTest.start(Main, sql_dev, clock, files_dev, env_dev, rng)"
+  end
+  auth_flow = if full?
+    """
+      assert Arvo.visit(Arvo.new(), app, "/register") is Ok(b0)
+      assert Arvo.status(b0) == 200
+      assert Arvo.post_form(
+        b0,
+        app,
+        "/register",
+        [("email", "ada@example.local"), ("password", "correct-horse-battery"), ("display_name", "Ada")]
+      ) is
+        Ok(b1)
+      assert Arvo.status(b1) == 200
+      assert Arvo.path(b1) == "/"
+      assert Arvo.inertia_page(b1) is Ok(hp)
+      assert hp.component == "Home"
+    """
+  else if allow?
+    """
+      assert Arvo.visit(Arvo.new(), app, "/") is Ok(b0)
+      assert Arvo.path(b0) == "/login"
+      assert Arvo.post_form(
+        b0,
+        app,
+        "/login",
+        [("email", "ada@example.local"), ("password", "horse-staple-battery")]
+      ) is
+        Ok(b1)
+      assert Arvo.status(b1) == 200
+      assert Arvo.path(b1) == "/"
+      assert Arvo.inertia_page(b1) is Ok(hp)
+      assert hp.component == "Home"
+    """
+  else
+    """
+      assert Arvo.visit(Arvo.new(), app, "/") is Ok(b1)
+      assert Arvo.status(b1) == 200
+      assert Arvo.inertia_page(b1) is Ok(hp)
+      assert hp.component == "Home"
+    """
+  end
+  dev_auth_flow = if full?
+    """
+      assert Arvo.visit(Arvo.new(), app_dev, "/register") is Ok(d0)
+      assert Arvo.post_form(
+        d0,
+        app_dev,
+        "/register",
+        [("email", "ada@example.local"), ("password", "correct-horse-battery"), ("display_name", "Ada")]
+      ) is
+        Ok(d1)
+    """
+  else if allow?
+    """
+      assert Arvo.visit(Arvo.new(), app_dev, "/") is Ok(d0)
+      assert Arvo.post_form(
+        d0,
+        app_dev,
+        "/login",
+        [("email", "ada@example.local"), ("password", "horse-staple-battery")]
+      ) is
+        Ok(d1)
+    """
+  else
+    """
+      d1 = Arvo.new()
+    """
+  end
+  """
+  ## Zero-Chromium MoBrowse E2E + SEO test suite for `#{n.app_name}`.
+  module TestMobrowseE2e
+  use Arvo.Mobrowse.E2e
+  use Main
+  use Mobrowse.Arvo
+  use Mobrowse.Png
+
+  test "#{n.app_name} MoBrowse E2E, SEO head check, fail-closed /__arvo, and PNG evidence"
+    manifest = "{\\"src/main.tsx\\":{\\"file\\":\\"assets/main.js\\",\\"css\\":[],\\"isEntry\\":true}}"
+    files = Files.in_memory({
+      "public/manifest.json": manifest,
+      "public/assets/main.js": "console.log('#{n.app_name}');"
+    })
+    files_dev = Files.in_memory({
+      "public/manifest.json": manifest,
+      "public/assets/main.js": "console.log('#{n.app_name}');"
+    })
+    rng = SecureRandom.seeded(42)
+    clock = Clock.fixed(Time.parse("2026-11-28T00:00:00Z") or stop "clock")
+    env = Env.of({
+      "ARVO_SECRET_KEY": "1111111111111111111111111111111122222222222222222222222222222222",
+      "ARVO_ALLOWLIST": "ada@example.local",
+      "ARVO_SEED_PASSWORD": "horse-staple-battery",
+      "ARVO_INSECURE_COOKIES": "1"
+    })
+    env_dev = Env.of({
+      "ARVO_SECRET_KEY": "1111111111111111111111111111111122222222222222222222222222222222",
+      "ARVO_ALLOWLIST": "ada@example.local",
+      "ARVO_SEED_PASSWORD": "horse-staple-battery",
+      "ARVO_INSECURE_COOKIES": "1",
+      "ARVO_DEV": "1"
+    })
+
+    #{app_start}
+  #{auth_flow}
+    assert E2e.assert_seo_head(b1, "#{n.app_name}", None, None) is Ok(_)
+    assert Arvo.visit(b1, app, "/__arvo") is Ok(b404)
+    assert Arvo.status(b404) == 404
+
+    #{app_dev_start}
+  #{dev_auth_flow}
+    assert Arvo.visit(d1, app_dev, "/__arvo") is Ok(dash)
+    assert Arvo.status(dash) == 200
+    assert Arvo.visible?(dash, "Active Sessions")
+    assert not Arvo.has_horizontal_overflow?(dash)
+    png = Arvo.screenshot_png(dash)
+    assert png.slice(0, 4).to_hex == "89504e47"
+    assert Png.decode_png(png, 8000000, 2048) is Ok(_)
+
+    ev_files = Files.in_memory({})
+    run0 = E2e.record_db_check(E2e.record_scenario(E2e.new_run("smoke_e2e", "local"), "#{n.app_name}-home"))
+    assert E2e.capture_page(
+      run0,
+      ev_files,
+      "dev-dashboard",
+      dash,
+      [E2e.ViewportSpec(name: "desktop", width: 640.0, height: 400.0)],
+      None,
+      2,
+      false
+    ) is
+      Ok(run1)
+    assert E2e.finalize_report(run1, ev_files) is Ok(sum)
+    assert sum.passed?
+    assert ev_files.exists?(sum.report_path)
+  end
+  """
+end
+
 ## Returns all relative file `(path, contents)` pairs generated for `nargs`.
 fn plan_app_files(nargs: NewArgs) : List((Text, Text))
   gen_ts = Codegen.generate_ts(build_contracts(nargs), None)
@@ -1892,6 +2067,9 @@ fn plan_app_files(nargs: NewArgs) : List((Text, Text))
   end
   if nargs.auth == "full"
     list = list.append(("frontend/src/pages/Register.tsx", render_register_tsx()))
+  end
+  if nargs.mobrowse?
+    list = list.append(("test-mobrowse-e2e.mo", render_mobrowse_e2e_mo(nargs)))
   end
   list
 end
@@ -1937,6 +2115,9 @@ fn run_new(nargs: NewArgs, files: Files, console: Console) : Int
   console.print("Next steps:")
   console.print("  cd #{target_dir}")
   console.print("  mo test main.mo")
+  if nargs.mobrowse?
+    console.print("  mo test test-mobrowse-e2e.mo")
+  end
   console.print("  arvo dev")
   0
 end
@@ -1964,6 +2145,7 @@ test "NewCmd validates app names, scaffolds MoDB/SQLite presets with exact arvo.
   ]) is
     Ok(n_modb)
   assert n_modb.db == "modb" and n_modb.auth == "full" and n_modb.orgs? and n_modb.mcp?
+  assert not n_modb.mobrowse?
 
   files = Files.in_memory({})
   assert run_new(n_modb, files, Console.fake()) == 0
@@ -1971,17 +2153,43 @@ test "NewCmd validates app names, scaffolds MoDB/SQLite presets with exact arvo.
   assert files.exists?("acme-bills/arvo.toml")
   assert files.exists?("acme-bills/routes.mo")
   assert files.exists?("acme-bills/main.mo")
+  assert not files.exists?("acme-bills/test-mobrowse-e2e.mo")
   assert files.exists?("acme-bills/frontend/src/arvo.gen.ts")
   assert files.exists?("acme-bills/frontend/src/pages/Login.tsx")
   assert files.exists?("acme-bills/frontend/src/pages/Register.tsx")
   assert files.exists?("acme-bills/frontend/src/pages/Home.tsx")
   assert files.exists?("acme-bills/specs/features/home.feature.md")
 
-  assert files.read_text("acme-bills/mo.toml") is Ok(mt) and mt.contains?("arvo-modb")
+  assert files.read_text("acme-bills/mo.toml") is Ok(mt) and
+    mt.contains?("arvo-modb") and
+    not mt.contains?("arvo-mobrowse")
   assert files.read_text("acme-bills/routes.mo") is Ok(rm) and
     rm.contains?("Arvo.Modb.AuthStore") and
     rm.contains?("post_mcp") and
     rm.contains?("create_org")
+
+  assert parse_new_args([
+    "mb-app",
+    "--db",
+    "sqlite",
+    "--auth",
+    "full",
+    "--mobrowse",
+    "--arvo-path",
+    "../../arvo",
+    "--mobrowse-path",
+    "../../mobrowse"
+  ]) is
+    Ok(n_mb)
+  assert n_mb.mobrowse? and n_mb.mobrowse_path == "../../mobrowse"
+  assert run_new(n_mb, files, Console.fake()) == 0
+  assert files.exists?("mb-app/test-mobrowse-e2e.mo")
+  assert files.read_text("mb-app/mo.toml") is Ok(mb_toml) and
+    mb_toml.contains?("arvo-mobrowse") and
+    mb_toml.contains?("mobrowse = { path = \"../../mobrowse\" }")
+  assert files.read_text("mb-app/test-mobrowse-e2e.mo") is Ok(mb_e2e) and
+    mb_e2e.contains?("module TestMobrowseE2e") and
+    mb_e2e.contains?("use Arvo.Mobrowse.E2e")
 
   # Refuses overwrite without --force, permits with --force
   assert run_new(n_modb, files, Console.fake()) == 1
@@ -2007,15 +2215,21 @@ test "NewCmd validates app names, scaffolds MoDB/SQLite presets with exact arvo.
   assert parse_new_args(["env-app"]) is Ok(n_def)
   assert resolve_env_paths(n_def, Env.of({})).arvo_path == "../arvo"
   assert resolve_env_paths(n_def, Env.of({})).modb_path == "../modb"
+  assert resolve_env_paths(n_def, Env.of({})).mobrowse_path == "../mobrowse"
   n_env = resolve_env_paths(
     n_def,
     Env.of({
       "ARVO_ROOT": "/opt/homebrew/opt/arvo/libexec",
-      "MODB_PATH": "/opt/homebrew/opt/modb/libexec"
+      "MODB_PATH": "/opt/homebrew/opt/modb/libexec",
+      "MOBROWSE_PATH": "/opt/homebrew/opt/mobrowse/libexec"
     })
   )
   assert n_env.arvo_path == "/opt/homebrew/opt/arvo/libexec"
   assert n_env.modb_path == "/opt/homebrew/opt/modb/libexec"
-  n_keep = resolve_env_paths(n_modb, Env.of({"ARVO_ROOT": "/ignored", "MODB_PATH": "/ignored"}))
-  assert n_keep.arvo_path == "../../arvo" and n_keep.modb_path == "../../modb"
+  assert n_env.mobrowse_path == "/opt/homebrew/opt/mobrowse/libexec"
+  n_keep = resolve_env_paths(
+    n_mb,
+    Env.of({"ARVO_ROOT": "/ignored", "MODB_PATH": "/ignored", "MOBROWSE_PATH": "/ignored"})
+  )
+  assert n_keep.arvo_path == "../../arvo" and n_keep.mobrowse_path == "../../mobrowse"
 end
