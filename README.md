@@ -121,9 +121,36 @@ Turnkey React 19 + Inertia v2 + TypeScript UI kit exporting:
 
 ---
 
+## Install & Update
+
+### Homebrew (macOS Apple Silicon & `x86_64` Linux)
+
+```sh
+brew install robertguss/tap/arvo
+# Update later:
+brew update && brew upgrade mo modb arvo
+```
+
+### Linux / No-Homebrew Installer (`x86_64` Linux & Apple Silicon macOS)
+
+Installs or upgrades `mo`, `modb`, `modb-mcp`, and `arvo` into `~/.local/bin` and `~/.local/share` with SHA-256 verification:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/robertguss/arvo/main/scripts/install.sh | sh
+```
+
+If you manage `mo` (and optionally `dana`) via `mise`:
+
+```sh
+mise use -g github:robertguss/mo@latest github:robertguss/dana@latest
+curl -fsSL https://raw.githubusercontent.com/robertguss/arvo/main/scripts/install.sh | sh -s -- --skip-mo
+```
+
+---
+
 ## Quick Start
 
-Requires [**Mo 0.3.0+**](https://github.com/robertguss/mo).
+Requires [**Mo 0.4.1+**](https://github.com/robertguss/mo).
 
 - SQLite starter: [`examples/arvo-starter`](examples/arvo-starter/README.md)
 - MoDB starter: [`examples/arvo-modb-starter`](examples/arvo-modb-starter/README.md) (features `ReadFiles`-only `GET` routes, `Modb.Ledger`, `Arvo.Modb.Search`, `Arvo.Live` SSE on `303` redirects, `/mcp`, and `/__arvo`)
