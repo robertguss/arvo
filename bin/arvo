@@ -1,0 +1,113 @@
+#!/usr/bin/env sh
+set -eu
+
+resolve_arvo_root() {
+  script="$0"
+  if command -v readlink >/dev/null 2>&1; then
+    resolved="$(readlink -f "$script" 2>/dev/null || printf '%s' "$script")"
+    script="$resolved"
+  fi
+  bin_dir="$(CDPATH='' cd -- "$(dirname -- "$script")" && pwd)"
+  CDPATH='' cd -- "$bin_dir/.." && pwd
+}
+
+ARVO_ROOT="$(resolve_arvo_root)"
+export ARVO_ROOT
+
+if [ -n "${MO:-}" ]; then
+  MO_BIN="$MO"
+elif command -v mo >/dev/null 2>&1; then
+  MO_BIN="$(command -v mo)"
+elif [ -x "$HOME/.local/bin/mo" ]; then
+  MO_BIN="$HOME/.local/bin/mo"
+elif [ -x "/home/exedev/code/mo/target/release/mo" ]; then
+  MO_BIN="/home/exedev/code/mo/target/release/mo"
+else
+  printf 'arvo: could not locate `mo` binary (set MO=/path/to/mo or add mo to PATH)\n' >&2
+  exit 1
+fi
+export MO_BIN
+
+SUBCMD=""
+NEXT_SUB=""
+APP_DIR="."
+SKIP_NEXT=0
+HOST_EXEC=1
+NO_MO_CHECK=0
+HAS_HELP=0
+
+for arg in "$@"; do
+  if [ "$SKIP_NEXT" = "1" ]; then
+    APP_DIR="$arg"
+    SKIP_NEXT=0
+    continue
+  fi
+  case "$arg" in
+    --app)
+      SKIP_NEXT=1
+      ;;
+    --help|-h)
+      HAS_HELP=1
+      HOST_EXEC=0
+      ;;
+    --dry-run|--emit-script)
+      HOST_EXEC=0
+      ;;
+    --no-mo-check)
+      NO_MO_CHECK=1
+      ;;
+    -*)
+      ;;
+    *)
+      if [ -z "$SUBCMD" ]; then
+        SUBCMD="$arg"
+      elif [ -z "$NEXT_SUB" ]; then
+        NEXT_SUB="$arg"
+      fi
+      ;;
+  esac
+done
+
+case "$SUBCMD" in
+  dev|build|backup)
+    ;;
+  deploy)
+    if [ "$NEXT_SUB" = "init" ]; then
+      HOST_EXEC=0
+    fi
+    ;;
+  doctor)
+    HOST_EXEC=0
+    if [ "$HAS_HELP" = "0" ] && [ "$NO_MO_CHECK" = "0" ]; then
+      ENTRY_FILE="main.mo"
+      if [ -f "$APP_DIR/arvo.toml" ]; then
+        PARSED_ENTRY="$(sed -n 's/^[[:space:]]*entry[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$APP_DIR/arvo.toml" | head -n 1 || true)"
+        if [ -n "$PARSED_ENTRY" ]; then
+          ENTRY_FILE="$PARSED_ENTRY"
+        fi
+      fi
+      if [ -f "$APP_DIR/$ENTRY_FILE" ]; then
+        if CHECK_OUT="$("$MO_BIN" check "$APP_DIR/$ENTRY_FILE" 2>&1)"; then
+          export ARVO_DOCTOR_MO_CHECK_STATUS="0"
+          export ARVO_DOCTOR_MO_CHECK_OUTPUT=""
+        else
+          export ARVO_DOCTOR_MO_CHECK_STATUS="1"
+          export ARVO_DOCTOR_MO_CHECK_OUTPUT="$CHECK_OUT"
+        fi
+      fi
+    fi
+    ;;
+  *)
+    HOST_EXEC=0
+    ;;
+esac
+
+if [ "$HOST_EXEC" = "1" ]; then
+  SCRIPT="$("$MO_BIN" run "$ARVO_ROOT/cmd/arvo/main.mo" "$@" --emit-script)"
+  if [ "$APP_DIR" != "." ]; then
+    cd "$APP_DIR"
+  fi
+  exec bash -c "$SCRIPT"
+fi
+
+exec "$MO_BIN" run "$ARVO_ROOT/cmd/arvo/main.mo" "$@"

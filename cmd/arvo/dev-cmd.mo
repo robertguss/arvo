@@ -18,6 +18,7 @@ struct DevArgs
   vite_port: Int
   no_vite?: Bool
   dry_run?: Bool
+  emit_script?: Bool
   help?: Bool
 end
 
@@ -39,7 +40,7 @@ end
 ## Usage text for `arvo dev`.
 fn dev_usage() : Text
   """
-    usage: arvo dev [--app DIR] [--port 8080] [--vite-port 5173] [--no-vite] [--dry-run]
+    usage: arvo dev [--app DIR] [--port 8080] [--vite-port 5173] [--no-vite] [--dry-run] [--emit-script]
 
     Starts Vite HMR and `mo serve --watch` under one clean signal-trapped supervisor with
     `ARVO_DEV=1`, `ARVO_INSECURE_COOKIES=1`, and local Dev Mailbox enabled at `.arvo/mailbox`.
@@ -50,6 +51,7 @@ fn dev_usage() : Text
       --vite-port PORT   Vite HMR port (default: 5173)
       --no-vite          Run only `mo serve --watch` (disable Vite HMR)
       --dry-run          Print resolved DevPlan JSON without launching processes
+      --emit-script      Print POSIX supervisor shell script for host execution
       -h, --help         Show this help
     """
 end
@@ -73,6 +75,7 @@ fn parse_dev_args(rest: List(Text)) : Result(DevArgs, Text)
   var vite_port = 5173
   var no_vite? = false
   var dry_run? = false
+  var emit_script? = false
   var i = 0
   while i < rest.size
     a = rest.get(i) or ""
@@ -83,6 +86,7 @@ fn parse_dev_args(rest: List(Text)) : Result(DevArgs, Text)
           vite_port: vite_port,
           no_vite?: no_vite?,
           dry_run?: dry_run?,
+          emit_script?: emit_script?,
           help?: true
         )
       )
@@ -90,6 +94,8 @@ fn parse_dev_args(rest: List(Text)) : Result(DevArgs, Text)
       no_vite? = true
     else if a == "--dry-run"
       dry_run? = true
+    else if a == "--emit-script"
+      emit_script? = true
     else if a == "--port"
       raw = try need_val(rest, i, "--port")
       parsed = try raw.to_int.or_fail("invalid --port '#{raw}' (expected 1..65535)")
@@ -115,7 +121,14 @@ fn parse_dev_args(rest: List(Text)) : Result(DevArgs, Text)
     return Error("--port and --vite-port cannot be equal (#{port})")
   end
   Ok(
-    DevArgs(port: port, vite_port: vite_port, no_vite?: no_vite?, dry_run?: dry_run?, help?: false)
+    DevArgs(
+      port: port,
+      vite_port: vite_port,
+      no_vite?: no_vite?,
+      dry_run?: dry_run?,
+      emit_script?: emit_script?,
+      help?: false
+    )
   )
 end
 
@@ -165,7 +178,7 @@ fn build_dev_plan(app_dir: Text, dargs: DevArgs, cfg: Config.ArvoConfig, files: 
   else
     None
   end
-  backend_cmd = "mo serve --watch --host 127.0.0.1 --port #{dargs.port} #{shell_quote(cfg.entry)}"
+  backend_cmd = "mo serve --watch --bind 127.0.0.1 --port #{dargs.port} #{shell_quote(cfg.entry)}"
 
   DevPlan(
     app_dir: app_dir,
@@ -193,6 +206,7 @@ fn build_supervisor_script(plan: DevPlan) : Text
   case plan.vite_cmd
     Some(vcmd): """
       #{export_block}
+      mkdir -p #{shell_quote(plan.mailbox_dir)}
       VITE_PID=""
       cleanup() {
         if [ -n "$VITE_PID" ]; then
@@ -207,6 +221,7 @@ fn build_supervisor_script(plan: DevPlan) : Text
       """
     None: """
       #{export_block}
+      mkdir -p #{shell_quote(plan.mailbox_dir)}
       exec #{plan.backend_cmd}
       """
   end
@@ -244,6 +259,12 @@ fn run_dev(
     return 0
   end
 
+  script = build_supervisor_script(plan)
+  if dargs.emit_script?
+    console.print(script)
+    return 0
+  end
+
   _mk = app_files.make_folder(plan.mailbox_dir)
   console.print("Arvo Dev Server")
   console.print("  App:           #{plan.backend_url}")
@@ -253,7 +274,6 @@ fn run_dev(
     console.print("  Vite HMR:      #{vu}")
   end
 
-  script = build_supervisor_script(plan)
   scoped_cmd = if app_dir == ".": cmd else: cmd.within(app_dir)
   case scoped_cmd.run("sh", ["-c", script], 3600.seconds)
     Ok(out):
@@ -293,7 +313,12 @@ test "DevCmd parses ports, validates conflicts, builds Vite + mo serve superviso
   dry_line = c_dry.printed.first or ""
   assert dry_line.contains?("\"dev_dashboard_url\":\"http://127.0.0.1:8080/__arvo\"")
   assert dry_line.contains?("\"vite_enabled?\":true")
-  assert dry_line.contains?("mo serve --watch --host 127.0.0.1 --port 8080 'main.mo'")
+  assert dry_line.contains?("mo serve --watch --bind 127.0.0.1 --port 8080 'main.mo'")
+
+  assert parse_dev_args(["--emit-script"]) is Ok(emit_args) and emit_args.emit_script?
+  c_emit = Console.fake()
+  assert run_dev(".", emit_args, files, Command.fake(Command.replies([])), Env.of({}), c_emit) == 0
+  assert (c_emit.printed.first or "").contains?("exec mo serve --watch --bind 127.0.0.1")
 
   cfg = Config.default_config()
   plan = build_dev_plan("examples/demo", parsed, cfg, files.read_only, Env.of({}))

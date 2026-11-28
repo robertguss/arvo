@@ -1,12 +1,48 @@
 ## Pure-Mo `arvo.toml` configuration parser for the `arvo` CLI.
 module Config
-expose Viewport(..), ArvoConfig(..), default_config, parse, load
+expose Viewport(..),
+DeployConfig(..),
+BackupConfig(..),
+ArvoConfig(..),
+default_deploy_config,
+default_backup_config,
+default_config,
+parse,
+load
 
 ## Responsive viewport target configured in `arvo.toml`.
 struct Viewport
   name: Text
   width: Int
   height: Int
+end
+
+## Deployment target and health probe settings configured under `[deploy]`.
+struct DeployConfig
+  target: Text
+  host: Option(Text)
+  user: Text
+  port: Int
+  service_name: Option(Text)
+  db: Text
+  data_dirs: List(Text)
+  preserve_paths: List(Text)
+  extra_static: List(Text)
+  health_checks: List(Text)
+  env_file: Option(Text)
+  backup_dir: Option(Text)
+  mo_bin: Option(Text)
+end
+
+## Off-host S3/R2 and local backup settings configured under `[backup]`.
+struct BackupConfig
+  peer_id: Option(Text)
+  db_path: Text
+  bucket: Option(Text)
+  region: Text
+  endpoint: Option(Text)
+  key_prefix: Text
+  path_style?: Bool
 end
 
 ## Full configuration loaded from `arvo.toml` (falling back to Spec 4.2 defaults).
@@ -31,6 +67,40 @@ struct ArvoConfig
   visual_parity_max_diff_pixels: Int
   base_ref: Option(Text)
   tamper_globs: List(Text)
+  deploy: DeployConfig
+  backup: BackupConfig
+end
+
+## Default `[deploy]` settings tailored for single-binary `exe.dev` systemd deploys.
+fn default_deploy_config() : DeployConfig
+  DeployConfig(
+    target: "exe.dev",
+    host: None,
+    user: "exedev",
+    port: 8000,
+    service_name: None,
+    db: "modb",
+    data_dirs: ["data"],
+    preserve_paths: [],
+    extra_static: [],
+    health_checks: ["GET /health=200"],
+    env_file: None,
+    backup_dir: None,
+    mo_bin: None
+  )
+end
+
+## Default `[backup]` settings tailored for MoDB encrypted deltas and S3/R2.
+fn default_backup_config() : BackupConfig
+  BackupConfig(
+    peer_id: None,
+    db_path: "data/app.modb",
+    bucket: None,
+    region: "auto",
+    endpoint: None,
+    key_prefix: "backups",
+    path_style?: true
+  )
 end
 
 ## Spec 4.2 defaults when keys or `arvo.toml` are omitted.
@@ -64,7 +134,9 @@ fn default_config() : ArvoConfig
       "strength/**/*",
       "arvo.toml",
       "frontend/stryker.config.*"
-    ]
+    ],
+    deploy: default_deploy_config(),
+    backup: default_backup_config()
   )
 end
 
@@ -264,6 +336,22 @@ fn join_logical_lines(toml_text: Text) : Result(List((Text, Text)), Text)
   Ok(out)
 end
 
+fn parse_bool(raw: Text, key: Text) : Result(Bool, Text)
+  t = raw.trim
+  if t == "true"
+    Ok(true)
+  else if t == "false"
+    Ok(false)
+  else
+    Error("invalid #{key} '#{t}' (expected true or false)")
+  end
+end
+
+fn opt_non_empty(s: Text) : Option(Text)
+  t = s.trim
+  if t.empty?: None else: Some(t)
+end
+
 ## Parses `arvo.toml` text into `ArvoConfig`.
 fn parse(toml_text: Text) : Result(ArvoConfig, Text)
   entries = try join_logical_lines(toml_text)
@@ -338,6 +426,58 @@ fn parse(toml_text: Text) : Result(ArvoConfig, Text)
           end
         end
         cfg.tamper_globs = merged
+      end
+    else if section == "deploy"
+      if key == "target"
+        cfg.deploy.target = try unquote_string(val)
+      else if key == "host"
+        cfg.deploy.host = opt_non_empty(try unquote_string(val))
+      else if key == "user"
+        cfg.deploy.user = try unquote_string(val)
+      else if key == "port"
+        p = try val.to_int.or_fail("invalid deploy.port '#{val}'")
+        if p < 1 or p > 65535
+          return Error("deploy.port must be between 1 and 65535, got #{p}")
+        end
+        cfg.deploy.port = p
+      else if key == "service"
+        cfg.deploy.service_name = opt_non_empty(try unquote_string(val))
+      else if key == "db"
+        db_val = try unquote_string(val)
+        if db_val != "modb" and db_val != "sqlite" and db_val != "hybrid"
+          return Error("invalid deploy.db '#{db_val}' (expected modb, sqlite, or hybrid)")
+        end
+        cfg.deploy.db = db_val
+      else if key == "data_dirs"
+        cfg.deploy.data_dirs = try parse_string_list(val)
+      else if key == "preserve_paths"
+        cfg.deploy.preserve_paths = try parse_string_list(val)
+      else if key == "extra_static"
+        cfg.deploy.extra_static = try parse_string_list(val)
+      else if key == "health_checks"
+        cfg.deploy.health_checks = try parse_string_list(val)
+      else if key == "env_file"
+        cfg.deploy.env_file = opt_non_empty(try unquote_string(val))
+      else if key == "backup_dir"
+        cfg.deploy.backup_dir = opt_non_empty(try unquote_string(val))
+      else if key == "mo_bin"
+        cfg.deploy.mo_bin = opt_non_empty(try unquote_string(val))
+      end
+    else if section == "backup"
+      if key == "peer_id"
+        cfg.backup.peer_id = opt_non_empty(try unquote_string(val))
+      else if key == "db_path"
+        cfg.backup.db_path = try unquote_string(val)
+      else if key == "bucket"
+        cfg.backup.bucket = opt_non_empty(try unquote_string(val))
+      else if key == "region"
+        cfg.backup.region = try unquote_string(val)
+      else if key == "endpoint"
+        cfg.backup.endpoint = opt_non_empty(try unquote_string(val))
+      else if key == "key_prefix"
+        cfg.backup.key_prefix = try unquote_string(val)
+      else if key == "path_style"
+        cfg.backup.path_style? = try parse_bool(val, "backup.path_style")
       end
     end
   end
@@ -483,4 +623,46 @@ test "Config parses Spec 4.2 arvo.toml with multiline arrays, viewports, comment
   assert parse_viewport_list("[{name=\"m\",width=1,height=1}x") is Error(_)
   assert parse_viewport_list("[{name=\"m\",width=1,height=1}]") ==
     Ok([Viewport(name: "m", width: 1, height: 1)])
+
+  deploy_toml = """
+    [deploy]
+    target = "exe.dev"
+    host = "vellum.exe.xyz"
+    user = "exedev"
+    port = 8080
+    service = "vellum"
+    db = "modb"
+    data_dirs = ["data"]
+    preserve_paths = ["packs/private"]
+    extra_static = ["public/favicon.svg"]
+    health_checks = ["GET /health=200", "GET /login=200"]
+    env_file = "/etc/vellum/vellum.env"
+    backup_dir = "/var/lib/vellum/backups"
+
+    [backup]
+    peer_id = "prod-primary"
+    db_path = "data/vellum.modb"
+    bucket = "vellum-backups"
+    region = "us-east-1"
+    endpoint = "https://s3.us-east-1.amazonaws.com"
+    key_prefix = "vellum/prod"
+    path_style = false
+    """
+  assert parse(deploy_toml) is Ok(dc)
+  assert dc.deploy.host == Some("vellum.exe.xyz")
+  assert dc.deploy.port == 8080
+  assert dc.deploy.service_name == Some("vellum")
+  assert dc.deploy.preserve_paths == ["packs/private"]
+  assert dc.deploy.extra_static == ["public/favicon.svg"]
+  assert dc.deploy.health_checks == ["GET /health=200", "GET /login=200"]
+  assert dc.deploy.env_file == Some("/etc/vellum/vellum.env")
+  assert dc.backup.peer_id == Some("prod-primary")
+  assert dc.backup.db_path == "data/vellum.modb"
+  assert dc.backup.bucket == Some("vellum-backups")
+  assert not dc.backup.path_style?
+
+  assert parse("[deploy]\nport = 0\n") is Error(_)
+  assert parse("[deploy]\nport = 70000\n") is Error(_)
+  assert parse("[deploy]\ndb = \"postgres\"\n") is Error(_)
+  assert parse("[backup]\npath_style = maybe\n") is Error(_)
 end

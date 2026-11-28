@@ -1,0 +1,8 @@
+[package]
+name = "arvo-modb-backup-cli"
+version = "0.1.0"
+
+[dependencies]
+arvo = { path = "../../../.." }
+arvo-modb = { path = "../.." }
+modb = { path = "../../../../../modb" }

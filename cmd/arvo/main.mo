@@ -4,12 +4,15 @@ expose CliCmd(..), CliInvocation(..), parse_args, parse_invocation, usage, run_c
 use Arvo.Inertia
 use Arvo.Testing.Feature
 use Arvo.Testing.Statechart
+use BackupCmd
 use Bench
 use Codegen
 use Command
 use Config
 use Control
+use DeployCmd
 use DevCmd
+use DoctorCmd
 use Dossier
 use DossierHtml
 use FrontendCheck
@@ -37,6 +40,10 @@ enum CliCmd
   RunNewCmd(args: NewCmd.NewArgs)
   RunDevCmd(args: DevCmd.DevArgs)
   RunGenCmd(args: GenCmd.GenArgs)
+  RunDoctorCmd(args: DoctorCmd.DoctorArgs)
+  RunBuildCmd(args: DeployCmd.BuildArgs)
+  RunDeployCmd(args: DeployCmd.DeployArgs)
+  RunBackupCmd(args: BackupCmd.BackupArgs)
 end
 
 ## Parsed CLI invocation combining `--app DIR` target (default `"."`) and `CliCmd`.
@@ -99,6 +106,10 @@ fn usage(topic: Option(Text)) : Text
     Some("new"): NewCmd.new_usage()
     Some("dev"): DevCmd.dev_usage()
     Some("gen"): GenCmd.gen_usage()
+    Some("doctor"): DoctorCmd.doctor_usage()
+    Some("build"): DeployCmd.build_usage()
+    Some("deploy"): DeployCmd.deploy_usage()
+    Some("backup"): BackupCmd.backup_usage()
     Some("statechart"): StatechartCmd.statechart_usage()
     Some("replay"): ReplayCmd.replay_usage()
     Some("bench"): Bench.bench_usage()
@@ -136,6 +147,10 @@ fn usage(topic: Option(Text)) : Text
         new <app-name> [--db modb|sqlite] [--auth full|allowlist|none]  Scaffold a full-stack Arvo app
         dev [--app DIR] [--port 8080] [--vite-port 5173] [--no-vite]     Run Vite HMR + mo serve --watch
         gen <resource|auth|page|job|mcp-tool> <Name> [fields...]         Generate explicit Mo + React code
+        doctor [--app DIR] [--prod] [--json]                             Run readiness, secret hygiene & hardening checks
+        build [--app DIR] [--out DIR] [--skip-frontend] [--dry-run]      Build frontend & bundle standalone vendor/ release
+        deploy [init|HOST] [--app DIR] [--bootstrap-env] [--rollback]    Deploy self-contained bundle to exe.dev VM
+        backup <sync|restore|verify|local> [--app DIR] [flags]           Run MoDB/SQLite snapshots, verify, or S3 delta sync
         contracts [--app DIR] [--check]                         Generate/verify frontend/src/arvo.gen.ts from Json.schema[T]()
         verify [--app DIR] [--tier fast|feature|full] [--json]  Run verification checks, tamper check, and write verify.jsonl
         feature [--app DIR] [--validate] [--manifest OUT] [DIR] Parse .feature.md specs and export @browser manifest
@@ -350,6 +365,26 @@ fn parse_args(args: List(Text)) : Result(CliCmd, Text)
   else if sub == "gen"
     GenCmd.parse_gen_args(rest).map(fn(ga)
       if ga.help?: HelpCmd(topic: Some("gen")) else: RunGenCmd(args: ga)
+    end)
+  else if sub == "doctor"
+    DoctorCmd.parse_doctor_args(rest).map(fn(da)
+      if da.help?: HelpCmd(topic: Some("doctor")) else: RunDoctorCmd(args: da)
+    end)
+  else if sub == "build"
+    DeployCmd.parse_build_args(rest).map(fn(ba)
+      if ba.help?: HelpCmd(topic: Some("build")) else: RunBuildCmd(args: ba)
+    end)
+  else if sub == "deploy"
+    DeployCmd.parse_deploy_args(rest).map(fn(da)
+      is_help? = case da
+        DeployCmd.InitDeploy(ia): ia.help?
+        DeployCmd.RunDeploy(ra): ra.help?
+      end
+      if is_help?: HelpCmd(topic: Some("deploy")) else: RunDeployCmd(args: da)
+    end)
+  else if sub == "backup"
+    BackupCmd.parse_backup_args(rest).map(fn(ba)
+      if ba.help?: HelpCmd(topic: Some("backup")) else: RunBackupCmd(args: ba)
     end)
   else if sub == "contracts"
     parse_contracts_args(rest)
@@ -1488,6 +1523,10 @@ fn run_cli(
     RunNewCmd(args: na): NewCmd.run_new(na, app_files, console)
     RunDevCmd(args: da): DevCmd.run_dev(app_dir, da, app_files, cmd, env, console)
     RunGenCmd(args: ga): GenCmd.run_gen(ga, app_files, console)
+    RunDoctorCmd(args: da): DoctorCmd.run_doctor(app_dir, da, app_files, cmd, env, console)
+    RunBuildCmd(args: ba): DeployCmd.run_build(app_dir, ba, app_files, console)
+    RunDeployCmd(args: da): DeployCmd.run_deploy(app_dir, da, app_files, console)
+    RunBackupCmd(args: ba): BackupCmd.run_backup(app_dir, ba, app_files, console)
   end
 end
 
@@ -3794,4 +3833,82 @@ test "arvo new, arvo dev, and arvo gen parse_args, usage, and run_cli dispatch c
   ) ==
     0
   assert files.exists?("sample-app/lib/actions/ping-check.mo")
+end
+
+test "arvo doctor, build, deploy, and backup dispatch cleanly via run_cli"
+  t0 = Time.parse("2026-11-28T01:45:00Z") or stop "t0"
+  assert parse_args(["doctor", "--help"]) == Ok(HelpCmd(topic: Some("doctor")))
+  assert parse_args(["build", "--help"]) == Ok(HelpCmd(topic: Some("build")))
+  assert parse_args(["deploy", "--help"]) == Ok(HelpCmd(topic: Some("deploy")))
+  assert parse_args(["backup", "--help"]) == Ok(HelpCmd(topic: Some("backup")))
+  assert usage(None).contains?("deploy [init|HOST]")
+
+  files = Files.in_memory({})
+  assert run_cli(
+    Args.of(["new", "ship-app", "--db", "modb", "--auth", "full"]),
+    Console.fake(),
+    files,
+    Command.fake(Command.replies([])),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+
+  c_init = Console.fake()
+  assert run_cli(
+    Args.of(["deploy", "init", "--app", "ship-app", "--host", "ship-app.exe.xyz", "--port", "8000"]),
+    c_init,
+    files,
+    Command.fake(Command.replies([])),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert files.exists?("ship-app/deploy/ship-app.service")
+
+  c_doc = Console.fake()
+  cmd_doc = Command.fake(
+    Command.replies([
+      (Command.spec("mo", ["check", "main.mo"]).in_folder("ship-app"), Command.ok_output(""))
+    ])
+  )
+  assert run_cli(
+    Args.of(["doctor", "--app", "ship-app", "--json"]),
+    c_doc,
+    files,
+    cmd_doc,
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert (c_doc.printed.first or "").contains?("\"ok?\":true")
+
+  c_bld = Console.fake()
+  assert run_cli(
+    Args.of(["build", "--app", "ship-app", "--skip-frontend", "--dry-run"]),
+    c_bld,
+    files,
+    Command.fake(Command.replies([])),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert (c_bld.printed.first or "").contains?("\"app_dir\":\"ship-app\"")
+
+  c_bkp = Console.fake()
+  assert run_cli(
+    Args.of(["backup", "verify", "--app", "ship-app", "--dry-run"]),
+    c_bkp,
+    files,
+    Command.fake(Command.replies([])),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert (c_bkp.printed.first or "").contains?("\"action\":\"verify\"")
 end
