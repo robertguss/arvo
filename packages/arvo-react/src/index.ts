@@ -7,6 +7,15 @@ export type {
   UseArvoLiveOptions,
   UseArvoLiveResult,
 } from "./hooks/useArvoLive";
+export { useArvoUpload } from "./hooks/useArvoUpload";
+export type {
+  PresignedUrlPayload,
+  PresignUploadResponse,
+  UploadMode,
+  UploadStatus,
+  UseArvoUploadOptions,
+  UseArvoUploadResult,
+} from "./hooks/useArvoUpload";
 export {
   base64UrlToBytes,
   bytesToBase64Url,
