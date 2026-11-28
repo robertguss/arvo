@@ -6,6 +6,9 @@ InertiaReloadSignal(..),
 LlmRelayOptions(..),
 default_config,
 default_llm_relay_options,
+openai_relay_options,
+anthropic_relay_options,
+raw_relay_options,
 user_topic,
 org_topic,
 resource_topic,
@@ -46,16 +49,45 @@ fn default_config() : LiveConfig
   LiveConfig(retry_ms: 3000, send_connected_event?: true)
 end
 
-## Default upstream LLM relay options (SSE token relay, 30s chunk idle timeout).
-fn default_llm_relay_options() : LlmRelayOptions
+## Upstream OpenAI SSE token relay options (30s chunk idle timeout).
+fn openai_relay_options() : LlmRelayOptions
   LlmRelayOptions(
-    mode: "sse_tokens",
+    mode: "openai_sse",
     idle_timeout_ms: 30000,
     token_event: Some("ai.token"),
     done_event: Some("ai.done"),
     done_data: Some("{\"done\":true}"),
     error_event: Some("ai.error")
   )
+end
+
+## Upstream Anthropic SSE token relay options (30s chunk idle timeout).
+fn anthropic_relay_options() : LlmRelayOptions
+  LlmRelayOptions(
+    mode: "anthropic_sse",
+    idle_timeout_ms: 30000,
+    token_event: Some("ai.token"),
+    done_event: Some("ai.done"),
+    done_data: Some("{\"done\":true}"),
+    error_event: Some("ai.error")
+  )
+end
+
+## Raw pass-through SSE relay options (30s chunk idle timeout).
+fn raw_relay_options() : LlmRelayOptions
+  LlmRelayOptions(
+    mode: "raw",
+    idle_timeout_ms: 30000,
+    token_event: Some("ai.token"),
+    done_event: Some("ai.done"),
+    done_data: Some("{\"done\":true}"),
+    error_event: Some("ai.error")
+  )
+end
+
+## Default upstream LLM relay options (OpenAI SSE token transform, 30s chunk idle timeout).
+fn default_llm_relay_options() : LlmRelayOptions
+  openai_relay_options()
 end
 
 fn clean_segment(raw: Text) : Text
@@ -137,7 +169,7 @@ fn stream(
   Sse.stream(clean_topics, last_id, retry, ev_list)
 end
 
-## Attaches a live JSON event broadcast to `topic` onto `res` (dispatched on 2xx responses).
+## Attaches a live JSON event broadcast to `topic` onto `res` (dispatched on 2xx or 302/303/307/308 redirects).
 fn publish(res: Api.Response, topic: Text, event_name: Text, payload: Json) : Api.Response
   Sse.publish_json(res, topic, event_name, payload)
 end
@@ -247,5 +279,23 @@ test "Arvo.Live streams topics with Last-Event-ID, publishes Inertia reloads, an
   assert relay_res.status == 200
   assert relay_res.text.contains?("event: ai.start")
   assert Api.sse_relay_spec(relay_res) is Some(r)
-  assert r.method == "POST" and r.mode == "sse_tokens" and r.token_event == Some("ai.token")
+  assert r.method == "POST" and r.mode == "openai_sse" and r.token_event == Some("ai.token")
+
+  ant_res = relay_llm_stream(
+    "https://api.example.com/v1/messages",
+    [("x-api-key", "tok")],
+    Json.Object({"stream": Json.Boolean(true)}),
+    [],
+    anthropic_relay_options()
+  )
+  assert Api.sse_relay_spec(ant_res) is Some(ar) and ar.mode == "anthropic_sse"
+
+  raw_res = relay_llm_stream(
+    "https://api.example.com/stream",
+    [],
+    Json.Object({"stream": Json.Boolean(true)}),
+    [],
+    raw_relay_options()
+  )
+  assert Api.sse_relay_spec(raw_res) is Some(rr) and rr.mode == "raw"
 end
