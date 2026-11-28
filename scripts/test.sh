@@ -73,6 +73,7 @@ echo "==> Checking Arvo.Testing.Statechart models, replay, and sync commits"
     sync_diff="$(
       git diff --name-only dbaaf0311d379d828af75ab08b6fa2b61ce9e839 -- lib/arvo/sqlite/jobs.mo
       git diff --name-only 9321ddbfd5b20abf8bd62d4e04d8f4a7129769ed -- lib/arvo/sqlite/sessions.mo lib/arvo/session.mo
+      git diff --name-only 20e56108473c06e7b1018bccd54348020a85f276 -- lib/arvo/auth.mo lib/arvo/totp.mo lib/arvo/sqlite/auth-store.mo
     )"
     export ARVO_GIT_DIFF_FILES="$sync_diff"
   fi
@@ -103,7 +104,7 @@ pathlib.Path("'"$REPLAY_REL"'/noreq.json").write_text(json.dumps(b))
   "$MO" test "$REPLAY_REL/noreq/replay-regression.mo"
 )
 
-echo "==> Running all 11 --strength intent suites (must score 1.0 with 0 survived)"
+echo "==> Running all 14 --strength intent suites (must score 1.0 with 0 survived)"
 check_strength_suite() {
   local sdir="$1"
   local target="$2"
@@ -118,10 +119,11 @@ check_strength_suite() {
   ' > /dev/null
 }
 
-for mod in session csrf auth inertia changeset keyring rate-limit; do
+for mod in session csrf auth inertia changeset keyring rate-limit totp policy; do
   dir_mod="${mod//-/_}"
   check_strength_suite "$ROOT/strength/arvo_${dir_mod}" "$ROOT/lib/arvo/${mod}.mo"
 done
+check_strength_suite "$ROOT/strength/arvo_auth_v2" "$ROOT/lib/arvo/auth.mo"
 for mod in migrations jobs audit; do
   check_strength_suite "$ROOT/strength/arvo_${mod}" "$ROOT/lib/arvo/sqlite/${mod}.mo"
 done

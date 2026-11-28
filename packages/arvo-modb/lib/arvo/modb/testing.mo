@@ -1,6 +1,6 @@
 ## MoDB testing parity (`Arvo.Modb.Testing`): deterministic seed profiles, CoW B+Tree &
 ## tamper-evident `Modb.Ledger` verification, `SecurityMatrixCore` route auditing, and
-## formal `Arvo.Testing.Statechart` replay against `Arvo.Modb.Jobs` & `Arvo.Modb.Sessions`.
+## formal `Arvo.Testing.Statechart` replay against `Arvo.Modb.Jobs`, `Arvo.Modb.Sessions`, & `Arvo.Modb.AuthStore`.
 module Arvo.Modb.Testing
 expose ModbSeedProfile(..),
 profile_names,
@@ -9,13 +9,18 @@ run_seed_profile,
 verify_modb_invariants,
 run_security_matrix,
 replay_modb_jobs_path,
-replay_modb_session_path
+replay_modb_session_path,
+replay_modb_auth_path
 use Api
+use Arvo.Auth
+use Arvo.Keyring
+use Arvo.Modb.AuthStore
 use Arvo.Modb.Jobs
 use Arvo.Modb.Sessions
 use Arvo.SecurityMatrixCore
 use Arvo.Session
 use Arvo.Testing.Statechart
+use Arvo.Totp
 use Arvo.WebTest
 use Json
 use Modb
@@ -77,6 +82,9 @@ fn verify_modb_invariants(rf: ReadFiles, db_path: Text, check_audit?: Bool) : Re
   end
   if buckets.contains?("_arvo_jobs")
     _jrows = try Table.all(store, Jobs.jobs_table()).map_error(fn(e) e.to_text end)
+  end
+  if buckets.contains?("_arvo_auth_users")
+    _arows = try Table.all(store, AuthStore.users_table()).map_error(fn(e) e.to_text end)
   end
   Ok(Unit)
 end
@@ -273,6 +281,282 @@ fn replay_modb_session_path(
   Ok(actual_auth?)
 end
 
+fn rotate_modb_no_fixation(
+  files: Files,
+  db_path: Text,
+  rng: SecureRandom,
+  clock: Clock,
+  key: Bytes,
+  cur_id: Text,
+  cur_cookie: Text,
+  uid: Text,
+  cfg: Session.SessionConfig,
+  step_name: Text
+) : Result((Text, Text), Text)
+  rf = files.read_only
+  (ns, nck) = try Sessions.rotate(files, db_path, rng, clock, key, cur_id, uid, cfg).map_error(
+    fn(e) "#{e}" end
+  )
+  old_loaded = try Sessions.load_read_only(
+    Api.get("/").with_header("Cookie", "#{cfg.cookie_name}=#{cur_cookie}"),
+    rf,
+    db_path,
+    clock,
+    key,
+    cfg
+  ).map_error(fn(e) "#{e}" end)
+  if old_loaded is Some(_)
+    return Error("MODEL_DRIFT: pre-#{step_name} session fixation detected in Modb.Sessions")
+  end
+  new_loaded = try Sessions.load_read_only(
+    Api.get("/").with_header("Cookie", "#{cfg.cookie_name}=#{nck}"),
+    rf,
+    db_path,
+    clock,
+    key,
+    cfg
+  ).map_error(fn(e) "#{e}" end)
+  if new_loaded is None
+    return Error("MODEL_DRIFT: rotated #{step_name} MoDB session failed to authenticate")
+  end
+  Ok((ns.id, nck))
+end
+
+## Replays an `AuthModelAction` trace against real `Arvo.Modb.AuthStore`, `Arvo.Modb.Sessions`,
+## `Arvo.Auth`, and `Arvo.Totp`, and verifies B+Tree + `Modb.Ledger` audit chain invariants.
+fn replay_modb_auth_path(
+  actions: List(Statechart.AuthModelAction),
+  files: Files,
+  db_path: Text,
+  rng: SecureRandom,
+  clock: Clock
+) : Result(Text, Text)
+  key = try Bytes.from_hex("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
+    .or_fail("bad key")
+  kr = try Keyring.single("k1", key).map_error(fn(e) Keyring.to_text(e) end)
+  cfg = Session.default_config(true)
+  tcfg = Totp.default_config()
+  pol = Auth.default_password_policy()
+  rf = files.read_only
+
+  var cur_email = "alice@acme.io"
+  cur_pw = "correct-horse-battery"
+  u = try AuthStore.create_user_with_password(
+    files,
+    db_path,
+    rng,
+    clock,
+    cur_email,
+    cur_pw,
+    pol,
+    Some("Alice"),
+    true
+  ).map_error(fn(e) "#{e}" end)
+  totp_secret = Totp.generate_secret(rng)
+  (_rcodes, rdigs) = Totp.generate_recovery_codes(rng, 4)
+  _enr = try AuthStore.enroll_totp(files, db_path, rng, kr, clock, u.id, totp_secret, rdigs)
+    .map_error(fn(e) "#{e}" end)
+
+  (s0, ck0) = try Sessions.create(files, db_path, rng, clock, key, u.id, cfg).map_error(
+    fn(e) "#{e}" end
+  )
+  (_ps, peer_cookie) = try Sessions.create(files, db_path, rng, clock, key, u.id, cfg).map_error(
+    fn(e) "#{e}" end
+  )
+
+  var cur_id = s0.id
+  var cur_cookie = ck0
+  var last_totp_code = ""
+  var reset_token = ""
+  var last_phase = "registered"
+
+  for act in actions
+    case act
+      Statechart.LoginPassword:
+        if (
+          try AuthStore.authenticate_password(files, db_path, clock, cur_email, cur_pw).map_error(
+            fn(e) "#{e}" end
+          )
+        ) is
+          None
+          return Error("MODEL_DRIFT: LoginPassword rejected valid credentials")
+        end
+        (nid, nck) = try rotate_modb_no_fixation(
+          files,
+          db_path,
+          rng,
+          clock,
+          key,
+          cur_id,
+          cur_cookie,
+          u.id,
+          cfg,
+          "login"
+        )
+        cur_id = nid
+        cur_cookie = nck
+        last_phase = "mfa_pending"
+      Statechart.VerifyTotp:
+        code = Totp.code_at(totp_secret, clock.now, tcfg)
+        vres = try AuthStore.verify_totp_for_user(files, db_path, kr, clock, u.id, code, tcfg)
+          .map_error(fn(e) "#{e}" end)
+        if not (vres is Totp.Accepted(matched_step: _))
+          return Error("MODEL_DRIFT: valid TOTP code rejected")
+        end
+        last_totp_code = code
+        (nid, nck) = try rotate_modb_no_fixation(
+          files,
+          db_path,
+          rng,
+          clock,
+          key,
+          cur_id,
+          cur_cookie,
+          u.id,
+          cfg,
+          "mfa"
+        )
+        cur_id = nid
+        cur_cookie = nck
+        last_phase = "authenticated"
+      Statechart.ReplayTotpSameStep:
+        if last_totp_code.empty?
+          return Error("MODEL_DRIFT: ReplayTotpSameStep without prior VerifyTotp")
+        end
+        rres = try AuthStore.verify_totp_for_user(
+          files,
+          db_path,
+          kr,
+          clock,
+          u.id,
+          last_totp_code,
+          tcfg
+        ).map_error(fn(e) "#{e}" end)
+        if not (rres is Totp.ReplayedStep(step: _))
+          return Error("MODEL_DRIFT: TOTP code replay accepted within same step")
+        end
+        last_phase = "totp_replay_blocked"
+      Statechart.StepUpSudo:
+        if (
+          try AuthStore.authenticate_password(files, db_path, clock, cur_email, cur_pw).map_error(
+            fn(e) "#{e}" end
+          )
+        ) is
+          None
+          return Error("MODEL_DRIFT: StepUpSudo rejected valid credentials")
+        end
+        (nid, nck) = try rotate_modb_no_fixation(
+          files,
+          db_path,
+          rng,
+          clock,
+          key,
+          cur_id,
+          cur_cookie,
+          u.id,
+          cfg,
+          "sudo"
+        )
+        cur_id = nid
+        cur_cookie = nck
+        last_phase = "sudo_active"
+      Statechart.ChangePassword:
+        _rev = try AuthStore.change_password(
+          files,
+          db_path,
+          rng,
+          clock,
+          u.id,
+          "updated-strong-passphrase",
+          pol
+        ).map_error(fn(e) "#{e}" end)
+        for ck in [cur_cookie, peer_cookie]
+          still = try Sessions.load_read_only(
+            Api.get("/").with_header("Cookie", "#{cfg.cookie_name}=#{ck}"),
+            rf,
+            db_path,
+            clock,
+            key,
+            cfg
+          ).map_error(fn(e) "#{e}" end)
+          if still is Some(_)
+            return Error("MODEL_DRIFT: session remained valid after password change")
+          end
+        end
+        last_phase = "sessions_revoked"
+      Statechart.IssueResetToken:
+        issued = try AuthStore.issue_and_store_token(
+          files,
+          db_path,
+          rng,
+          clock,
+          Some(u.id),
+          Auth.PasswordReset,
+          cur_email,
+          900
+        ).map_error(fn(e) "#{e}" end)
+        reset_token = issued.raw_token
+        last_phase = "token_issued"
+      Statechart.ConsumeResetToken:
+        if reset_token.empty?
+          return Error("MODEL_DRIFT: ConsumeResetToken without prior IssueResetToken")
+        end
+        _ct = try AuthStore.consume_auth_token(
+          files,
+          db_path,
+          clock,
+          reset_token,
+          Auth.PasswordReset,
+          Some(cur_email)
+        ).map_error(fn(e) "MODEL_DRIFT: ConsumeResetToken failed: #{e}" end)
+        last_phase = "token_consumed"
+      Statechart.ReplayResetToken:
+        if reset_token.empty?
+          return Error("MODEL_DRIFT: ReplayResetToken without prior IssueResetToken")
+        end
+        case AuthStore.consume_auth_token(
+          files,
+          db_path,
+          clock,
+          reset_token,
+          Auth.PasswordReset,
+          Some(cur_email)
+        )
+          Ok(_): return Error(
+            "MODEL_DRIFT: replayed or stale reset token accepted by real AuthStore"
+          )
+          Error(AuthStore.InvalidOrExpiredToken): Unit
+          Error(e): return Error("MODEL_DRIFT: unexpected reset replay error: #{e}")
+        end
+        last_phase = "token_replay_blocked"
+      Statechart.ChangeEmail:
+        try AuthStore.change_email(files, db_path, clock, u.id, "alice.new@acme.io", true).map_error(
+          fn(e) "#{e}" end
+        )
+        cur_email = "alice.new@acme.io"
+        last_phase = "email_changed"
+      Statechart.AttemptUnverifiedOidcLink:
+        existing = try AuthStore.find_user_by_email(rf, db_path, cur_email).map_error(
+          fn(e) "#{e}" end
+        )
+        dec = Auth.resolve_oidc_link(
+          Auth.OidcLinkConfig(signup_mode: Auth.OpenSignup, auto_link_verified_oidc?: true),
+          None,
+          existing,
+          cur_email,
+          false,
+          false
+        )
+        if not (dec is Auth.AccountLinkRequiresLogin(user_id: _))
+          return Error("MODEL_DRIFT: unverified OIDC login attempted automatic account takeover")
+        end
+        last_phase = "oidc_blocked"
+    end
+  end
+  try verify_modb_invariants(rf, db_path, true)
+  Ok(last_phase)
+end
+
 fn seed_note(files: Files, db_path: Text, rng: SecureRandom, clock: Clock, env: Env) : Result(
   Unit,
   Text
@@ -459,4 +743,59 @@ test "Modb.Testing verifies MoDB & Ledger invariants, runs deterministic seeds, 
     Clock.fixed(t0)
   ) ==
     Error("MODEL_DRIFT: old rotated cookie rejected by real Arvo.Modb.Sessions.load_read_only")
+
+  # 5. Formal Statechart replay against real Arvo.Modb.AuthStore + Modb.Sessions + Modb.Ledger
+  assert replay_modb_auth_path(
+    [Statechart.LoginPassword, Statechart.VerifyTotp, Statechart.ReplayTotpSameStep],
+    Files.in_memory({}),
+    "ma1.modb",
+    SecureRandom.seeded(41),
+    Clock.fixed(t0)
+  ) ==
+    Ok("totp_replay_blocked")
+  assert replay_modb_auth_path(
+    [
+      Statechart.LoginPassword,
+      Statechart.VerifyTotp,
+      Statechart.StepUpSudo,
+      Statechart.ChangePassword
+    ],
+    Files.in_memory({}),
+    "ma2.modb",
+    SecureRandom.seeded(42),
+    Clock.fixed(t0)
+  ) ==
+    Ok("sessions_revoked")
+  assert replay_modb_auth_path(
+    [Statechart.IssueResetToken, Statechart.ConsumeResetToken, Statechart.ReplayResetToken],
+    Files.in_memory({}),
+    "ma3.modb",
+    SecureRandom.seeded(43),
+    Clock.fixed(t0)
+  ) ==
+    Ok("token_replay_blocked")
+  assert replay_modb_auth_path(
+    [Statechart.IssueResetToken, Statechart.ChangeEmail, Statechart.ReplayResetToken],
+    Files.in_memory({}),
+    "ma4.modb",
+    SecureRandom.seeded(44),
+    Clock.fixed(t0)
+  ) ==
+    Ok("token_replay_blocked")
+  assert replay_modb_auth_path(
+    [Statechart.AttemptUnverifiedOidcLink],
+    Files.in_memory({}),
+    "ma5.modb",
+    SecureRandom.seeded(45),
+    Clock.fixed(t0)
+  ) ==
+    Ok("oidc_blocked")
+  assert replay_modb_auth_path(
+    [Statechart.ReplayTotpSameStep],
+    Files.in_memory({}),
+    "ma6.modb",
+    SecureRandom.seeded(46),
+    Clock.fixed(t0)
+  ) ==
+    Error("MODEL_DRIFT: ReplayTotpSameStep without prior VerifyTotp")
 end

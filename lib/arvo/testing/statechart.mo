@@ -1,6 +1,6 @@
 ## Pure-Mo bounded BFS statechart explorer (`Arvo.Testing.Statechart`, Spec Part 2.6)
 ## with plain-English Mermaid `stateDiagram-v2` output and built-in formal models +
-## real-code replay for `Arvo.Sqlite.Jobs` and `Arvo.Sqlite.Sessions` / `Arvo.Session`.
+## real-code replay for `Arvo.Sqlite.Jobs`, `Arvo.Sqlite.Sessions` / `Arvo.Session`, and `Arvo.Auth` v2.
 module Arvo.Testing.Statechart
 expose Transition(..),
 StateInvariant(..),
@@ -11,6 +11,8 @@ JobsModelState(..),
 JobsModelAction(..),
 SessionModelState(..),
 SessionModelAction(..),
+AuthModelState(..),
+AuthModelAction(..),
 explore,
 format_report,
 jobs_chart_spec,
@@ -18,11 +20,18 @@ broken_jobs_chart_spec,
 replay_jobs_path,
 session_chart_spec,
 broken_session_chart_spec,
-replay_session_path
+replay_session_path,
+auth_chart_spec,
+broken_auth_chart_spec,
+replay_auth_path
 use Api
+use Arvo.Auth
+use Arvo.Keyring
 use Arvo.Session
+use Arvo.Sqlite.AuthStore
 use Arvo.Sqlite.Jobs
 use Arvo.Sqlite.Sessions
+use Arvo.Totp
 use Json
 
 ## Directed model transition carrying an action, plain-English label, and successor state.
@@ -763,6 +772,534 @@ fn replay_session_path(
   Ok(actual_auth?)
 end
 
+# ---------------------------------------------------------------------------
+# Formal model + real-code replay for Arvo.Auth v2
+# ---------------------------------------------------------------------------
+## Abstract security state of an identity/session modeled from `Arvo.Auth`, `Arvo.Totp`, and `AuthStore`.
+struct AuthModelState
+  phase: Text
+  pre_auth_valid?: Bool
+  peer_session_valid?: Bool
+  token_reusable?: Bool
+  unverified_oidc_linked?: Bool
+  totp_replayed?: Bool
+end
+
+## Concrete security actions modeled and replayed against real Auth v2 stores (`SQLite` & `MoDB`).
+enum AuthModelAction
+  LoginPassword
+  VerifyTotp
+  ReplayTotpSameStep
+  StepUpSudo
+  ChangePassword
+  IssueResetToken
+  ConsumeResetToken
+  ReplayResetToken
+  ChangeEmail
+  AttemptUnverifiedOidcLink
+end
+
+fn auth_steps_common(s: AuthModelState, allow_bug?: Bool) : List(
+  Transition(AuthModelState, AuthModelAction)
+)
+  var out = []
+  if s.phase == "registered"
+    out = out.append(
+      Transition(
+        action: LoginPassword,
+        label: "User logs in with password (rotates session -> mfa_pending)",
+        next_state: AuthModelState(
+          phase: "mfa_pending",
+          pre_auth_valid?: allow_bug?,
+          peer_session_valid?: true,
+          token_reusable?: false,
+          unverified_oidc_linked?: false,
+          totp_replayed?: false
+        )
+      )
+    )
+    out = out.append(
+      Transition(
+        action: IssueResetToken,
+        label: "Password reset token issued (single-use hash stored)",
+        next_state: AuthModelState(
+          phase: "token_issued",
+          pre_auth_valid?: false,
+          peer_session_valid?: false,
+          token_reusable?: false,
+          unverified_oidc_linked?: false,
+          totp_replayed?: false
+        )
+      )
+    )
+    out = out.append(
+      Transition(
+        action: AttemptUnverifiedOidcLink,
+        label: "Unverified OIDC email attempts login against existing user",
+        next_state: AuthModelState(
+          phase: "oidc_blocked",
+          pre_auth_valid?: false,
+          peer_session_valid?: false,
+          token_reusable?: false,
+          unverified_oidc_linked?: allow_bug?,
+          totp_replayed?: false
+        )
+      )
+    )
+  end
+  if s.phase == "mfa_pending"
+    out = out.append(
+      Transition(
+        action: VerifyTotp,
+        label: "TOTP verified at current step (rotates session -> authenticated)",
+        next_state: AuthModelState(
+          phase: "authenticated",
+          pre_auth_valid?: allow_bug?,
+          peer_session_valid?: true,
+          token_reusable?: false,
+          unverified_oidc_linked?: false,
+          totp_replayed?: false
+        )
+      )
+    )
+  end
+  if s.phase == "authenticated"
+    out = out.append(
+      Transition(
+        action: ReplayTotpSameStep,
+        label: "Replayed TOTP code at same step is rejected",
+        next_state: AuthModelState(
+          phase: "totp_replay_blocked",
+          pre_auth_valid?: false,
+          peer_session_valid?: true,
+          token_reusable?: false,
+          unverified_oidc_linked?: false,
+          totp_replayed?: allow_bug?
+        )
+      )
+    )
+    out = out.append(
+      Transition(
+        action: StepUpSudo,
+        label: "Sudo step-up re-authenticates and rotates session",
+        next_state: AuthModelState(
+          phase: "sudo_active",
+          pre_auth_valid?: allow_bug?,
+          peer_session_valid?: true,
+          token_reusable?: false,
+          unverified_oidc_linked?: false,
+          totp_replayed?: false
+        )
+      )
+    )
+    out = out.append(
+      Transition(
+        action: ChangePassword,
+        label: "Password change revokes all sessions immediately",
+        next_state: AuthModelState(
+          phase: "sessions_revoked",
+          pre_auth_valid?: false,
+          peer_session_valid?: allow_bug?,
+          token_reusable?: false,
+          unverified_oidc_linked?: false,
+          totp_replayed?: false
+        )
+      )
+    )
+  end
+  if s.phase == "sudo_active"
+    out = out.append(
+      Transition(
+        action: ChangePassword,
+        label: "Password change from sudo revokes all sessions",
+        next_state: AuthModelState(
+          phase: "sessions_revoked",
+          pre_auth_valid?: false,
+          peer_session_valid?: allow_bug?,
+          token_reusable?: false,
+          unverified_oidc_linked?: false,
+          totp_replayed?: false
+        )
+      )
+    )
+  end
+  if s.phase == "token_issued"
+    out = out.append(
+      Transition(
+        action: ConsumeResetToken,
+        label: "Reset token consumed atomically",
+        next_state: AuthModelState(
+          phase: "token_consumed",
+          pre_auth_valid?: false,
+          peer_session_valid?: false,
+          token_reusable?: false,
+          unverified_oidc_linked?: false,
+          totp_replayed?: false
+        )
+      )
+    )
+    out = out.append(
+      Transition(
+        action: ChangeEmail,
+        label: "Email change invalidates pending reset tokens",
+        next_state: AuthModelState(
+          phase: "email_changed",
+          pre_auth_valid?: false,
+          peer_session_valid?: false,
+          token_reusable?: false,
+          unverified_oidc_linked?: false,
+          totp_replayed?: false
+        )
+      )
+    )
+  end
+  if s.phase == "token_consumed" or s.phase == "email_changed"
+    out = out.append(
+      Transition(
+        action: ReplayResetToken,
+        label: "Reused or stale reset token is rejected",
+        next_state: AuthModelState(
+          phase: "token_replay_blocked",
+          pre_auth_valid?: false,
+          peer_session_valid?: false,
+          token_reusable?: allow_bug?,
+          unverified_oidc_linked?: false,
+          totp_replayed?: false
+        )
+      )
+    )
+  end
+  out
+end
+
+fn auth_invariants() : List(StateInvariant(AuthModelState))
+  [
+    StateInvariant(
+      name: "No session fixation across login, MFA, or sudo step-up",
+      holds?: fn(s) not s.pre_auth_valid? end
+    ),
+    StateInvariant(
+      name: "Password change immediately revokes all other sessions",
+      holds?: fn(s) s.phase != "sessions_revoked" or not s.peer_session_valid? end
+    ),
+    StateInvariant(
+      name: "Single-use tokens cannot be replayed or survive email change",
+      holds?: fn(s) not s.token_reusable? end
+    ),
+    StateInvariant(
+      name: "Unverified OIDC email never auto-links to existing local account",
+      holds?: fn(s) not s.unverified_oidc_linked? end
+    ),
+    StateInvariant(
+      name: "TOTP codes cannot be replayed at or below last_used_step",
+      holds?: fn(s) not s.totp_replayed? end
+    )
+  ]
+end
+
+fn auth_spec_with(title: Text, allow_bug?: Bool) : ChartSpec(AuthModelState, AuthModelAction)
+  ChartSpec(
+    title: title,
+    covered_files: [
+      "lib/arvo/auth.mo:validate_password,verify_password_timing_safe,issue_auth_token,token_valid?,resolve_oidc_link",
+      "lib/arvo/totp.mo:verify,seal_secret,open_secret",
+      "lib/arvo/sqlite/auth-store.mo:authenticate_password,change_password,change_email,consume_auth_token,verify_totp_for_user"
+    ],
+    sync_commit: "20e56108473c06e7b1018bccd54348020a85f276",
+    max_states: 200,
+    initial_states: [
+      AuthModelState(
+        phase: "registered",
+        pre_auth_valid?: false,
+        peer_session_valid?: false,
+        token_reusable?: false,
+        unverified_oidc_linked?: false,
+        totp_replayed?: false
+      )
+    ],
+    step_fn: fn(s) auth_steps_common(s, allow_bug?) end,
+    view_state: fn(s)
+      var tags = []
+      if s.pre_auth_valid?
+        tags = tags.append("fixation=leaked")
+      end
+      if s.peer_session_valid?
+        tags = tags.append("peer=active")
+      end
+      if s.token_reusable?
+        tags = tags.append("token=reusable")
+      end
+      if s.unverified_oidc_linked?
+        tags = tags.append("oidc=linked")
+      end
+      if s.totp_replayed?
+        tags = tags.append("totp=replayed")
+      end
+      if tags.empty?: s.phase else: "#{s.phase} (#{tags.join(", ")})"
+    end,
+    view_group: fn(s)
+      if s.phase == "registered" or
+        s.phase == "token_issued" or
+        s.phase == "token_consumed" or
+        s.phase == "email_changed"
+        Some("Identity & Tokens")
+      else if s.phase == "mfa_pending" or s.phase == "authenticated" or s.phase == "sudo_active"
+        Some("Session & MFA")
+      else
+        Some("Blocked / Revoked")
+      end
+    end,
+    invariants: auth_invariants()
+  )
+end
+
+## Formal security statechart model of `Arvo.Auth` v2 (`sync_commit` checked by CLI).
+fn auth_chart_spec() : ChartSpec(AuthModelState, AuthModelAction)
+  auth_spec_with("Arvo.Auth v2 Security Lifecycle", false)
+end
+
+## Negative broken-transition variant proving `explore` catches all 5 Auth v2 security regressions.
+fn broken_auth_chart_spec() : ChartSpec(AuthModelState, AuthModelAction)
+  auth_spec_with("Arvo.Auth v2 Broken Security", true)
+end
+
+fn rotate_sqlite_no_fixation(
+  db: Sqlite.Database,
+  rng: SecureRandom,
+  clock: Clock,
+  key: Bytes,
+  cur_id: Text,
+  cur_cookie: Text,
+  uid: Text,
+  cfg: Session.SessionConfig,
+  step_name: Text
+) : Result((Text, Text), Text)
+  (ns, nck) = try Sessions.rotate(db, rng, clock, key, cur_id, uid, cfg).map_error(fn(e) "#{e}" end)
+  old_loaded = try Sessions.load(
+    Api.get("/").with_header("Cookie", "#{cfg.cookie_name}=#{cur_cookie}"),
+    db,
+    clock,
+    key,
+    cfg
+  ).map_error(fn(e) "#{e}" end)
+  if old_loaded is Some(_)
+    return Error("MODEL_DRIFT: pre-#{step_name} session fixation detected in Sqlite.Sessions")
+  end
+  new_loaded = try Sessions.load(
+    Api.get("/").with_header("Cookie", "#{cfg.cookie_name}=#{nck}"),
+    db,
+    clock,
+    key,
+    cfg
+  ).map_error(fn(e) "#{e}" end)
+  if new_loaded is None
+    return Error("MODEL_DRIFT: rotated #{step_name} session failed to authenticate")
+  end
+  Ok((ns.id, nck))
+end
+
+## Replays an `AuthModelAction` trace against real `Arvo.Sqlite.AuthStore`, `Arvo.Sqlite.Sessions`,
+## `Arvo.Auth`, and `Arvo.Totp`, returning the final phase or `MODEL_DRIFT` on divergence.
+fn replay_auth_path(actions: List(AuthModelAction), sqlite: Sqlite, rng: SecureRandom, clock: Clock) : Result(
+  Text,
+  Text
+)
+  key = try Bytes.from_hex("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
+    .or_fail("bad key")
+  kr = try Keyring.single("k1", key).map_error(fn(e) Keyring.to_text(e) end)
+  cfg = Session.default_config(true)
+  tcfg = Totp.default_config()
+  pol = Auth.default_password_policy()
+
+  db = try sqlite.open(":memory:").map_error(fn(e) "#{e}" end)
+  try Sessions.init_schema(db).map_error(fn(e) "#{e}" end)
+  try AuthStore.init_schema(db).map_error(fn(e) "#{e}" end)
+
+  var cur_email = "alice@acme.io"
+  cur_pw = "correct-horse-battery"
+  u = try AuthStore.create_user_with_password(
+    db,
+    rng,
+    clock,
+    cur_email,
+    cur_pw,
+    pol,
+    Some("Alice"),
+    true
+  ).map_error(fn(e) "#{e}" end)
+  totp_secret = Totp.generate_secret(rng)
+  (_rcodes, rdigs) = Totp.generate_recovery_codes(rng, 4)
+  _enr = try AuthStore.enroll_totp(db, rng, kr, clock, u.id, totp_secret, rdigs).map_error(
+    fn(e) "#{e}" end
+  )
+
+  (s0, ck0) = try Sessions.create(db, rng, clock, key, u.id, cfg).map_error(fn(e) "#{e}" end)
+  (_ps, peer_cookie) = try Sessions.create(db, rng, clock, key, u.id, cfg).map_error(
+    fn(e) "#{e}" end
+  )
+
+  var cur_id = s0.id
+  var cur_cookie = ck0
+  var last_totp_code = ""
+  var reset_token = ""
+  var last_phase = "registered"
+
+  for act in actions
+    case act
+      LoginPassword:
+        if (try AuthStore.authenticate_password(db, cur_email, cur_pw).map_error(fn(e) "#{e}" end)) is
+          None
+          return Error("MODEL_DRIFT: LoginPassword rejected valid credentials")
+        end
+        (nid, nck) = try rotate_sqlite_no_fixation(
+          db,
+          rng,
+          clock,
+          key,
+          cur_id,
+          cur_cookie,
+          u.id,
+          cfg,
+          "login"
+        )
+        cur_id = nid
+        cur_cookie = nck
+        last_phase = "mfa_pending"
+      VerifyTotp:
+        code = Totp.code_at(totp_secret, clock.now, tcfg)
+        vres = try AuthStore.verify_totp_for_user(db, kr, clock, u.id, code, tcfg).map_error(
+          fn(e) "#{e}" end
+        )
+        if not (vres is Totp.Accepted(matched_step: _))
+          return Error("MODEL_DRIFT: valid TOTP code rejected")
+        end
+        last_totp_code = code
+        (nid, nck) = try rotate_sqlite_no_fixation(
+          db,
+          rng,
+          clock,
+          key,
+          cur_id,
+          cur_cookie,
+          u.id,
+          cfg,
+          "mfa"
+        )
+        cur_id = nid
+        cur_cookie = nck
+        last_phase = "authenticated"
+      ReplayTotpSameStep:
+        if last_totp_code.empty?
+          return Error("MODEL_DRIFT: ReplayTotpSameStep without prior VerifyTotp")
+        end
+        rres = try AuthStore.verify_totp_for_user(db, kr, clock, u.id, last_totp_code, tcfg)
+          .map_error(fn(e) "#{e}" end)
+        if not (rres is Totp.ReplayedStep(step: _))
+          return Error("MODEL_DRIFT: TOTP code replay accepted within same step")
+        end
+        last_phase = "totp_replay_blocked"
+      StepUpSudo:
+        if (try AuthStore.authenticate_password(db, cur_email, cur_pw).map_error(fn(e) "#{e}" end)) is
+          None
+          return Error("MODEL_DRIFT: StepUpSudo rejected valid credentials")
+        end
+        (nid, nck) = try rotate_sqlite_no_fixation(
+          db,
+          rng,
+          clock,
+          key,
+          cur_id,
+          cur_cookie,
+          u.id,
+          cfg,
+          "sudo"
+        )
+        cur_id = nid
+        cur_cookie = nck
+        last_phase = "sudo_active"
+      ChangePassword:
+        _rev = try AuthStore.change_password(db, rng, clock, u.id, "updated-strong-passphrase", pol)
+          .map_error(fn(e) "#{e}" end)
+        for ck in [cur_cookie, peer_cookie]
+          still = try Sessions.load(
+            Api.get("/").with_header("Cookie", "#{cfg.cookie_name}=#{ck}"),
+            db,
+            clock,
+            key,
+            cfg
+          ).map_error(fn(e) "#{e}" end)
+          if still is Some(_)
+            return Error("MODEL_DRIFT: session remained valid after password change")
+          end
+        end
+        last_phase = "sessions_revoked"
+      IssueResetToken:
+        issued = try AuthStore.issue_and_store_token(
+          db,
+          rng,
+          clock,
+          Some(u.id),
+          Auth.PasswordReset,
+          cur_email,
+          900
+        ).map_error(fn(e) "#{e}" end)
+        reset_token = issued.raw_token
+        last_phase = "token_issued"
+      ConsumeResetToken:
+        if reset_token.empty?
+          return Error("MODEL_DRIFT: ConsumeResetToken without prior IssueResetToken")
+        end
+        _ct = try AuthStore.consume_auth_token(
+          db,
+          clock,
+          reset_token,
+          Auth.PasswordReset,
+          Some(cur_email)
+        ).map_error(fn(e) "MODEL_DRIFT: ConsumeResetToken failed: #{e}" end)
+        last_phase = "token_consumed"
+      ReplayResetToken:
+        if reset_token.empty?
+          return Error("MODEL_DRIFT: ReplayResetToken without prior IssueResetToken")
+        end
+        case AuthStore.consume_auth_token(
+          db,
+          clock,
+          reset_token,
+          Auth.PasswordReset,
+          Some(cur_email)
+        )
+          Ok(_): return Error(
+            "MODEL_DRIFT: replayed or stale reset token accepted by real AuthStore"
+          )
+          Error(AuthStore.InvalidOrExpiredToken): Unit
+          Error(e): return Error("MODEL_DRIFT: unexpected reset replay error: #{e}")
+        end
+        last_phase = "token_replay_blocked"
+      ChangeEmail:
+        try AuthStore.change_email(db, clock, u.id, "alice.new@acme.io", true).map_error(
+          fn(e) "#{e}" end
+        )
+        cur_email = "alice.new@acme.io"
+        last_phase = "email_changed"
+      AttemptUnverifiedOidcLink:
+        existing = try AuthStore.find_user_by_email(db, cur_email).map_error(fn(e) "#{e}" end)
+        dec = Auth.resolve_oidc_link(
+          Auth.OidcLinkConfig(signup_mode: Auth.OpenSignup, auto_link_verified_oidc?: true),
+          None,
+          existing,
+          cur_email,
+          false,
+          false
+        )
+        if not (dec is Auth.AccountLinkRequiresLogin(user_id: _))
+          return Error("MODEL_DRIFT: unverified OIDC login attempted automatic account takeover")
+        end
+        last_phase = "oidc_blocked"
+    end
+  end
+  Ok(last_phase)
+end
+
 test "Arvo.Statechart explores Jobs and Session cleanly, replays real code, and catches broken variants"
   t0 = Time.parse("2026-11-25T22:00:00Z") or stop "t0"
   # 1. Clean Jobs exploration + real-code replay across happy, retry-backoff, stale recovery, and terminal fail
@@ -1032,4 +1569,89 @@ test "Arvo.Statechart explores Jobs and Session cleanly, replays real code, and 
   tc_rep = explore(trunc_clean)
   assert tc_rep.truncated? and tc_rep.violations.empty?
   assert format_report(trunc_clean, tc_rep).contains?("FAIL (TRUNCATED)")
+end
+
+test "Arvo.Statechart explores Auth v2 security lifecycle, catches all 5 broken invariants, and replays real SQLite AuthStore"
+  t0 = Time.parse("2026-11-28T00:00:00Z") or stop "t0"
+
+  # 1. Clean Auth v2 security model exploration
+  a_spec = auth_chart_spec()
+  assert a_spec.max_states == 200
+  a_rep = explore(a_spec)
+  assert a_rep.violations.empty?
+  assert not a_rep.truncated?
+  assert a_rep.states_explored == 11
+  assert a_rep.transitions_explored == 12
+  assert a_rep.mermaid_mmd.contains?("stateDiagram-v2")
+  assert not a_rep.mermaid_mmd.contains?(" breaks\n")
+  assert not a_rep.mermaid_mmd.contains?(" mayBreak\n")
+  assert a_rep.mermaid_mmd.contains?("Identity & Tokens")
+  assert a_rep.mermaid_mmd.contains?("Session & MFA")
+  assert a_rep.mermaid_mmd.contains?("Blocked / Revoked")
+  assert format_report(a_spec, a_rep).contains?(
+    "## Statechart: Arvo.Auth v2 Security Lifecycle (PASS)"
+  )
+
+  # 2. Broken Auth v2 model catches all 5 security invariants
+  ba_rep = explore(broken_auth_chart_spec())
+  assert ba_rep.violations.size >= 5
+  broken_names = ba_rep.violations.map(fn(v) v.invariant_name end)
+  for inv in a_spec.invariants
+    assert broken_names.contains?(inv.name)
+  end
+  assert ba_rep.mermaid_mmd.contains?("classDef breaks")
+  assert ba_rep.mermaid_mmd.contains?(" breaks\n") or ba_rep.mermaid_mmd.contains?(" breaks")
+
+  # 3. Real-code replay against Sqlite.AuthStore + Sqlite.Sessions + Auth + Totp
+  assert replay_auth_path(
+    [LoginPassword, VerifyTotp, ReplayTotpSameStep],
+    Sqlite.in_memory(),
+    SecureRandom.seeded(31),
+    Clock.fixed(t0)
+  ) ==
+    Ok("totp_replay_blocked")
+  assert replay_auth_path(
+    [LoginPassword, VerifyTotp, StepUpSudo, ChangePassword],
+    Sqlite.in_memory(),
+    SecureRandom.seeded(32),
+    Clock.fixed(t0)
+  ) ==
+    Ok("sessions_revoked")
+  assert replay_auth_path(
+    [IssueResetToken, ConsumeResetToken, ReplayResetToken],
+    Sqlite.in_memory(),
+    SecureRandom.seeded(33),
+    Clock.fixed(t0)
+  ) ==
+    Ok("token_replay_blocked")
+  assert replay_auth_path(
+    [IssueResetToken, ChangeEmail, ReplayResetToken],
+    Sqlite.in_memory(),
+    SecureRandom.seeded(34),
+    Clock.fixed(t0)
+  ) ==
+    Ok("token_replay_blocked")
+  assert replay_auth_path(
+    [AttemptUnverifiedOidcLink],
+    Sqlite.in_memory(),
+    SecureRandom.seeded(35),
+    Clock.fixed(t0)
+  ) ==
+    Ok("oidc_blocked")
+
+  # Invalid sequences fail closed with MODEL_DRIFT
+  assert replay_auth_path(
+    [ReplayTotpSameStep],
+    Sqlite.in_memory(),
+    SecureRandom.seeded(36),
+    Clock.fixed(t0)
+  ) ==
+    Error("MODEL_DRIFT: ReplayTotpSameStep without prior VerifyTotp")
+  assert replay_auth_path(
+    [ConsumeResetToken],
+    Sqlite.in_memory(),
+    SecureRandom.seeded(37),
+    Clock.fixed(t0)
+  ) ==
+    Error("MODEL_DRIFT: ConsumeResetToken without prior IssueResetToken")
 end

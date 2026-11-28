@@ -129,7 +129,7 @@ fn usage(topic: Option(Text)) : Text
         feature [--app DIR] [--validate] [--manifest OUT] [DIR] Parse .feature.md specs and export @browser manifest
         sim [--app DIR] [--entry FILE] [--only NAME]            Run Arvo.Sim simulation tests
         control <subcmd> [--app DIR] [flags]                    Manage isolated runtime instances (launch, doctor, inspect, reset, drive, cleanup)
-        statechart [check|render] [--app DIR] [--out DIR]       Explore Jobs/Session statecharts, replay code, & check sync commits
+        statechart [check|render] [--app DIR] [--out DIR]       Explore Jobs/Session/Auth statecharts, replay code, & check sync commits
         replay <capture|gen> [--app DIR] [flags]                Capture sanitized failure bundle or generate regression test
         bench --baseline-cmd A --candidate-cmd B [flags]        Alternating A/B/A/B benchmark with 7-question checklist
         dossier [--app DIR] [--open]                            Render static HTML Verification Dossier & <150-word PR summary
@@ -1713,6 +1713,21 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       Command.ok_output("")
     ),
     (
+      Command.spec(
+        "git",
+        [
+          "diff",
+          "--name-only",
+          Statechart.auth_chart_spec().sync_commit,
+          "--",
+          "lib/arvo/auth.mo",
+          "lib/arvo/totp.mo",
+          "lib/arvo/sqlite/auth-store.mo"
+        ]
+      ),
+      Command.ok_output("")
+    ),
+    (
       Command.spec("mo", ["test", "--json", "lib/arvo/testing/statechart.mo"]),
       Command.ok_output(
         "{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n"
@@ -1866,6 +1881,8 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
   assert j_mmd.contains?("stateDiagram-v2")
   assert files.read_text(".arvo/dossier/statecharts/session.mmd") is Ok(s_mmd)
   assert s_mmd.contains?("stateDiagram-v2")
+  assert files.read_text(".arvo/dossier/statecharts/auth.mmd") is Ok(a_mmd)
+  assert a_mmd.contains?("stateDiagram-v2")
 
   c_rep_cap = Console.fake()
   assert run_cli(
@@ -2528,6 +2545,21 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       Command.ok_output("")
     ),
     (
+      Command.spec(
+        "git",
+        [
+          "diff",
+          "--name-only",
+          Statechart.auth_chart_spec().sync_commit,
+          "--",
+          "lib/arvo/auth.mo",
+          "lib/arvo/totp.mo",
+          "lib/arvo/sqlite/auth-store.mo"
+        ]
+      ),
+      Command.ok_output("")
+    ),
+    (
       Command.spec("mo", ["test", "--json", "lib/arvo/testing/statechart.mo"]),
       Command.ok_output(
         "{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n"
@@ -2739,6 +2771,21 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
       Command.ok_output("")
     ),
     (
+      Command.spec(
+        "git",
+        [
+          "diff",
+          "--name-only",
+          Statechart.auth_chart_spec().sync_commit,
+          "--",
+          "lib/arvo/auth.mo",
+          "lib/arvo/totp.mo",
+          "lib/arvo/sqlite/auth-store.mo"
+        ]
+      ),
+      Command.ok_output("")
+    ),
+    (
       Command.spec("mo", ["test", "--json", "lib/arvo/testing/statechart.mo"]),
       Command.ok_output(
         "{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n"
@@ -2872,6 +2919,21 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
           "--",
           "lib/arvo/sqlite/sessions.mo",
           "lib/arvo/session.mo"
+        ]
+      ),
+      Command.ok_output("")
+    ),
+    (
+      Command.spec(
+        "git",
+        [
+          "diff",
+          "--name-only",
+          Statechart.auth_chart_spec().sync_commit,
+          "--",
+          "lib/arvo/auth.mo",
+          "lib/arvo/totp.mo",
+          "lib/arvo/sqlite/auth-store.mo"
         ]
       ),
       Command.ok_output("")
@@ -3534,6 +3596,21 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
           Command.ok_output("")
         ),
         (
+          Command.spec(
+            "git",
+            [
+              "diff",
+              "--name-only",
+              Statechart.auth_chart_spec().sync_commit,
+              "--",
+              "lib/arvo/auth.mo",
+              "lib/arvo/totp.mo",
+              "lib/arvo/sqlite/auth-store.mo"
+            ]
+          ),
+          Command.ok_output("")
+        ),
+        (
           Command.spec("mo", ["test", "--json", "lib/arvo/testing/statechart.mo"]),
           Command.ok_output(
             "{\"record\":\"totals\",\"passed\":1,\"failed\":0,\"stopped\":0,\"errors\":0}\n"
@@ -3602,6 +3679,21 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
               "--",
               "lib/arvo/sqlite/sessions.mo",
               "lib/arvo/session.mo"
+            ]
+          ),
+          Command.ok_output("")
+        ),
+        (
+          Command.spec(
+            "git",
+            [
+              "diff",
+              "--name-only",
+              Statechart.auth_chart_spec().sync_commit,
+              "--",
+              "lib/arvo/auth.mo",
+              "lib/arvo/totp.mo",
+              "lib/arvo/sqlite/auth-store.mo"
             ]
           ),
           Command.ok_output("")

@@ -1,5 +1,5 @@
 ## `arvo statechart` command and `arvo verify --tier full` statechart phase.
-## Explores `Arvo.Jobs` and `Arvo.Session`, checks sync commits and optional `.tla` specs,
+## Explores `Arvo.Jobs`, `Arvo.Session`, and `Arvo.Auth` v2, checks sync commits and optional `.tla` specs,
 ## proves negative broken variants fail, runs real-code replay, and emits Mermaid + JSON reports.
 module StatechartCmd
 expose StatechartArgs(..),
@@ -41,8 +41,8 @@ fn statechart_usage() : Text
   """
     usage: arvo statechart [check|render] [--app DIR] [--out DIR] [--tla FILE]
 
-    Runs bounded BFS exploration on Arvo.Jobs and Arvo.Session, verifies real-code replay
-    and sync commits, checks broken variants still fail, and writes Mermaid + JSON reports.
+    Runs bounded BFS exploration on Arvo.Jobs, Arvo.Session, and Arvo.Auth v2, verifies
+    real-code replay and sync commits, checks broken variants still fail, and writes Mermaid + JSON reports.
 
     Flags:
       --out DIR   Output directory (default: .arvo/dossier/statecharts)
@@ -256,6 +256,15 @@ fn evaluate_and_write(out_dir: Text, files: Files, cmd: Command, env: Env, tla_o
     fn(e) "failed writing #{s_mmd_path}: #{e}" end
   )
 
+  a_spec = Statechart.auth_chart_spec()
+  a_rep = Statechart.explore(a_spec)
+  a_broken = Statechart.explore(Statechart.broken_auth_chart_spec())
+  (a_sync?, a_sync_msg) = check_sync_commit(a_spec.covered_files, a_spec.sync_commit, cmd, env)
+  a_mmd_path = "#{out_dir}/auth.mmd"
+  try files.write_text(a_mmd_path, a_rep.mermaid_mmd).map_error(
+    fn(e) "failed writing #{a_mmd_path}: #{e}" end
+  )
+
   (replay_ok?, replay_msg) = run_replay_suite(cmd)
   tla_paths = find_tla_files(files.read_only, tla_opt)
   (tla_ok?, tla_msgs) = if tla_paths.empty?: (true, []) else: run_tla_specs(tla_paths, cmd)
@@ -292,19 +301,41 @@ fn evaluate_and_write(out_dir: Text, files: Files, cmd: Command, env: Env, tla_o
       mmd_path: s_mmd_path,
       report_md: Statechart.format_report(s_spec, s_rep),
       mermaid_mmd: s_rep.mermaid_mmd
+    ),
+    SingleChartOutcome(
+      title: a_spec.title,
+      slug: "auth",
+      states: a_rep.states_explored,
+      transitions: a_rep.transitions_explored,
+      truncated?: a_rep.truncated?,
+      violations: a_rep.violations.size,
+      in_sync?: a_sync?,
+      sync_detail: a_sync_msg,
+      broken_caught?: not a_broken.violations.empty?,
+      covered_files: a_spec.covered_files,
+      sync_commit: a_spec.sync_commit,
+      mmd_path: a_mmd_path,
+      report_md: Statechart.format_report(a_spec, a_rep),
+      mermaid_mmd: a_rep.mermaid_mmd
     )
   ]
 
-  total_states = j_rep.states_explored + s_rep.states_explored
-  total_transitions = j_rep.transitions_explored + s_rep.transitions_explored
+  total_states = j_rep.states_explored + s_rep.states_explored + a_rep.states_explored
+  total_transitions = j_rep.transitions_explored +
+    s_rep.transitions_explored +
+    a_rep.transitions_explored
   charts_ok? = j_rep.violations.empty? and
     s_rep.violations.empty? and
+    a_rep.violations.empty? and
     not j_rep.truncated? and
     not s_rep.truncated? and
+    not a_rep.truncated? and
     j_sync? and
     s_sync? and
+    a_sync? and
     not j_broken.violations.empty? and
     not s_broken.violations.empty? and
+    not a_broken.violations.empty? and
     replay_ok? and
     tla_ok?
 
@@ -469,6 +500,21 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
       Command.ok_output("\n")
     ),
     (
+      Command.spec(
+        "git",
+        [
+          "diff",
+          "--name-only",
+          Statechart.auth_chart_spec().sync_commit,
+          "--",
+          "lib/arvo/auth.mo",
+          "lib/arvo/totp.mo",
+          "lib/arvo/sqlite/auth-store.mo"
+        ]
+      ),
+      Command.ok_output("\n")
+    ),
+    (
       Command.spec("mo", ["test", "--json", "lib/arvo/testing/statechart.mo"]),
       Command.ok_output(replay_ok_json)
     ),
@@ -503,13 +549,14 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
     c_chk
   ) ==
     0
-  assert (c_chk.printed.first or "").contains?("\"states_explored\":15")
-  assert (c_chk.printed.first or "").contains?("\"transitions_explored\":20")
+  assert (c_chk.printed.first or "").contains?("\"states_explored\":26")
+  assert (c_chk.printed.first or "").contains?("\"transitions_explored\":32")
   assert files_ok.exists?(".arvo/dossier/statecharts/jobs.mmd")
   assert files_ok.exists?(".arvo/dossier/statecharts/session.mmd")
-  assert (c_chk.printed.first or "").split("\"broken_caught\":true").size == 3
+  assert files_ok.exists?(".arvo/dossier/statecharts/auth.mmd")
+  assert (c_chk.printed.first or "").split("\"broken_caught\":true").size == 4
   assert files_ok.read_text(".arvo/dossier/statecharts/report.json") is Ok(sc_rjson)
-  assert sc_rjson.split("\"broken_caught\": true").size == 3
+  assert sc_rjson.split("\"broken_caught\": true").size == 4
   assert files_ok.read_text(".arvo/dossier/statecharts/report.md") is Ok(sc_rmd)
   assert sc_rmd.ends_with?("- Replay check: replay passed (1 check(s))\n")
 
@@ -532,8 +579,8 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
     Env.of({})
   )
   assert ev_pass.status == "pass" and
-    ev_pass.total == Some(15) and
-    ev_pass.passed == Some(2) and
+    ev_pass.total == Some(26) and
+    ev_pass.passed == Some(3) and
     ev_pass.failed == Some(0)
 
   # Stale sync_commit detection via git diff AND via ARVO_GIT_DIFF_FILES worktree fallback
@@ -561,6 +608,21 @@ test "StatechartCmd explores charts, verifies sync commits and broken variants, 
           "--",
           "lib/arvo/sqlite/sessions.mo",
           "lib/arvo/session.mo"
+        ]
+      ),
+      Command.ok_output("")
+    ),
+    (
+      Command.spec(
+        "git",
+        [
+          "diff",
+          "--name-only",
+          Statechart.auth_chart_spec().sync_commit,
+          "--",
+          "lib/arvo/auth.mo",
+          "lib/arvo/totp.mo",
+          "lib/arvo/sqlite/auth-store.mo"
         ]
       ),
       Command.ok_output("")
