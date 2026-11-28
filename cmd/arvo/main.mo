@@ -9,10 +9,13 @@ use Codegen
 use Command
 use Config
 use Control
+use DevCmd
 use Dossier
 use DossierHtml
 use FrontendCheck
+use GenCmd
 use Json
+use NewCmd
 use ReplayCmd
 use SemanticMutants
 use StatechartCmd
@@ -31,6 +34,9 @@ enum CliCmd
   RunBenchCmd(args: Bench.BenchArgs)
   RunDossierCmd(open?: Bool)
   RunLogCmd(phase: Text, decision: Text, why: Text, evidence: Text, result: Text)
+  RunNewCmd(args: NewCmd.NewArgs)
+  RunDevCmd(args: DevCmd.DevArgs)
+  RunGenCmd(args: GenCmd.GenArgs)
 end
 
 ## Parsed CLI invocation combining `--app DIR` target (default `"."`) and `CliCmd`.
@@ -90,6 +96,9 @@ fn usage(topic: Option(Text)) : Text
         -h, --help    Show this help
       """
     Some("control"): Control.control_usage()
+    Some("new"): NewCmd.new_usage()
+    Some("dev"): DevCmd.dev_usage()
+    Some("gen"): GenCmd.gen_usage()
     Some("statechart"): StatechartCmd.statechart_usage()
     Some("replay"): ReplayCmd.replay_usage()
     Some("bench"): Bench.bench_usage()
@@ -124,6 +133,9 @@ fn usage(topic: Option(Text)) : Text
       usage: arvo <command> [--app DIR] [flags]
 
       Commands:
+        new <app-name> [--db modb|sqlite] [--auth full|allowlist|none]  Scaffold a full-stack Arvo app
+        dev [--app DIR] [--port 8080] [--vite-port 5173] [--no-vite]     Run Vite HMR + mo serve --watch
+        gen <resource|auth|page|job|mcp-tool> <Name> [fields...]         Generate explicit Mo + React code
         contracts [--app DIR] [--check]                         Generate/verify frontend/src/arvo.gen.ts from Json.schema[T]()
         verify [--app DIR] [--tier fast|feature|full] [--json]  Run verification checks, tamper check, and write verify.jsonl
         feature [--app DIR] [--validate] [--manifest OUT] [DIR] Parse .feature.md specs and export @browser manifest
@@ -327,6 +339,18 @@ fn parse_args(args: List(Text)) : Result(CliCmd, Text)
   rest = args.drop(1)
   if help_flag?(sub)
     Ok(HelpCmd(topic: None))
+  else if sub == "new"
+    NewCmd.parse_new_args(rest).map(fn(na)
+      if na.help?: HelpCmd(topic: Some("new")) else: RunNewCmd(args: na)
+    end)
+  else if sub == "dev"
+    DevCmd.parse_dev_args(rest).map(fn(da)
+      if da.help?: HelpCmd(topic: Some("dev")) else: RunDevCmd(args: da)
+    end)
+  else if sub == "gen"
+    GenCmd.parse_gen_args(rest).map(fn(ga)
+      if ga.help?: HelpCmd(topic: Some("gen")) else: RunGenCmd(args: ga)
+    end)
   else if sub == "contracts"
     parse_contracts_args(rest)
   else if sub == "verify"
@@ -1461,6 +1485,9 @@ fn run_cli(
           )
           0
       end
+    RunNewCmd(args: na): NewCmd.run_new(na, app_files, console)
+    RunDevCmd(args: da): DevCmd.run_dev(app_dir, da, app_files, cmd, env, console)
+    RunGenCmd(args: ga): GenCmd.run_gen(ga, app_files, console)
   end
 end
 
@@ -3713,4 +3740,58 @@ test "run_cli executes contracts write/check, feature manifest, sim, and verify 
   ) ==
     1
   assert c_dos_err.printed_errors.any?(fn(l) l.contains?("failed generating dossier") end)
+end
+
+test "arvo new, arvo dev, and arvo gen parse_args, usage, and run_cli dispatch cleanly"
+  t0 = Time.parse("2026-11-28T01:00:00Z") or stop "t0"
+  assert parse_args(["new", "--help"]) == Ok(HelpCmd(topic: Some("new")))
+  assert parse_args(["dev", "--help"]) == Ok(HelpCmd(topic: Some("dev")))
+  assert parse_args(["gen", "--help"]) == Ok(HelpCmd(topic: Some("gen")))
+  assert usage(Some("new")).contains?("arvo new <app-name>")
+  assert usage(Some("dev")).contains?("--vite-port")
+  assert usage(Some("gen")).contains?("mcp-tool")
+  assert usage(None).contains?("new <app-name>")
+
+  files = Files.in_memory({})
+  c_new = Console.fake()
+  assert run_cli(
+    Args.of(["new", "sample-app", "--db", "modb", "--auth", "full", "--orgs", "--mcp"]),
+    c_new,
+    files,
+    Command.fake(Command.replies([])),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert files.exists?("sample-app/mo.toml")
+  assert files.exists?("sample-app/frontend/src/arvo.gen.ts")
+
+  c_dev = Console.fake()
+  assert run_cli(
+    Args.of(["dev", "--app", "sample-app", "--dry-run"]),
+    c_dev,
+    files,
+    Command.fake(Command.replies([])),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert (c_dev.printed.first or "").contains?(
+    "\"dev_dashboard_url\":\"http://127.0.0.1:8080/__arvo\""
+  )
+
+  c_gen = Console.fake()
+  assert run_cli(
+    Args.of(["gen", "mcp-tool", "PingCheck", "target:Text", "--app", "sample-app"]),
+    c_gen,
+    files,
+    Command.fake(Command.replies([])),
+    Clock.fixed(t0),
+    Env.of({}),
+    Network.fake({})
+  ) ==
+    0
+  assert files.exists?("sample-app/lib/actions/ping-check.mo")
 end

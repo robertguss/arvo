@@ -1,12 +1,16 @@
-## Arvo + MoDB + Inertia v2 full-stack starter server demonstrating zero-SQLite persistence,
-## `ReadFiles`-only `GET` handlers, `Arvo.Modb.Sessions` (Layer 2), `Modb.Ledger` hash-chained
-## audit trail & invariants (Layer 3), and transactional `Arvo.Modb.Jobs` drained by `mo serve`.
+## Flagship Arvo + MoDB v0.9.0 + Inertia v2 full-stack starter server demonstrating zero-SQLite
+## persistence, `ReadFiles`-only `GET` handlers, `Arvo.Modb.Sessions`, `Modb.Ledger` hash-chained
+## audit trail, `Arvo.Modb.Search` BM25+ FTS, `Arvo.Live` SSE, `Arvo.Action` + `/mcp`, `/__arvo`
+## fail-closed Dev Dashboard, and transactional `Arvo.Modb.Jobs` drained by `mo serve`.
 module Main
 use Api
 use Arvo.Inertia
+use Arvo.Mail
 use Arvo.Modb.Jobs
+use Arvo.Modb.Search
 use Arvo.Modb.Testing
 use Arvo.SecurityMatrixCore
+use Arvo.Sse
 use Arvo.WebTest
 use Json
 use Modb.Ledger
@@ -21,8 +25,15 @@ api
   post "/login" Routes.post_login
   post "/logout" Routes.post_logout
   get "/" Routes.home
+  get "/live" Routes.live_stream
+  post "/mcp" Routes.post_mcp
+
+  get "/__arvo" Routes.dev_dashboard
+  get "/__arvo/mailbox" Routes.dev_dashboard
+  get "/__arvo/storage.json" Routes.dev_dashboard
 
   scope "/bills"
+    get "/search" Routes.search_bills
     post "" Routes.create_bill
     post "/:id/pay" Routes.pay_bill
   end
@@ -39,6 +50,17 @@ api
   status Routes.VersionConflict(_) = 409
   status Routes.BadUpload(_) = 422
   status Routes.ServerFailed(_) = 500
+end
+
+## Supports `mo run main.mo --arvo-contracts` for `arvo contracts`.
+fn main(args: Args, console: Console) : Int
+  if args.list.contains?("--arvo-contracts")
+    console.print(Json.encode(Routes.contracts()))
+    0
+  else
+    console.print("Start server with: mo serve main.mo")
+    0
+  end
 end
 
 fn must_page(res: Api.Response) : WebTest.InertiaPage
@@ -472,7 +494,8 @@ test "MoDB starter passes zero-config Arvo.Modb.Testing SecurityMatrix and MoDB 
     "ARVO_SECRET_KEY": "1111111111111111111111111111111122222222222222222222222222222222",
     "ARVO_ALLOWLIST": "ada@household.local",
     "ARVO_SEED_PASSWORD": "horse-staple-battery",
-    "ARVO_INSECURE_COOKIES": "1"
+    "ARVO_INSECURE_COOKIES": "1",
+    "ARVO_DEV": "1"
   })
   app = ApiTest.start(Main, files, clock, rng, env)
 
@@ -498,6 +521,125 @@ test "MoDB starter passes zero-config Arvo.Modb.Testing SecurityMatrix and MoDB 
   )
   assert SecurityMatrixCore.passed?(report)
   SecurityMatrixCore.assert_clean(report)
-  assert report.routes_checked >= 6
-  assert report.checks_run >= 25
+  assert report.routes_checked >= 10
+  assert report.checks_run >= 40
+end
+
+test "Flagship MoDB starter serves /live SSE, /bills/search BM25+ FTS, /mcp actions, and fail-closed /__arvo inspector"
+  c_contracts = Console.fake()
+  assert main(Args.of(["--arvo-contracts"]), c_contracts) == 0
+  assert (c_contracts.printed.first or "").contains?("\"component\":\"Home\"")
+
+  files = Files.in_memory({
+    "public/manifest.json": "{\"src/main.tsx\":{\"file\":\"assets/main.js\",\"css\":[],\"isEntry\":true}}",
+    "public/assets/main.js": "console.log('starter');"
+  })
+  rng = SecureRandom.seeded(3031)
+  t0 = Time.parse("2026-11-28T09:00:00Z") or stop "t0"
+  clock = Clock.fixed(t0)
+
+  # A. Without ARVO_DEV=1, /__arvo fails closed with 404 even when authenticated
+  env_prod = Env.of({
+    "ARVO_SECRET_KEY": "1111111111111111111111111111111122222222222222222222222222222222",
+    "ARVO_ALLOWLIST": "ada@household.local",
+    "ARVO_SEED_PASSWORD": "horse-staple-battery",
+    "ARVO_INSECURE_COOKIES": "1"
+  })
+  app_prod = ApiTest.start(Main, files, clock, rng, env_prod)
+  g0 = WebTest.with_header(WebTest.start(), "Host", "localhost:8080")
+  (s1, lr) = WebTest.post_form(
+    g0,
+    app_prod,
+    "/login",
+    [("email", "ada@household.local"), ("password", "horse-staple-battery")]
+  )
+  _ = WebTest.expect_redirect(lr, "/")
+  assert WebTest.get(s1, app_prod, "/__arvo").1.status == 404
+  assert WebTest.get(s1, app_prod, "/__arvo/mailbox").1.status == 404
+  assert WebTest.get(s1, app_prod, "/__arvo/storage.json").1.status == 404
+
+  # B. BM25+ Full-Text Search via /bills/search?q=Electric finds Bill #1
+  (s2, search_res) = WebTest.get(s1, app_prod, "/bills/search?q=Electric")
+  assert search_res.status == 200
+  search_page = case Json.decode_strict[Search.TextSearchPage](search_res.text)
+    Ok(p): p
+    Error(_): stop "expected TextSearchPage"
+  end
+  assert search_page.total_returned == 1 and (search_page.hits.first or stop "hit").doc_id == "1"
+
+  # C. Live SSE stream subscribes to user + household topics
+  (s3, live_res) = WebTest.get(s2, app_prod, "/live")
+  assert live_res.status == 200
+  assert Sse.subscribed_topics(live_res) == ["user:mem_ada", "household:bills"]
+
+  # D. Unified MCP JSON-RPC endpoint (tools/list + tools/call bills.search + bills.pay -> SSE reload)
+  (s4, list_res) = WebTest.post_json(
+    s3,
+    app_prod,
+    "/mcp",
+    Json.Object({
+      "jsonrpc": Json.String("2.0"),
+      "id": Json.int(1),
+      "method": Json.String("tools/list")
+    })
+  )
+  assert list_res.status == 200
+  assert list_res.text.contains?("bills.pay") and list_res.text.contains?("bills.search")
+
+  (s5, mcp_pay_res) = WebTest.post_json(
+    s4,
+    app_prod,
+    "/mcp",
+    Json.Object({
+      "jsonrpc": Json.String("2.0"),
+      "id": Json.int(2),
+      "method": Json.String("tools/call"),
+      "params": Json.Object({
+        "name": Json.String("bills.pay"),
+        "arguments": Json.Object({
+          "bill_id": Json.int(1),
+          "expected_version": Json.int(1),
+          "reason": Json.String("Paid via MCP assistant")
+        })
+      })
+    })
+  )
+  assert mcp_pay_res.status == 200
+  assert mcp_pay_res.text.contains?("\"status\":\"in_flight\"")
+  assert Sse.published_events(mcp_pay_res).any?(fn(p)
+    p.topic == "household:bills" and p.event == Some("inertia.reload")
+  end)
+
+  # E. With ARVO_DEV=1 and Dev Mailbox email captured, /__arvo inspector + mailbox work cleanly
+  _sent = Mail.deliver(
+    Mail.DevMailbox(dir: ".arvo/mailbox"),
+    Mail.MailMessage(
+      from: "no-reply@household.local",
+      to: ["ada@household.local"],
+      reply_to: None,
+      subject: "Verify household login",
+      text_body: "Open http://127.0.0.1:8080/verify?token=devtok123 to continue.",
+      html_body: None,
+      headers: []
+    ),
+    Network.fake({}),
+    files,
+    rng,
+    clock
+  )
+  env_dev = Env.of({
+    "ARVO_SECRET_KEY": "1111111111111111111111111111111122222222222222222222222222222222",
+    "ARVO_ALLOWLIST": "ada@household.local",
+    "ARVO_SEED_PASSWORD": "horse-staple-battery",
+    "ARVO_INSECURE_COOKIES": "1",
+    "ARVO_DEV": "1"
+  })
+  app_dev = ApiTest.start(Main, files, clock, rng, env_dev)
+  dev_html = WebTest.get(s5, app_dev, "/__arvo?q=Electric").1
+  assert dev_html.status == 200 and dev_html.text.contains?("Arvo MoDB Starter")
+  dev_storage = WebTest.get(s5, app_dev, "/__arvo/storage.json").1
+  assert dev_storage.status == 200 and dev_storage.text.contains?("\"engine\":\"modb\"")
+  dev_mbox = WebTest.get(s5, app_dev, "/__arvo/mailbox").1
+  assert dev_mbox.status == 200 and
+    dev_mbox.text.contains?("http://127.0.0.1:8080/verify?token=devtok123")
 end

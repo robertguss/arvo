@@ -16,9 +16,9 @@ if [ "${MODB_PATH+x}" = x ] && { [ ! -f "$MODB_PATH/mo.toml" ] || [ ! -d "$MODB_
   exit 1
 fi
 
-echo "==> Checking core Arvo modules are SQLite-free"
-if grep -rn "Sqlite" "$ROOT"/lib/arvo/*.mo; then
-  echo "ERROR: top-level core module references Sqlite!" >&2
+echo "==> Checking core Arvo modules are SQLite- and MoDB-free"
+if grep -rnE "Sqlite|Modb" "$ROOT"/lib/arvo/*.mo; then
+  echo "ERROR: top-level core module references Sqlite or Modb!" >&2
   exit 1
 fi
 
@@ -141,6 +141,13 @@ run_modb_suite() {
   echo "==> Checking and testing examples/arvo-modb-starter via mo.toml path dependencies"
   "$MO" check "$arvo_root/examples/arvo-modb-starter/main.mo"
   "$MO" test "$arvo_root/examples/arvo-modb-starter/main.mo"
+  (
+    app_parent="$(cd "$arvo_root/.." && pwd)"
+    app_base="$(basename "$arvo_root")"
+    cd "$app_parent"
+    "$MO" run "$arvo_root/cmd/arvo/main.mo" feature --app "$app_base/examples/arvo-modb-starter" --validate
+    "$MO" run "$arvo_root/cmd/arvo/main.mo" contracts --app "$app_base/examples/arvo-modb-starter" --check
+  )
 }
 
 if [ "${MODB_PATH+x}" = x ]; then

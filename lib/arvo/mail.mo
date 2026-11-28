@@ -15,6 +15,7 @@ decode_outbox_payload,
 build_http_request,
 deliver_http,
 deliver,
+deliver_dev_mailbox,
 list_dev_mailbox,
 clear_dev_mailbox,
 extract_urls
@@ -501,6 +502,28 @@ fn mailbox_file_path(dir: Text) : Result(Text, MailError)
   Ok("#{clean}/messages.jsonl")
 end
 
+## Captures `msg` as a `CapturedMail` JSONL line inside `dir` without requiring `Network` capability.
+fn deliver_dev_mailbox(dir: Text, msg: MailMessage, files: Files, rng: SecureRandom, clock: Clock) : Result(
+  SendResult,
+  MailError
+)
+  _v = try validate_message(msg)
+  clean_dir = dir.trim.drop_suffix("/") or dir.trim
+  mbox = try mailbox_file_path(clean_dir)
+  if not files.exists?(clean_dir)
+    _mk = try files.make_folder(clean_dir).map_error(fn(e) StorageFailed(reason: "#{e}") end)
+  end
+  msg_id = "mail_#{rng.bytes(12).to_hex}"
+  captured = CapturedMail(id: msg_id, sent_at: clock.now, message: msg)
+  line = "#{Json.encode(captured)}\n"
+  _wr = if files.exists?(mbox)
+    try files.append_text(mbox, line).map_error(fn(e) StorageFailed(reason: "#{e}") end)
+  else
+    try files.write_text(mbox, line).map_error(fn(e) StorageFailed(reason: "#{e}") end)
+  end
+  Ok(SendResult(provider: "dev_mailbox", message_id: msg_id, status: 202))
+end
+
 ## Sends `msg` via the configured HTTP provider or writes a `CapturedMail` line into `DevMailbox`.
 fn deliver(
   provider: MailProvider,
@@ -511,22 +534,7 @@ fn deliver(
   clock: Clock
 ) : Result(SendResult, MailError)
   case provider
-    DevMailbox(dir: d):
-      _v = try validate_message(msg)
-      clean_dir = d.trim.drop_suffix("/") or d.trim
-      mbox = try mailbox_file_path(clean_dir)
-      if not files.exists?(clean_dir)
-        _mk = try files.make_folder(clean_dir).map_error(fn(e) StorageFailed(reason: "#{e}") end)
-      end
-      msg_id = "mail_#{rng.bytes(12).to_hex}"
-      captured = CapturedMail(id: msg_id, sent_at: clock.now, message: msg)
-      line = "#{Json.encode(captured)}\n"
-      _wr = if files.exists?(mbox)
-        try files.append_text(mbox, line).map_error(fn(e) StorageFailed(reason: "#{e}") end)
-      else
-        try files.write_text(mbox, line).map_error(fn(e) StorageFailed(reason: "#{e}") end)
-      end
-      Ok(SendResult(provider: "dev_mailbox", message_id: msg_id, status: 202))
+    DevMailbox(dir: d): deliver_dev_mailbox(d, msg, files, rng, clock)
     Resend(api_key: _, endpoint: _) | Postmark(server_token: _, endpoint: _) | AwsSes(
       region: _,
       access_key_id: _,
@@ -735,7 +743,7 @@ test "Mail validates header injection, sanitizes templates, signs HTTP/SES reque
   assert list_dev_mailbox(files.read_only, ".arvo/mailbox") == Ok([])
   assert deliver(mbox, msg, net, files, rng, clk) is Ok(res_dev1)
   assert res_dev1.provider == "dev_mailbox" and res_dev1.status == 202
-  assert deliver(mbox, msg, net, files, rng, clk) is Ok(_)
+  assert deliver_dev_mailbox(".arvo/mailbox", msg, files, rng, clk) is Ok(_)
   assert list_dev_mailbox(files.read_only, ".arvo/mailbox") is Ok(entries)
   assert entries.size == 2
   assert (entries.get(0) or stop "entry 0").message == msg

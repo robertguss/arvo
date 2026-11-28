@@ -1,32 +1,55 @@
-## Route handlers, MoDB Ledger schema, invariants, jobs, and ReadFiles-only auth for the MoDB + Inertia v2 starter.
+## Route handlers, MoDB Ledger schema + BM25+ FTS search, invariants, jobs, ReadFiles-only auth,
+## real-time Arvo.Live SSE, unified Arvo.Action + MCP, and fail-closed /__arvo Dev Dashboard.
 module Routes
 expose Member(..),
 Bill(..),
 PayInput(..),
+PayBillActionInput(..),
+SearchBillsActionInput(..),
+AuditFeedItem(..),
+AuthUser(..),
+FlashProps(..),
+SharedProps(..),
+LoginProps(..),
+HomeProps(..),
 AppError(..),
 sessions_db_path,
 ledger_db_path,
 starter_schema,
+bills_fts_index,
+contracts,
 authenticate,
 show_login,
 post_login,
 post_logout,
 home,
+live_stream,
+search_bills,
 create_bill,
 pay_bill,
 import_csv,
+post_mcp,
+dev_dashboard,
 drain_jobs
 use Api
+use Arvo.Action
 use Arvo.Auth
 use Arvo.Changeset
+use Arvo.DevDashboard
 use Arvo.Flash
 use Arvo.Form
 use Arvo.Inertia
+use Arvo.Live
+use Arvo.Mcp
+use Arvo.Modb.Inspector
 use Arvo.Modb.Jobs
+use Arvo.Modb.Search
 use Arvo.Modb.Sessions
 use Arvo.Session
+use Arvo.Web
 use Json
 use Modb.Errors
+use Modb.Fts
 use Modb.Ledger
 use Modb.Table
 
@@ -70,6 +93,19 @@ struct PayInput
   reason: Option(Text)
 end
 
+## Unified `Arvo.Action` input for paying a bill from HTTP or MCP.
+struct PayBillActionInput
+  bill_id: Int
+  expected_version: Int
+  reason: Option(Text)
+end
+
+## Unified `Arvo.Action` input for BM25+ full-text bill search.
+struct SearchBillsActionInput
+  q: Text
+  page: Option(Int)
+end
+
 ## Audit item serialized into the exact shape expected by `frontend/src/pages/Home.tsx`.
 struct AuditFeedItem
   id: Text
@@ -80,6 +116,38 @@ struct AuditFeedItem
   created_at: Time
 end
 
+## Authenticated viewer metadata shared across Inertia pages.
+struct AuthUser
+  id: Text
+  email: Text
+  display_name: Text
+end
+
+## Flash banner payload shared across Inertia pages.
+struct FlashProps
+  notice: Option(Text)
+  alert: Option(Text)
+end
+
+## Shared Inertia props serialized identically on every page render.
+struct SharedProps
+  auth: Option(AuthUser)
+  flash: FlashProps
+  errors: Map(Text, Text)
+end
+
+## Typed Inertia props for the `Login` page.
+struct LoginProps
+  allowlist_hint: Text
+end
+
+## Typed Inertia props for the `Home` dashboard page.
+struct HomeProps
+  bills: List(Bill)
+  total_due_cents: Int
+  audit_feed: List(AuditFeedItem)
+end
+
 ## Domain errors mapped to HTTP status codes in `Main`'s `api` block.
 enum AppError
   Unauthenticated
@@ -88,6 +156,37 @@ enum AppError
   VersionConflict(id: Int)
   BadUpload(reason: Text)
   ServerFailed(reason: Text)
+end
+
+## Typed Inertia page contract manifest exported for `arvo contracts`.
+fn contracts() : List(Inertia.PageContract)
+  [
+    Inertia.page_contract[LoginProps, SharedProps]("Login", ["/login"], Inertia.Of, Inertia.Of),
+    Inertia.page_contract[HomeProps, SharedProps](
+      "Home",
+      ["/", "/?status=due"],
+      Inertia.Of,
+      Inertia.Of
+    )
+  ]
+end
+
+## Full-text search index maintained atomically inside `Modb.Ledger` transactions.
+fn bills_fts_index() : Fts.FtsIndex
+  Fts.index("bills")
+end
+
+fn bill_to_indexed_doc(bill: Bill) : Search.IndexedDocument
+  Search.IndexedDocument(
+    doc_id: "#{bill.id}",
+    scope: "household",
+    fields: [
+      Fts.FieldInput(name: "name", text: bill.name, weight: 3),
+      Fts.FieldInput(name: "category", text: bill.category, weight: 2),
+      Fts.FieldInput(name: "status", text: bill.status, weight: 1)
+    ],
+    embedding: None
+  )
 end
 
 fn members_by_email() : Table.Index(Text, MemberRow, Text)
@@ -129,6 +228,10 @@ fn map_table_error(err: Table.TableError) : AppError
   ServerFailed(reason: err.to_text)
 end
 
+fn map_search_error(err: Search.SearchError) : AppError
+  ServerFailed(reason: Search.to_text(err))
+end
+
 fn map_ledger_error(err: Ledger.LedgerError) : AppError
   ServerFailed(reason: err.to_text)
 end
@@ -167,6 +270,10 @@ fn session_cfg(env: Env) : Session.SessionConfig
   )
 end
 
+fn household_bills_topic() : Text
+  Live.resource_topic("household", "bills")
+end
+
 fn bootstrap_db(files: Files, rng: SecureRandom, clock: Clock, env: Env) : Result(Unit, AppError)
   members = members_table()
   if files.read_only.exists?(ledger_db_path)
@@ -193,6 +300,7 @@ fn bootstrap_db(files: Files, rng: SecureRandom, clock: Clock, env: Env) : Resul
   now = clock.now
   bills = bills_table()
   counters = counters_table()
+  fts_idx = bills_fts_index()
 
   Ledger.locked(
     files,
@@ -236,8 +344,11 @@ fn bootstrap_db(files: Files, rng: SecureRandom, clock: Clock, env: Env) : Resul
           )
           tx1 = try Table.put(tx, members, mrow.id, mrow).map_error(map_table_error)
           tx2 = try Table.put(tx1, bills, bill1.id, bill1).map_error(map_table_error)
-          tx3 = try Table.put(tx2, counters, "next_bill_id", 2).map_error(map_table_error)
-          Ok((tx3, Unit))
+          tx3 = try Search.tx_upsert_doc(tx2, fts_idx, None, bill_to_indexed_doc(bill1)).map_error(
+            map_search_error
+          )
+          tx4 = try Table.put(tx3, counters, "next_bill_id", 2).map_error(map_table_error)
+          Ok((tx4, Unit))
         end
       )
       Ok(Unit)
@@ -505,7 +616,42 @@ fn home(req: Api.Request, viewer: Option(Member), rf: ReadFiles, env: Env, statu
   Ok(Flash.clear_if_present(res, had_flash?, secure_cookies?(env)))
 end
 
-## Validates a new bill via `Arvo.Changeset`, persisting on valid input or flashing errors across `303`.
+## Opens the real-time SSE stream (`Arvo.Live`) for household bill updates and partial Inertia reloads.
+fn live_stream(req: Api.Request, member: Member) : Api.Response
+  Live.stream(req, [Live.user_topic(member.id), household_bills_topic()], [], Live.default_config())
+end
+
+## Searches household bills via BM25+ full-text search using strictly `ReadFiles`.
+fn search_bills(_member: Member, rf: ReadFiles, q: Option(Text), page: Option(Int)) : Result(
+  Search.TextSearchPage,
+  AppError
+)
+  raw_q = (q or "").trim
+  p = page or 1
+  if raw_q.empty? or not rf.exists?(ledger_db_path)
+    return Ok(
+      Search.TextSearchPage(
+        query: raw_q,
+        page: p,
+        per_page: 20,
+        total_returned: 0,
+        has_more?: false,
+        hits: []
+      )
+    )
+  end
+  Search.query_text(
+    rf,
+    ledger_db_path,
+    bills_fts_index(),
+    raw_q,
+    Fts.default_search_options(20),
+    p,
+    20
+  ).map_error(map_search_error)
+end
+
+## Validates a new bill via `Arvo.Changeset`, persisting on valid input + FTS + SSE invalidation.
 fn create_bill(
   req: Api.Request,
   member: Member,
@@ -541,6 +687,7 @@ fn create_bill(
 
   bills = bills_table()
   counters = counters_table()
+  fts_idx = bills_fts_index()
   now = clock.now
   meta = Ledger.WriteMeta(
     principal: member.email,
@@ -581,8 +728,11 @@ fn create_bill(
         map_ledger_error,
         fn(tx)
           tx1 = try Table.put(tx, bills, bill.id, bill).map_error(map_table_error)
-          tx2 = try Table.put(tx1, counters, "next_bill_id", next_id + 1).map_error(map_table_error)
-          Ok((tx2, bill))
+          tx2 = try Search.tx_upsert_doc(tx1, fts_idx, None, bill_to_indexed_doc(bill)).map_error(
+            map_search_error
+          )
+          tx3 = try Table.put(tx2, counters, "next_bill_id", next_id + 1).map_error(map_table_error)
+          Ok((tx3, bill))
         end
       )
       Ok(out)
@@ -590,18 +740,62 @@ fn create_bill(
   )
   _created = created
 
-  Ok(Flash.attach(Inertia.redirect("/"), rng, key, Flash.with_notice("Bill added"), sec?))
+  redir = Flash.attach(Inertia.redirect("/"), rng, key, Flash.with_notice("Bill added"), sec?)
+  Ok(
+    Live.invalidate_inertia(
+      redir,
+      [household_bills_topic()],
+      ["bills", "total_due_cents", "audit_feed"],
+      Some("bill.create")
+    )
+  )
 end
 
-## Marks a bill `in_flight` ("I just paid this") with optimistic concurrency + `Modb.Ledger` audit chain.
-fn pay_bill(req: Api.Request, member: Member, files: Files, clock: Clock, id: Int, input: PayInput) : Result(
-  Bill,
-  AppError
+fn validate_pay_bill_action(i: PayBillActionInput) : Changeset.Changeset(PayBillActionInput)
+  Changeset.new(i).require_positive_int("bill_id", i.bill_id).require_non_negative_int(
+    "expected_version",
+    i.expected_version
+  )
+end
+
+fn validate_search_bills_action(i: SearchBillsActionInput) : Changeset.Changeset(
+  SearchBillsActionInput
 )
-  return Error(Forbidden) if not Auth.require_csrf(req, member.session)
+  Changeset.new(i).require_non_empty("q", i.q)
+end
+
+fn pay_bill_action() : Action.ActionSpec(PayBillActionInput)
+  Action.define(
+    "bills.pay",
+    "Mark a bill in_flight with optimistic concurrency check",
+    validate_pay_bill_action
+  ).with_scope("bills:write").with_live_topics([household_bills_topic()]).with_reload_props([
+    "bills",
+    "total_due_cents",
+    "audit_feed"
+  ])
+end
+
+fn search_bills_action() : Action.ActionSpec(SearchBillsActionInput)
+  Action.define(
+    "bills.search",
+    "Search household bills via BM25+ full-text search",
+    validate_search_bills_action
+  ).with_scope("bills:read").with_read_only(true)
+end
+
+fn execute_pay_bill(
+  member: Member,
+  files: Files,
+  clock: Clock,
+  id: Int,
+  expected_version: Int,
+  reason: Option(Text)
+) : Result(Bill, AppError)
   bills = bills_table()
+  fts_idx = bills_fts_index()
   now = clock.now
-  reason_txt = input.reason or "mark bill in_flight"
+  reason_txt = reason or "mark bill in_flight"
   meta = Ledger.WriteMeta(
     principal: member.email,
     action: "bill.mark_in_flight",
@@ -618,7 +812,7 @@ fn pay_bill(req: Api.Request, member: Member, files: Files, clock: Clock, id: In
     fn(db)
       existing = try Table.get(Ledger.store(db), bills, id).map_error(map_table_error)
       before_bill = try existing.or_fail(BillNotFound(id: id))
-      if before_bill.version != input.expected_version
+      if before_bill.version != expected_version
         return Error(VersionConflict(id: id))
       end
       after_bill = Bill(
@@ -643,7 +837,9 @@ fn pay_bill(req: Api.Request, member: Member, files: Files, clock: Clock, id: In
         map_ledger_error,
         fn(tx)
           tx1 = try Table.put(tx, bills, id, after_bill).map_error(map_table_error)
-          Ok((tx1, after_bill))
+          tx2 = try Search.tx_upsert_doc(tx1, fts_idx, None, bill_to_indexed_doc(after_bill))
+            .map_error(map_search_error)
+          Ok((tx2, after_bill))
         end
       )
       Ok(out)
@@ -651,7 +847,49 @@ fn pay_bill(req: Api.Request, member: Member, files: Files, clock: Clock, id: In
   )
 end
 
-## Parses a multipart CSV upload (`name,category,amount_cents` rows), inserts bills atomically,
+## Marks a bill `in_flight` via unified `Arvo.Action`, attaching `inertia.reload` SSE notification.
+fn pay_bill(
+  req: Api.Request,
+  member: Member,
+  files: Files,
+  clock: Clock,
+  env: Env,
+  id: Int,
+  input: PayInput
+) : Result(Api.Response, AppError)
+  return Error(Forbidden) if not Auth.require_csrf(req, member.session)
+  icfg = try load_inertia_config(files.read_only, env)
+  wcfg = Web.default_config(icfg, secure_cookies?(env))
+  spec = pay_bill_action()
+  ctx = Action.context_for_member(
+    member.id,
+    Some(member.email),
+    None,
+    ["bills:*"],
+    None,
+    None,
+    clock.now
+  )
+  case Action.prepare_input(
+    spec,
+    ctx,
+    PayBillActionInput(bill_id: id, expected_version: input.expected_version, reason: input.reason)
+  )
+    Error(err): Ok(Action.json_error(err, wcfg))
+    Ok(prep):
+      updated = try execute_pay_bill(
+        member,
+        files,
+        clock,
+        prep.input.bill_id,
+        prep.input.expected_version,
+        prep.input.reason
+      )
+      Ok(Action.json_success(spec, 200, updated, wcfg, []))
+  end
+end
+
+## Parses a multipart CSV upload (`name,category,amount_cents` rows), inserts & FTS-indexes bills atomically,
 ## and enqueues an `import.notify` MoDB job inside the exact same `Modb.Ledger` transaction.
 fn import_csv(req: Api.Request, member: Member, files: Files, rng: SecureRandom, clock: Clock) : Result(
   Map(Text, Int),
@@ -690,6 +928,7 @@ fn import_csv(req: Api.Request, member: Member, files: Files, rng: SecureRandom,
 
   bills = bills_table()
   counters = counters_table()
+  fts_idx = bills_fts_index()
   now = clock.now
   meta = Ledger.WriteMeta(
     principal: member.email,
@@ -730,6 +969,8 @@ fn import_csv(req: Api.Request, member: Member, files: Files, rng: SecureRandom,
           version: 1
         )
         cur_tx = try Table.put(cur_tx, bills, next_id, bill).map_error(map_table_error)
+        cur_tx = try Search.tx_upsert_doc(cur_tx, fts_idx, None, bill_to_indexed_doc(bill))
+          .map_error(map_search_error)
         next_id += 1
       end
       cur_tx = try Table.put(cur_tx, counters, "next_bill_id", next_id).map_error(map_table_error)
@@ -739,6 +980,125 @@ fn import_csv(req: Api.Request, member: Member, files: Files, rng: SecureRandom,
   )
 
   Ok({"imported": parsed_bills.size})
+end
+
+## Streamable HTTP MCP JSON-RPC endpoint backed by unified `Arvo.Action` tools (`bills.pay`, `bills.search`).
+fn post_mcp(req: Api.Request, member: Member, files: Files, clock: Clock) : Result(
+  Api.Response,
+  AppError
+)
+  return Error(Forbidden) if not Auth.require_csrf(req, member.session)
+  pay_spec = pay_bill_action()
+  search_spec = search_bills_action()
+  srv = Mcp.ServerInfo(
+    name: "arvo-modb-starter-mcp",
+    version: "0.2.0",
+    protocol_version: Mcp.default_protocol_version,
+    instructions: Some("Use bills.search and bills.pay with optimistic concurrency.")
+  )
+  ctx = Action.context_for_member(
+    member.id,
+    Some(member.email),
+    None,
+    ["bills:*"],
+    None,
+    None,
+    clock.now
+  )
+
+  case Mcp.dispatch(req, srv, [Action.to_mcp_tool(pay_spec), Action.to_mcp_tool(search_spec)], [])
+    Mcp.Respond(res): Ok(res)
+    Mcp.ReadResource(id: rpc_id, uri: u): Ok(Mcp.tool_error(rpc_id, "unknown resource '#{u}'"))
+    Mcp.CallTool(id: rpc_id, name: tool_name, arguments: args):
+      if tool_name == "bills.pay"
+        case Action.prepare_json(pay_spec, ctx, args)
+          Error(err): Ok(Action.mcp_error(rpc_id, err))
+          Ok(prep):
+            case execute_pay_bill(
+              member,
+              files,
+              clock,
+              prep.input.bill_id,
+              prep.input.expected_version,
+              prep.input.reason
+            )
+              Ok(updated): Ok(
+                Action.mcp_success(
+                  pay_spec,
+                  rpc_id,
+                  "Marked bill ##{updated.id} in_flight",
+                  updated,
+                  []
+                )
+              )
+              Error(BillNotFound(id: bid)): Ok(Mcp.tool_error(rpc_id, "bill ##{bid} not found"))
+              Error(VersionConflict(id: bid)): Ok(
+                Mcp.tool_error(rpc_id, "version conflict on bill ##{bid}")
+              )
+              Error(other): mcp_app_error(other, rpc_id)
+            end
+        end
+      else if tool_name == "bills.search"
+        case Action.prepare_json(search_spec, ctx, args)
+          Error(err): Ok(Action.mcp_error(rpc_id, err))
+          Ok(prep):
+            page_res = try search_bills(
+              member,
+              files.read_only,
+              Some(prep.input.q),
+              prep.input.page
+            )
+            Ok(
+              Action.mcp_success(
+                search_spec,
+                rpc_id,
+                "Found #{page_res.total_returned} bill hit(s)",
+                page_res,
+                []
+              )
+            )
+        end
+      else
+        Ok(Mcp.tool_error(rpc_id, "unknown tool '#{tool_name}'"))
+      end
+  end
+end
+
+fn mcp_app_error(err: AppError, rpc_id: Mcp.RpcId) : Result(Api.Response, AppError)
+  case err
+    ServerFailed(reason: r): Ok(Mcp.tool_error(rpc_id, r))
+    Unauthenticated | Forbidden | BillNotFound(id: _) | VersionConflict(id: _) | BadUpload(
+      reason: _
+    ): Ok(Mcp.tool_error(rpc_id, "action failed"))
+  end
+end
+
+## Strictly `ReadFiles`-only `/__arvo` developer dashboard + Dev Mailbox (always `404` unless `ARVO_DEV=1`).
+fn dev_dashboard(
+  req: Api.Request,
+  _member: Member,
+  rf: ReadFiles,
+  rng: SecureRandom,
+  env: Env,
+  q: Option(Text)
+) : Result(Api.Response, AppError)
+  dev_on? = (env.get("ARVO_DEV") or "0") == "1"
+  mbox = env.get("ARVO_DEV_MAILBOX") or ".arvo/mailbox"
+  dcfg = DevDashboard.default_config("Arvo MoDB Starter", dev_on?, Some(mbox))
+  if not dev_on?
+    return Ok(DevDashboard.handle(req, rf, rng, dcfg, DevDashboard.empty_snapshot("modb")))
+  end
+  var icfg = Inspector.default_config(ledger_db_path)
+  icfg.sessions_db_path = Some(sessions_db_path)
+  icfg.jobs_db_path = Some(ledger_db_path)
+  if q is Some(raw_q) and not raw_q.trim.empty?
+    icfg.fts_preview = Some((bills_fts_index(), raw_q.trim, 10))
+  end
+  snap = case Inspector.collect_snapshot(rf, icfg)
+    Ok(s): s
+    Error(_): DevDashboard.empty_snapshot("modb")
+  end
+  Ok(DevDashboard.handle(req, rf, rng, dcfg, snap))
 end
 
 ## Periodic `mo serve` job handler draining MoDB-queued `import.notify` jobs and pruning expired sessions.
