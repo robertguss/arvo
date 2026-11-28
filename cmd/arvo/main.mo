@@ -1520,7 +1520,7 @@ fn run_cli(
           )
           0
       end
-    RunNewCmd(args: na): NewCmd.run_new(na, app_files, console)
+    RunNewCmd(args: na): NewCmd.run_new(NewCmd.resolve_env_paths(na, env), app_files, console)
     RunDevCmd(args: da): DevCmd.run_dev(app_dir, da, app_files, cmd, env, console)
     RunGenCmd(args: ga): GenCmd.run_gen(ga, app_files, console)
     RunDoctorCmd(args: da): DoctorCmd.run_doctor(app_dir, da, app_files, cmd, env, console)

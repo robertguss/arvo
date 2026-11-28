@@ -7,6 +7,7 @@ expose NewArgs(..),
 new_usage,
 valid_app_name?,
 parse_new_args,
+resolve_env_paths,
 build_contracts,
 plan_app_files,
 run_new
@@ -23,6 +24,8 @@ struct NewArgs
   dir: Option(Text)
   arvo_path: Text
   modb_path: Text
+  arvo_path_explicit?: Bool
+  modb_path_explicit?: Bool
   force?: Bool
   help?: Bool
 end
@@ -75,8 +78,8 @@ fn new_usage() : Text
       --orgs                    Include multi-tenant workspace / organization creation
       --mcp                     Include Arvo.Action + POST /mcp JSON-RPC endpoint
       --dir PATH                Target directory (default: <app-name>)
-      --arvo-path PATH          Path to Arvo repo in mo.toml (default: ../arvo)
-      --modb-path PATH          Path to MoDB repo in mo.toml (default: ../modb)
+      --arvo-path PATH          Path to Arvo repo in mo.toml (default: $ARVO_ROOT or ../arvo)
+      --modb-path PATH          Path to MoDB repo in mo.toml (default: $MODB_PATH or ../modb)
       --force                   Overwrite existing scaffolded files
       -h, --help                Show this help
     """
@@ -124,6 +127,8 @@ fn parse_new_args(rest: List(Text)) : Result(NewArgs, Text)
   var dir = None
   var arvo_path = "../arvo"
   var modb_path = "../modb"
+  var arvo_path_explicit? = false
+  var modb_path_explicit? = false
   var force? = false
 
   var i = 0
@@ -140,6 +145,8 @@ fn parse_new_args(rest: List(Text)) : Result(NewArgs, Text)
           dir: dir,
           arvo_path: arvo_path,
           modb_path: modb_path,
+          arvo_path_explicit?: arvo_path_explicit?,
+          modb_path_explicit?: modb_path_explicit?,
           force?: force?,
           help?: true
         )
@@ -169,9 +176,11 @@ fn parse_new_args(rest: List(Text)) : Result(NewArgs, Text)
       i += 1
     else if a == "--arvo-path"
       arvo_path = try need_val(rest, i, "--arvo-path")
+      arvo_path_explicit? = true
       i += 1
     else if a == "--modb-path"
       modb_path = try need_val(rest, i, "--modb-path")
+      modb_path_explicit? = true
       i += 1
     else if a.starts_with?("-")
       return Error("unknown flag '#{a}' for `arvo new`. Run `arvo new --help`.")
@@ -199,10 +208,38 @@ fn parse_new_args(rest: List(Text)) : Result(NewArgs, Text)
       dir: dir,
       arvo_path: arvo_path,
       modb_path: modb_path,
+      arvo_path_explicit?: arvo_path_explicit?,
+      modb_path_explicit?: modb_path_explicit?,
       force?: force?,
       help?: false
     )
   )
+end
+
+## Applies `ARVO_ROOT` and `MODB_PATH` environment defaults when `--arvo-path` / `--modb-path` were omitted.
+fn resolve_env_paths(nargs: NewArgs, env: Env) : NewArgs
+  var out = nargs
+  if not out.arvo_path_explicit?
+    case env.get("ARVO_ROOT")
+      Some(r):
+        t = r.trim
+        if not t.empty?
+          out.arvo_path = t
+        end
+      None: Unit
+    end
+  end
+  if not out.modb_path_explicit?
+    case env.get("MODB_PATH")
+      Some(m):
+        t = m.trim
+        if not t.empty?
+          out.modb_path = t
+        end
+      None: Unit
+    end
+  end
+  out
 end
 
 ## Returns the exact `PageContract` manifest matching the scaffolded `Routes.contracts()`.
@@ -1966,4 +2003,19 @@ test "NewCmd validates app names, scaffolds MoDB/SQLite presets with exact arvo.
   assert not files.exists?("out/lite-app/frontend/src/pages/Register.tsx")
   assert files.read_text("out/lite-app/routes.mo") is Ok(srm) and
     srm.contains?("Arvo.Sqlite.Sessions")
+
+  assert parse_new_args(["env-app"]) is Ok(n_def)
+  assert resolve_env_paths(n_def, Env.of({})).arvo_path == "../arvo"
+  assert resolve_env_paths(n_def, Env.of({})).modb_path == "../modb"
+  n_env = resolve_env_paths(
+    n_def,
+    Env.of({
+      "ARVO_ROOT": "/opt/homebrew/opt/arvo/libexec",
+      "MODB_PATH": "/opt/homebrew/opt/modb/libexec"
+    })
+  )
+  assert n_env.arvo_path == "/opt/homebrew/opt/arvo/libexec"
+  assert n_env.modb_path == "/opt/homebrew/opt/modb/libexec"
+  n_keep = resolve_env_paths(n_modb, Env.of({"ARVO_ROOT": "/ignored", "MODB_PATH": "/ignored"}))
+  assert n_keep.arvo_path == "../../arvo" and n_keep.modb_path == "../../modb"
 end

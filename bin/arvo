@@ -11,8 +11,9 @@ resolve_arvo_root() {
   CDPATH='' cd -- "$bin_dir/.." && pwd
 }
 
-ARVO_ROOT="$(resolve_arvo_root)"
+ARVO_ROOT="${ARVO_ROOT:-$(resolve_arvo_root)}"
 export ARVO_ROOT
+export MODB_PATH="${MODB_PATH:-}"
 
 if [ -n "${MO:-}" ]; then
   MO_BIN="$MO"
